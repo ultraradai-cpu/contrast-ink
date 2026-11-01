@@ -143,7 +143,7 @@ public partial class ToolbarWindow : Window
         PauseBtn.Content = state == Recorder.State.Paused ? "▶" : "⏸";
         Label(PauseBtn, state == Recorder.State.Paused ? "Resume recording" : "Pause recording");
         RecTime.Visibility = on ? Visibility.Visible : Visibility.Hidden;
-        RecTime.Text = Obs.Time(elapsed, elapsed.TotalHours >= 1) + (state == Recorder.State.Paused ? " paused" : "");
+        RecTime.Text = Obs.Time(elapsed, elapsed.TotalHours >= 1);   // paused shows as the amber ⏹ and the ▶ button
     }
 
     /// <summary>A button's hint and its name for screen readers (and the Windows check), kept the same.</summary>
