@@ -18,6 +18,8 @@ sealed class InputHooks : IDisposable
     public Func<int, bool, bool>? Key;
     /// <summary>The mouse moved or clicked: (kind of input, dx, dy).</summary>
     public Action<InputKind, int, int>? Pointer;
+    /// <summary>Test runs only (CONTRASTINK_TEST): keys sent by software count too, so a test can press F9.</summary>
+    public bool AcceptInjectedKeys;
 
     public InputHooks()
     {
@@ -55,7 +57,7 @@ sealed class InputHooks : IDisposable
             int msg = wParam.ToInt32();
             bool down = msg is Native.WM_KEYDOWN or Native.WM_SYSKEYDOWN, up = msg is Native.WM_KEYUP or Native.WM_SYSKEYUP;
             // keys sent by other programs (e.g. a presenter app) pass untouched
-            if ((down || up) && (k.flags & Native.LLKHF_INJECTED) == 0)
+            if ((down || up) && (AcceptInjectedKeys || (k.flags & Native.LLKHF_INJECTED) == 0))
             {
                 try { if (key((int)k.vkCode, down)) return new IntPtr(1); }
                 catch (Exception e) { App.Log(e); }   // never let a bug block the keyboard

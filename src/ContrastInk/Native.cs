@@ -42,6 +42,11 @@ static class Native
 
     public const int WM_MOUSEACTIVATE = 0x21, MA_NOACTIVATE = 3;
 
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+    [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr hwnd);
+    public static RECT WindowRect(System.Windows.Window w) { GetWindowRect(new System.Windows.Interop.WindowInteropHelper(w).Handle, out var r); return r; }
+    public static uint Dpi(System.Windows.Window w) => GetDpiForWindow(new System.Windows.Interop.WindowInteropHelper(w).Handle);
+
     [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
     /// <summary>Windows 11 rounds the corners of a solid window when asked; Windows 10 ignores it.</summary>
     public static void RoundCorners(IntPtr hwnd)

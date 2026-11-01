@@ -30,6 +30,27 @@ jobs:
         with:
           name: ContrastInk
           path: out/ContrastInk.exe
+      # Runs the real ContrastInk.exe on this Windows machine and reads the screen back (tests/ContrastInk.WindowsCheck).
+      # The control run switches hiding off and must SEE the toolbar, so the "hidden" check is known to be able to fail.
+      # A failure here stops the release below: the download link keeps the last build that passed.
+      - name: Windows check (real app, real screen)
+        shell: pwsh
+        run: |
+          dotnet build tests/ContrastInk.WindowsCheck -c Release -o check
+          $exe = (Resolve-Path out/ContrastInk.exe).Path
+          $codes = @{}
+          foreach ($m in 'control','normal') {
+            $p = Start-Process -FilePath check/ContrastInk.WindowsCheck.exe -ArgumentList "`"$exe`"", 'shots', $m -Wait -PassThru
+            $codes[$m] = $p.ExitCode
+            Get-Content "shots/results-$m.txt" -ErrorAction SilentlyContinue
+          }
+          "exit codes: control=$($codes['control']) normal=$($codes['normal'])"
+          if ($codes['control'] -ne 0 -or $codes['normal'] -ne 0) { exit 1 }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-check-screenshots
+          path: shots/
       - name: Update the Latest release
         shell: bash
         env:

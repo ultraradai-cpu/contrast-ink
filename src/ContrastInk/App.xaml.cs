@@ -53,7 +53,8 @@ public partial class App : Application
         ApplySettings();
         Wire();
 
-        hooks = new InputHooks { Key = OnKey, Pointer = OnPointer };
+        bool testRun = Environment.GetEnvironmentVariable("CONTRASTINK_TEST") == "1";
+        hooks = new InputHooks { Key = OnKey, Pointer = OnPointer, AcceptInjectedKeys = testRun };
         if (!hooks.Working)   // on the toolbar, not a message box: a message box would be in the recording
             toolbar.Warn("Windows didn't allow Contrast Ink to watch the keyboard and pen: F9, Ctrl, the letter keys and pen drawing won't work. Use the toolbar buttons.");
 
@@ -66,6 +67,18 @@ public partial class App : Application
         };
 
         // PowerPoint's slide show likes to come to the front: stay above it
+        // test runs: say what Windows answered, for the Windows check to read (never written in normal use)
+        if (Environment.GetEnvironmentVariable("CONTRASTINK_STATUS") is { Length: > 0 } statusPath)
+            Dispatcher.BeginInvoke(() =>
+            {
+                var o = Native.WindowRect(overlay); var t = Native.WindowRect(toolbar);
+                File.WriteAllText(statusPath, System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    hiddenFromCapture = toolbar.HiddenFromCapture, hooksWorking = hooks.Working,
+                    windowsBuild = Environment.OSVersion.Version.Build, dpi = Native.Dpi(overlay),
+                    overlay = new[] { o.Left, o.Top, o.Right, o.Bottom }, toolbar = new[] { t.Left, t.Top, t.Right, t.Bottom },
+                }));
+            }, DispatcherPriority.ApplicationIdle);
         var top = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
         top.Tick += (_, _) => { overlay.KeepOnTop(); toolbar.KeepOnTop(); };
         top.Start();

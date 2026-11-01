@@ -78,7 +78,8 @@ public partial class ToolbarWindow : Window
                 return IntPtr.Zero;
             });
             Native.RoundCorners(hwnd);
-            HiddenFromCapture = Native.HideFromCapture(hwnd);
+            // CONTRASTINK_TEST_NOHIDE: the test's control run, which must see the toolbar in a capture
+            HiddenFromCapture = Environment.GetEnvironmentVariable("CONTRASTINK_TEST_NOHIDE") != "1" && Native.HideFromCapture(hwnd);
             if (!HiddenFromCapture)
                 Warn("This toolbar is NOT hidden from recordings (it needs Windows 10 version 2004 or newer). It will show in OBS: make it small (‹) or move it to a corner.");
             if (!Native.SetExStyle(hwnd, Native.WS_EX_TOOLWINDOW | Native.WS_EX_NOACTIVATE, 0))
