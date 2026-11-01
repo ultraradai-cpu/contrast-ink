@@ -111,6 +111,7 @@ static class Program
     // ---------------------------------------------------------------- the checks
     static void Normal(JsonElement st, Rectangle toolbar)
     {
+        Check(toolbar.Left >= screen.Left && toolbar.Right <= screen.Right, "the whole toolbar is on the screen (✕ reachable)", $"toolbar {toolbar.Left}..{toolbar.Right}, screen {screen.Left}..{screen.Right}");
         Check(st.GetProperty("hooksWorking").GetBoolean(), "keyboard and pen watcher installed", "hooksWorking=" + st.GetProperty("hooksWorking"));
         Check(st.GetProperty("hiddenFromCapture").GetBoolean(), "the app reports the toolbar hidden from capture", "hiddenFromCapture=" + st.GetProperty("hiddenFromCapture"));
         double dark = ToolbarDarkShare(Shot("01-start"), toolbar);

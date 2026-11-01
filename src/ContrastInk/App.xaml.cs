@@ -48,6 +48,8 @@ public partial class App : Application
         toolbar = new ToolbarWindow();
         PlaceToolbar();
         toolbar.Show();
+        KeepToolbarOnScreen();
+        toolbar.SizeChanged += (_, _) => KeepToolbarOnScreen();   // made big again, or a warning line appeared
         toolbar.Moved += () => { settings.ToolbarX = toolbar.Left; settings.ToolbarY = toolbar.Top; settings.Save(SettingsPath); };
 
         // Everything after the toolbar appears. A failure here once left a toolbar with dead buttons and nothing said
@@ -172,6 +174,20 @@ public partial class App : Application
         }
         toolbar.Left = x;
         toolbar.Top = y;
+    }
+
+    /// <summary>
+    /// The toolbar is about 870 points wide: on a 1024-wide projector screen it ran 27 px off the right edge,
+    /// half hiding ✕ (seen in the Windows check's screenshots). Pull it back inside the screen it is on.
+    /// </summary>
+    void KeepToolbarOnScreen()
+    {
+        var area = SystemParameters.WorkArea;
+        double w = toolbar.ActualWidth;
+        if (w <= 0) return;
+        if (toolbar.Left + w > area.Right) toolbar.Left = Math.Max(area.Left, area.Right - w);
+        if (toolbar.Left < area.Left) toolbar.Left = area.Left;
+        if (toolbar.Top < area.Top) toolbar.Top = area.Top;
     }
 
     // ---------- keyboard ----------
