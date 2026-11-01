@@ -100,8 +100,8 @@ static class Program
                 Drag(new Point((int)(screen.Width * 0.12), Row(0)), new Point((int)(screen.Width * 0.58), Row(0)));
                 Thread.Sleep(500);
                 var ub = Native.WindowBox(UndoTitle);
-                var cshot = Shot("control-undo-button");
-                double blue = Share(cshot, ub, UndoBlue);
+                Bitmap cshot; double blue; var waited = Stopwatch.StartNew();
+                do { Thread.Sleep(250); cshot = Shot("control-undo-button"); blue = Share(cshot, ub, UndoBlue); } while (blue < 0.3 && waited.ElapsedMilliseconds < 2500);
                 var mid = ub.Width > 0 ? Hex(cshot.GetPixel(Math.Clamp(ub.Left + 4, 0, cshot.Width - 1), Math.Clamp(ub.Top + 4, 0, cshot.Height - 1))) : "none";
                 Check(Native.IsVisible(UndoTitle) && blue > 0.3, "CONTROL: with hiding switched off, a screen capture DOES show the undo button",
                       $"visible {Native.IsVisible(UndoTitle)}, {blue:P0} of its area is its blue, at {ub}, its corner pixel {mid}");
@@ -438,12 +438,12 @@ static class Program
             Check(OnToolbar("Can't reach OBS"), "OBS not running: the toolbar says to open it", OnToolbar("Can't reach OBS") ? "shown" : "not shown");
 
             // OBS running, with a password that doesn't match what Contrast Ink read
-            obs = new FakeObs { OutputPath = Path.Combine(outDir, "lecture-check.mkv") };
             File.WriteAllText(FakeObs.ConfigPath, File.ReadAllText(FakeObs.ConfigPath).Replace(FakeObs.Password, "not-the-password"));
+            obs = new FakeObs { OutputPath = Path.Combine(outDir, "lecture-check.mkv") };
             Press("Record with OBS");
             WaitFor(() => OnToolbar("OBS refused the password"), 6000);
-            Check(obs.WrongPassword && !obs.Identified && OnToolbar("OBS refused the password"), "a wrong password: OBS refuses, and the toolbar says so",
-                  $"refused {obs.WrongPassword}, toolbar {(OnToolbar("OBS refused the password") ? "says so" : "silent")}");
+            Check(obs.WrongPassword && obs.Identifications == 0 && OnToolbar("OBS refused the password"), "a wrong password: OBS refuses, and the toolbar says so",
+                  $"refused {obs.WrongPassword}, accepted {obs.Identifications} time(s), toolbar {(OnToolbar("OBS refused the password") ? "says so" : "silent")}");
             Check(obs.Count("StartRecord") == 0, "a wrong password records nothing", "StartRecord asked " + obs.Count("StartRecord") + " times");
 
             // the real thing: OBS's own password, read from OBS's settings
@@ -461,9 +461,12 @@ static class Program
             var names = string.Join(", ", obs.ChapterNames);
             Check(names == "Slide 2, Slide 3", "each slide change is a chapter in OBS's video", "chapters asked: " + names);
 
+            var pausePoint = FindToolbarButton("Pause recording");
             Press("Pause recording");
             WaitFor(() => obs.Paused, 2000);
-            Check(obs.Paused && OnToolbar("Resume recording"), "⏸ pauses OBS, and the button becomes ▶", $"paused {obs.Paused}");
+            Shot("50-paused");
+            Check(obs.Paused && OnToolbar("Resume recording"), "⏸ pauses OBS, and the button becomes ▶",
+                  $"paused {obs.Paused}, clicked at {pausePoint}, the record button at {FindToolbarButton("Stop recording")}, OBS was asked: {string.Join(",", obs.Requests.Where(r => r != "GetRecordStatus").TakeLast(4))}");
             Press("Resume recording");
             WaitFor(() => !obs.Paused, 2000);
             Check(!obs.Paused && obs.Recording, "▶ resumes", $"paused {obs.Paused}, recording {obs.Recording}");

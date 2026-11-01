@@ -26,6 +26,7 @@ sealed class FakeObs : IDisposable
     public readonly ConcurrentQueue<string> Requests = new();
     public readonly ConcurrentQueue<string> ChapterNames = new();
     public volatile bool Identified, WrongPassword;
+    public int Identifications;
     public volatile bool Recording, Paused;
     public double DiskMB = 50_000;
     public bool SceneHasScreen = true;
@@ -85,6 +86,7 @@ sealed class FakeObs : IDisposable
             await Send(ws, new JsonObject { ["op"] = 2, ["d"] = new JsonObject { ["negotiatedRpcVersion"] = 1 } });
             client = ws;
             Identified = true;
+            Interlocked.Increment(ref Identifications);
             while (ws.State == WebSocketState.Open)
             {
                 var m = await Receive(ws);
