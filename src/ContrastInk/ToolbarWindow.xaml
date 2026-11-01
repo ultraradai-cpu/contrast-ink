@@ -55,13 +55,15 @@
       <Button x:Name="DrawBtn" Style="{StaticResource Tb}" Width="58" ToolTip="Draw on / off (F9). Or hold Ctrl to draw. A pen draws by itself.">
         <StackPanel Orientation="Horizontal"><TextBlock Text="✏"/><TextBlock x:Name="DrawText" Text=" Off" FontSize="12" VerticalAlignment="Center"/></StackPanel>
       </Button>
-      <!-- recording with OBS: stays visible when the toolbar is made small -->
+      <!-- recording with OBS: stays visible when the toolbar is made small. ⏸ and the timer keep their room when
+           hidden, so pressing ⏺ never changes the toolbar's width: on a narrow screen that slid the whole toolbar,
+           and ⏹ away from the pointer (seen in the Windows check) -->
       <Border Style="{StaticResource Sep}"/>
       <Button x:Name="RecBtn" Style="{StaticResource Tb}" ToolTip="Record with OBS (start / stop)">
         <TextBlock x:Name="RecDot" Text="⏺" Foreground="#8A95A6"/>
       </Button>
-      <Button x:Name="PauseBtn" Style="{StaticResource Tb}" Content="⏸" Visibility="Collapsed" ToolTip="Pause recording"/>
-      <TextBlock x:Name="RecTime" Visibility="Collapsed" Foreground="{StaticResource Ink}" FontSize="12" VerticalAlignment="Center" Margin="2,0,6,0" FontFamily="Consolas, Segoe UI"/>
+      <Button x:Name="PauseBtn" Style="{StaticResource Tb}" Content="⏸" Visibility="Hidden" ToolTip="Pause recording"/>
+      <TextBlock x:Name="RecTime" Visibility="Hidden" Width="96" Foreground="{StaticResource Ink}" FontSize="12" VerticalAlignment="Center" Margin="2,0,6,0" FontFamily="Consolas, Segoe UI"/>
       <StackPanel x:Name="Full" Orientation="Horizontal">
         <Border Style="{StaticResource Sep}"/>
         <Button x:Name="PenBtn" Style="{StaticResource Tb}" Content="🖊" ToolTip="Pen (P)"/>

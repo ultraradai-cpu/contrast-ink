@@ -448,8 +448,12 @@ static class Program
 
             // the real thing: OBS's own password, read from OBS's settings
             FakeObs.WriteConfig();
+            var recBefore = FindToolbarButton("Record with OBS");
             Press("Record with OBS");
             WaitFor(() => obs.Recording, 6000);
+            Thread.Sleep(600);
+            var recAfter = FindToolbarButton("Stop recording");
+            Check(recBefore != null && recBefore == recAfter, "pressing ⏺ doesn't move the toolbar: ⏹ is where ⏺ was", $"⏺ at {recBefore}, ⏹ at {recAfter}");
             Check(obs.Identified, "Contrast Ink connects with the password from OBS's own settings", "identified " + obs.Identified);
             Check(obs.Recording && obs.Count("StartRecord") == 1, "⏺ starts OBS recording", $"recording {obs.Recording}, StartRecord asked {obs.Count("StartRecord")} time(s)");
             WaitFor(() => OnToolbar("Stop recording"), 2000);

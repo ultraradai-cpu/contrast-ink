@@ -139,10 +139,10 @@ public partial class ToolbarWindow : Window
         RecDot.Text = on ? "⏹" : "⏺";
         RecDot.Foreground = state == Recorder.State.Paused ? Amber : on ? RecRed : connected ? RecRed : Grey;
         Label(RecBtn, on ? "Stop recording (OBS)" : state == Recorder.State.Starting ? "Starting OBS recording" : connected ? "Record with OBS (start / stop)" : "Record with OBS (OBS not connected yet: press to connect)");
-        PauseBtn.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        PauseBtn.Visibility = on ? Visibility.Visible : Visibility.Hidden;
         PauseBtn.Content = state == Recorder.State.Paused ? "▶" : "⏸";
         Label(PauseBtn, state == Recorder.State.Paused ? "Resume recording" : "Pause recording");
-        RecTime.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        RecTime.Visibility = on ? Visibility.Visible : Visibility.Hidden;
         RecTime.Text = Obs.Time(elapsed, elapsed.TotalHours >= 1) + (state == Recorder.State.Paused ? " paused" : "");
     }
 
