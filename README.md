@@ -43,9 +43,28 @@ Good to know:
 | [ and ] | Thinner / thicker |
 | F | Fading ink on/off: marks disappear after 3 seconds (hold Shift while drawing to keep one) |
 | C | Clear all marks |
-| Ctrl+Z | Undo (also brings back a Clear) |
+| Ctrl+Z or Z | Undo (also brings back a Clear) |
 
-Marks stay until you clear them. The 🖥 button moves the drawing layer to your other screen.
+The 🖥 button moves the drawing layer to your other screen.
+
+## Undo
+
+Any of these removes the last mark. Each one can be switched off under **⚙ Settings** on the toolbar.
+
+- **Z** on its own, or **Ctrl+Z**, while drawing.
+- **Right-click**, or the **side button on your pen**, while drawing.
+- The small blue **↶ button** that appears beside your last mark. Like the toolbar, OBS doesn't record it. On a
+  Windows too old to hide it, it never appears.
+- Turn the pen over: its **eraser end** removes any mark it touches, whatever tool is chosen.
+
+## Slides
+
+In a PowerPoint slide show, each slide keeps its own marks. The next slide starts clean, and going back to a slide
+shows its marks again. Animations on a slide (clicks that don't change the slide) keep the marks. When the slide show
+ends, the marks drawn on its slides go away with it. Switch this off under ⚙ Settings to keep marks until you clear them.
+
+This needs the desktop PowerPoint app (Microsoft 365, 2016, 2019, 2021). In other apps (PowerPoint on the web, a PDF
+viewer, a DICOM viewer) marks stay until you clear them.
 
 ## OBS Settings
 

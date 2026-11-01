@@ -23,6 +23,10 @@ public partial class ToolbarWindow : Window
     /// <summary>True when Windows hides the toolbar from screen recordings (Windows 10 2004 or newer).</summary>
     public bool HiddenFromCapture { get; private set; }
 
+    /// <summary>A setting was ticked or unticked: (which, on). Names are the Settings property names.</summary>
+    public event Action<string, bool>? OptionChanged;
+    bool refreshing;
+
     public event Action? DrawClicked, UndoClicked, ClearClicked, FadeClicked, ScreenClicked, FoldClicked, CloseClicked, Moved;
     public event Action<Tool>? ToolClicked;
     public event Action<int>? ColorClicked, WidthClicked;
@@ -63,6 +67,16 @@ public partial class ToolbarWindow : Window
         ScreenBtn.Click += (_, _) => ScreenClicked?.Invoke();
         FoldBtn.Click += (_, _) => FoldClicked?.Invoke();
         CloseBtn.Click += (_, _) => CloseClicked?.Invoke();
+        SettingsBtn.Click += (_, _) =>
+        {
+            SettingsPanel.Visibility = SettingsPanel.IsVisible ? Visibility.Collapsed : Visibility.Visible;
+            Mark(SettingsBtn, SettingsPanel.Visibility == Visibility.Visible);
+        };
+        foreach (var (box, name) in Options())
+        {
+            box.Checked += (_, _) => { if (!refreshing) OptionChanged?.Invoke(name, true); };
+            box.Unchecked += (_, _) => { if (!refreshing) OptionChanged?.Invoke(name, false); };
+        }
         // DragMove returns when the mouse is let go: save the place once, not on every pixel
         Grip.MouseLeftButtonDown += (_, e) => { if (e.ButtonState == MouseButtonState.Pressed) { DragMove(); Moved?.Invoke(); } };
 
@@ -131,6 +145,12 @@ public partial class ToolbarWindow : Window
         if (hwnd != IntPtr.Zero) Native.SetWindowPos(hwnd, Native.HWND_TOPMOST, 0, 0, 0, 0, Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
     }
 
+    (CheckBox box, string name)[] Options() => new[]
+    {
+        (OptZ, nameof(Settings.UndoWithZ)), (OptRightClick, nameof(Settings.UndoWithRightClick)), (OptButton, nameof(Settings.UndoButtonByPen)),
+        (OptEraserEnd, nameof(Settings.PenEraserEnd)), (OptSlides, nameof(Settings.MarksPerSlide)),
+    };
+
     static void Mark(Button b, bool on)
     {
         b.Background = on ? On : Brushes.Transparent;
@@ -153,6 +173,14 @@ public partial class ToolbarWindow : Window
         ScreenBtn.Visibility = screens > 1 ? Visibility.Visible : Visibility.Collapsed;
         ScreenText.Text = (s.Screen + 1).ToString();
         Full.Visibility = folded ? Visibility.Collapsed : Visibility.Visible;
+        if (folded) { SettingsPanel.Visibility = Visibility.Collapsed; Mark(SettingsBtn, false); }
+        refreshing = true;
+        try
+        {
+            OptZ.IsChecked = s.UndoWithZ; OptRightClick.IsChecked = s.UndoWithRightClick; OptButton.IsChecked = s.UndoButtonByPen;
+            OptEraserEnd.IsChecked = s.PenEraserEnd; OptSlides.IsChecked = s.MarksPerSlide;
+        }
+        finally { refreshing = false; }
         FoldBtn.Content = folded ? "›" : "‹";
     }
 }

@@ -96,6 +96,13 @@ static class Program
             {
                 double dark = ToolbarDarkShare(Shot("control-toolbar"), toolbar);
                 Check(dark > 0.3, "CONTROL: with hiding switched off, a screen capture DOES show the toolbar", $"{dark:P0} of the toolbar's area is toolbar colour");
+                Key(VK.F9); Thread.Sleep(300);
+                Drag(new Point((int)(screen.Width * 0.12), Row(0)), new Point((int)(screen.Width * 0.58), Row(0)));
+                Thread.Sleep(500);
+                var ub = Native.WindowBox(UndoTitle);
+                double blue = Share(Shot("control-undo-button"), ub, UndoBlue);
+                Check(Native.IsVisible(UndoTitle) && blue > 0.3, "CONTROL: with hiding switched off, a screen capture DOES show the undo button", $"{blue:P0} of its area is its blue, at {ub}");
+                Key('C'); Key(VK.F9);
                 return failures;
             }
             Normal(st, toolbar);
@@ -273,12 +280,115 @@ static class Program
         c0 = slide.Clicks; Click(clickSpot); Thread.Sleep(300);
         Check(slide.Clicks == c0 + 1, "letting go of Ctrl: clicks reach the slides again", $"clicks {c0} -> {slide.Clicks}");
 
+        SlidesAndUndo();
         ToolbarAndPromises();
 
         // still hidden at the end, after all of that
         dark = ToolbarDarkShare(Shot("13-end"), toolbar);
         Check(dark < 0.05, "at the end, a screen capture still does NOT show the toolbar", $"{dark:P1} toolbar colour");
         Log($"{(failures == 0 ? "ALL PASSED" : failures + " FAILED")}");
+    }
+
+    // ---------------------------------------------------------------- undo, every way, and marks for each slide
+    const string UndoTitle = "Contrast Ink undo button";
+    static readonly Color UndoBlue = ColorTranslator.FromHtml("#2563EB");
+
+    static bool Press(string name)
+    {
+        var p = FindToolbarButton(name);
+        if (p == null) { Check(false, $"toolbar control \"{name}...\" is there", "not found"); return false; }
+        Click(p.Value); Thread.Sleep(300); return true;
+    }
+
+    static void SlidesAndUndo()
+    {
+        int W = screen.Width;
+        int x1 = (int)(W * 0.12), x2 = (int)(W * 0.58), xm = (int)(W * 0.35);
+        var red = ColorTranslator.FromHtml(Settings.Colors[0]);
+        bool Red(Bitmap b, int row) => Diff(Closest(b, xm, Row(row), red, 8), red) <= 40;
+        string At(Bitmap b, int row) => Hex(Closest(b, xm, Row(row), red, 8));
+        void Line(int row) { Drag(new Point(x1, Row(row)), new Point(x2, Row(row))); Thread.Sleep(400); }
+        var blank = new Point(xm, Row(6));   // a right-click spot with nothing on it
+
+        Key(VK.F9); Thread.Sleep(300); Key('C'); Key('P'); Key('1'); Thread.Sleep(200);
+
+        // Z alone
+        Line(0);
+        var shot = Shot("30-before-z");
+        bool drawn = Red(shot, 0);
+        Key('Z'); Thread.Sleep(400);
+        shot = Shot("31-after-z");
+        Check(drawn && !Red(shot, 0), "Z alone undoes the last mark", $"before {(drawn ? "drawn" : "NOT drawn")}, after {At(shot, 0)}");
+
+        // right-click
+        Line(1);
+        int c0 = slide.Clicks;
+        RightClick(blank); Thread.Sleep(400);
+        shot = Shot("32-right-click");
+        Check(!Red(shot, 1), "a right-click undoes the last mark", At(shot, 1));
+        Check(slide.Clicks == c0, "that right-click did not reach the slide", $"clicks {c0} -> {slide.Clicks}");
+
+        // the undo button beside the mark
+        Line(2);
+        var box = Native.WindowBox(UndoTitle);
+        bool shown = Native.IsVisible(UndoTitle);
+        Check(shown && box.Left >= x2 - 5 && box.Left <= x2 + 80 && box.Top >= Row(2) - 10 && box.Top <= Row(2) + 80,
+              "the undo button appears beside the end of the mark", $"visible {shown}, at {box}, mark ends at ({x2},{Row(2)})");
+        shot = Shot("33-undo-button");
+        double blue = Share(shot, box, UndoBlue);
+        Check(blue < 0.05, "a screen capture does NOT show the undo button", $"{blue:P1} of its area is its blue (the control run must show it)");
+        if (shown)
+        {
+            Click(new Point(box.Left + box.Width / 2, box.Top + box.Height / 2)); Thread.Sleep(400);
+            shot = Shot("34-undo-button-clicked");
+            Check(!Red(shot, 2), "clicking the undo button removes the mark", At(shot, 2));
+            Check(!Native.IsVisible(UndoTitle), "with nothing left to undo, the button goes", "visible " + Native.IsVisible(UndoTitle));
+            Check(Native.GetForegroundWindow() == slide.Hwnd, "clicking it did not take the keyboard from the slides", "foreground is the slide window: " + (Native.GetForegroundWindow() == slide.Hwnd));
+        }
+
+        // each setting switched off really is off (⚙ on the toolbar)
+        if (Press("Settings"))
+        {
+            Press("Z Key"); Press("Right-Click"); Press("Undo Button Beside");
+            Line(3);
+            int k0 = slide.Keys.Count;
+            Key('Z'); Thread.Sleep(300);
+            RightClick(blank); Thread.Sleep(400);
+            shot = Shot("35-undo-switched-off");
+            Check(Red(shot, 3), "settings: with Z and right-click switched off, neither undoes", At(shot, 3));
+            Check(slide.Keys.Skip(k0).Contains(Keys.Z), "settings: Z switched off reaches the slides instead", "keys seen: " + string.Join(",", slide.Keys.Skip(k0)));
+            Check(!Native.IsVisible(UndoTitle), "settings: the undo button switched off does not appear", "visible " + Native.IsVisible(UndoTitle));
+            Press("Z Key"); Press("Right-Click"); Press("Undo Button Beside");
+            Press("Settings");
+            Key('C'); Thread.Sleep(300);
+        }
+
+        // each slide keeps its own marks, with a stand-in PowerPoint showing a slide show
+        var ppt = new FakePowerPoint();
+        uint cookie = FakePowerPoint.Register(ppt);
+        Check(cookie != 0, "a stand-in PowerPoint is running", "cookie " + cookie);
+        try
+        {
+            Thread.Sleep(900);
+            Line(0);                                                   // on slide 1
+            ppt.SlideShowWindows.Show.View.CurrentShowPosition = 2; Thread.Sleep(900);
+            shot = Shot("40-slide-2");
+            Check(!Red(shot, 0), "next slide: it starts clean", "slide 1's mark: " + At(shot, 0));
+            Line(1);                                                   // on slide 2
+            ppt.SlideShowWindows.Show.View.CurrentShowPosition = 1; Thread.Sleep(900);
+            shot = Shot("41-back-to-slide-1");
+            Check(Red(shot, 0) && !Red(shot, 1), "back to slide 1: its mark comes back, slide 2's is gone", $"slide 1's {At(shot, 0)}, slide 2's {At(shot, 1)}");
+            Key('Z'); Thread.Sleep(400);
+            ppt.SlideShowWindows.Show.View.CurrentShowPosition = 2; Thread.Sleep(900);
+            shot = Shot("42-undo-is-per-slide");
+            Check(Red(shot, 1) && !Red(shot, 0), "undo on slide 1 removed slide 1's mark, not slide 2's", $"slide 2's {At(shot, 1)}, slide 1's {At(shot, 0)}");
+            ppt.SlideShowWindows.Count = 0; Thread.Sleep(900);          // the slide show ends
+            shot = Shot("43-show-ended");
+            Check(!Red(shot, 1), "slide show ended: the slides' marks go with it", At(shot, 1));
+        }
+        finally { FakePowerPoint.Revoke(cookie); }
+        Thread.Sleep(900);
+        Key('C'); Key(VK.F9); Thread.Sleep(300);
     }
 
     // ---------------------------------------------------------------- the toolbar's own buttons, and the README's promises
@@ -289,12 +399,6 @@ static class Program
         int x1 = (int)(W * 0.12), x2 = (int)(W * 0.58), xm = (int)(W * 0.35);
         var red = ColorTranslator.FromHtml(Settings.Colors[0]);
         var green = ColorTranslator.FromHtml(Settings.Colors[2]);
-        bool Press(string name)
-        {
-            var p = FindToolbarButton(name);
-            if (p == null) { Check(false, $"toolbar button \"{name}...\" is there", "not found"); return false; }
-            Click(p.Value); Thread.Sleep(250); return true;
-        }
         if (!Press("Draw on / off")) return;               // drawing on, from the toolbar
         Press("Clear all marks");
 
@@ -421,13 +525,15 @@ static class Program
     }
 
     /// <summary>Share of the toolbar's rectangle that has the toolbar's own dark ink colour in a screen capture.</summary>
-    static double ToolbarDarkShare(Bitmap b, Rectangle t)
+    static double ToolbarDarkShare(Bitmap b, Rectangle t) => Share(b, t, ColorTranslator.FromHtml("#141A22"));
+
+    /// <summary>Share of a rectangle of a capture that is this colour.</summary>
+    static double Share(Bitmap b, Rectangle t, Color want)
     {
-        var ink = ColorTranslator.FromHtml("#141A22");
         int n = 0, all = 0;
         for (int y = Math.Max(0, t.Top); y < Math.Min(b.Height, t.Bottom); y++)
             for (int x = Math.Max(0, t.Left); x < Math.Min(b.Width, t.Right); x++)
-            { all++; if (Diff(b.GetPixel(x, y), ink) <= 12) n++; }
+            { all++; if (Diff(b.GetPixel(x, y), want) <= 12) n++; }
         return all == 0 ? 0 : (double)n / all;
     }
 
@@ -456,6 +562,7 @@ static class Program
     }
 
     // ---------------------------------------------------------------- input
+    static void RightClick(Point p) { Native.MoveTo(p, screen); Thread.Sleep(40); Native.Mouse(Native.RIGHTDOWN); Thread.Sleep(40); Native.Mouse(Native.RIGHTUP); }
     static void Click(Point p) { Native.MoveTo(p, screen); Thread.Sleep(40); Native.Mouse(Native.LEFTDOWN); Thread.Sleep(40); Native.Mouse(Native.LEFTUP); }
     static void Drag(Point a, Point b)
     {
@@ -501,7 +608,9 @@ sealed class Slide : Form
 
 static class Native
 {
-    public const uint LEFTDOWN = 0x0002, LEFTUP = 0x0004;
+    public const uint LEFTDOWN = 0x0002, LEFTUP = 0x0004, RIGHTDOWN = 0x0008, RIGHTUP = 0x0010;
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
+    public static bool IsVisible(string title) => ProcessWindows(title).Any(IsWindowVisible);
     const uint MOVE = 0x0001, ABSOLUTE = 0x8000, KEYUP = 0x0002;
 
     [StructLayout(LayoutKind.Sequential)] struct INPUT { public uint type; public U u; }
@@ -541,3 +650,35 @@ static class Native
         return found;
     }
 }
+
+// ---------------------------------------------------------------- a stand-in PowerPoint
+// Registered where Windows lists running programs' automation objects, under PowerPoint's class id, so Contrast Ink
+// finds it exactly as it would find PowerPoint: SlideShowWindows.Count, .Item(1).View.CurrentShowPosition, .Presentation.FullName.
+[ComVisible(true), ClassInterface(ClassInterfaceType.AutoDispatch)]
+public class FakePowerPoint
+{
+    public FakeShows SlideShowWindows { get; } = new();
+
+    static readonly Guid PowerPointClsid = new("91493441-5A91-11CF-8700-00AA0060263B");
+    [DllImport("oleaut32.dll")] static extern int RegisterActiveObject([MarshalAs(UnmanagedType.IUnknown)] object punk, ref Guid clsid, uint flags, out uint cookie);
+    [DllImport("oleaut32.dll")] static extern int RevokeActiveObject(uint cookie, IntPtr reserved);
+    public static uint Register(FakePowerPoint p) { var id = PowerPointClsid; return RegisterActiveObject(p, ref id, 0 /* ACTIVEOBJECT_STRONG */, out var c) == 0 ? c : 0; }
+    public static void Revoke(uint cookie) { if (cookie != 0) RevokeActiveObject(cookie, IntPtr.Zero); }
+}
+[ComVisible(true), ClassInterface(ClassInterfaceType.AutoDispatch)]
+public class FakeShows
+{
+    public int Count { get; set; } = 1;
+    public FakeShow Show { get; } = new();
+    public FakeShow Item(int index) => Show;
+}
+[ComVisible(true), ClassInterface(ClassInterfaceType.AutoDispatch)]
+public class FakeShow
+{
+    public FakeView View { get; } = new();
+    public FakePresentation Presentation { get; } = new();
+}
+[ComVisible(true), ClassInterface(ClassInterfaceType.AutoDispatch)]
+public class FakeView { public int CurrentShowPosition { get; set; } = 1; }
+[ComVisible(true), ClassInterface(ClassInterfaceType.AutoDispatch)]
+public class FakePresentation { public string FullName => @"C:\Lectures\Cardiac MR.pptx"; }

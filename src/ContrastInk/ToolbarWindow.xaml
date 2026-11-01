@@ -74,9 +74,28 @@
         <Button x:Name="ScreenBtn" Style="{StaticResource Tb}" Width="46" ToolTip="Move the drawing layer to the other screen">
           <StackPanel Orientation="Horizontal"><TextBlock Text="🖥"/><TextBlock x:Name="ScreenText" Text="1" FontSize="12" VerticalAlignment="Center"/></StackPanel>
         </Button>
+        <Button x:Name="SettingsBtn" Style="{StaticResource Tb}" Content="⚙" ToolTip="Settings: ways to undo, and marks for each slide"/>
       </StackPanel>
       <Button x:Name="FoldBtn" Style="{StaticResource Tb}" Width="26" Content="‹" ToolTip="Make the toolbar small / big"/>
       <Button x:Name="CloseBtn" Style="{StaticResource Tb}" Width="28" Content="✕" FontSize="13" ToolTip="Quit Contrast Ink"/>
+    </StackPanel>
+    <!-- settings open inside the toolbar, so they are hidden from recordings like the rest of it -->
+    <StackPanel x:Name="SettingsPanel" Visibility="Collapsed" Margin="10,6,10,8">
+      <StackPanel.Resources>
+        <Style TargetType="CheckBox">
+          <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+          <Setter Property="Focusable" Value="False"/>
+          <Setter Property="Margin" Value="0,3"/>
+          <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+      </StackPanel.Resources>
+      <TextBlock Text="Undo the Last Mark With" Foreground="#8A95A6" FontSize="12" Margin="0,0,0,2"/>
+      <CheckBox x:Name="OptZ" Content="Z Key (Ctrl+Z Always Works)"/>
+      <CheckBox x:Name="OptRightClick" Content="Right-Click or the Pen's Side Button"/>
+      <CheckBox x:Name="OptButton" Content="Undo Button Beside the Last Mark (Hidden From OBS)"/>
+      <TextBlock Text="Pen and Slides" Foreground="#8A95A6" FontSize="12" Margin="0,8,0,2"/>
+      <CheckBox x:Name="OptEraserEnd" Content="Pen's Eraser End Erases"/>
+      <CheckBox x:Name="OptSlides" Content="Each PowerPoint Slide Keeps Its Own Marks"/>
     </StackPanel>
     <!-- hover help is shown here, inside the toolbar, so OBS never records it (real tooltips are separate windows) -->
     <TextBlock x:Name="Hint" Visibility="Collapsed" Foreground="{StaticResource Ink}" FontSize="12" Margin="8,2,8,4" TextWrapping="Wrap" MaxWidth="640"/>

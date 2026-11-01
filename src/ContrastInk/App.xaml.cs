@@ -24,6 +24,8 @@ public partial class App : Application
     readonly ModeController mode = new();
     OverlayWindow overlay = null!;
     ToolbarWindow toolbar = null!;
+    UndoButtonWindow undoButton = null!;
+    SlideWatcher? slides;
     InputHooks? hooks;
     List<Native.Monitor> monitors = new();
     bool ctrl, shift, alt, win;
@@ -57,8 +59,11 @@ public partial class App : Application
         // (the global handler above swallowed it): now the toolbar says so in red, and the error goes to the log.
         try
         {
+            undoButton = new UndoButtonWindow();
             ApplySettings();
             Wire();
+            slides = new SlideWatcher(Dispatcher);
+            slides.Changed += slide => { if (settings.MarksPerSlide) { overlay.ShowPage(slide); undoButton.Hide(); } };
 
             bool testRun = Environment.GetEnvironmentVariable("CONTRASTINK_TEST") == "1";
             hooks = new InputHooks { Key = OnKey, Pointer = OnPointer, AcceptInjectedKeys = testRun };
@@ -92,13 +97,18 @@ public partial class App : Application
                 try { File.WriteAllText(statusPath, json); } catch (Exception ex) { Log(ex); }
             }
             var top = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
-            top.Tick += (_, _) => { overlay.KeepOnTop(); toolbar.KeepOnTop(); };
+            top.Tick += (_, _) => { overlay.KeepOnTop(); undoButton.KeepOnTop(); toolbar.KeepOnTop(); };
             top.Start();
             var rehook = new DispatcherTimer { Interval = TimeSpan.FromMinutes(2) };
             rehook.Tick += (_, _) => hooks?.Reinstall();
             rehook.Start();
             var penClock = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
-            penClock.Tick += (_, _) => { mode.Tick(DateTime.UtcNow); ReconcileModifiers(); };
+            penClock.Tick += (_, _) =>
+            {
+                mode.Tick(DateTime.UtcNow);
+                ReconcileModifiers();
+                if (undoButton.IsVisible && !overlay.CanUndo) undoButton.Hide();   // its mark faded away
+            };
             penClock.Start();
         }
         catch (Exception ex)
@@ -118,14 +128,30 @@ public partial class App : Application
 
     void Wire()
     {
-        mode.Changed += on => { overlay.SetDrawing(on); Refresh(); };
+        mode.Changed += on => { overlay.SetDrawing(on); if (!on) undoButton.Hide(); Refresh(); };
         toolbar.DrawClicked += () => mode.Toggle();
         toolbar.ToolClicked += t => { settings.Tool = t; ApplySettings(); if (!mode.Drawing) mode.SetManual(true); };
         toolbar.ColorClicked += c => { settings.Color = c; if (settings.Tool == Tool.Eraser) settings.Tool = Tool.Pen; ApplySettings(); };
         toolbar.WidthClicked += w => { settings.Width = w; ApplySettings(); };
         toolbar.FadeClicked += () => { settings.FadingInk = !settings.FadingInk; ApplySettings(); };
-        toolbar.UndoClicked += () => overlay.Undo();
+        toolbar.UndoClicked += Undo;
         toolbar.ClearClicked += () => overlay.ClearAll();
+        toolbar.OptionChanged += (name, on) =>
+        {
+            typeof(Settings).GetProperty(name)!.SetValue(settings, on);
+            if (name == nameof(Settings.UndoButtonByPen) && !on) undoButton.Hide();
+            if (name == nameof(Settings.MarksPerSlide) && on && slides != null) overlay.ShowPage(slides.Current);
+            ApplySettings();
+        };
+        undoButton.Clicked += Undo;
+        overlay.UndoGesture += () => { if (settings.UndoWithRightClick) Undo(); };
+        overlay.MarkStarting += () => undoButton.Hide();   // never under the pen while drawing
+        overlay.MarkDone += p =>
+        {
+            if (!settings.UndoButtonByPen || !mode.Drawing || monitors.Count == 0) return;
+            undoButton.ShowAt(p.X + 12, p.Y + 12, monitors[settings.Screen].Bounds);
+            toolbar.KeepOnTop();
+        };
         toolbar.ScreenClicked += NextScreen;
         toolbar.FoldClicked += () => { settings.ToolbarCollapsed = !settings.ToolbarCollapsed; ApplySettings(); };
         toolbar.CloseClicked += () => Shutdown();
@@ -137,8 +163,15 @@ public partial class App : Application
         overlay.SetColor((Color)ColorConverter.ConvertFromString(Settings.Colors[settings.Color]));
         overlay.SetWidth(Settings.Widths[settings.Width]);
         overlay.FadingInk = settings.FadingInk;
+        overlay.SetPenEraserEnd(settings.PenEraserEnd);
         settings.Save(SettingsPath);
         Refresh();
+    }
+
+    void Undo()
+    {
+        overlay.Undo();
+        if (!overlay.CanUndo) undoButton.Hide();
     }
 
     void Refresh() => toolbar.Refresh(mode.Drawing, settings, monitors.Count, settings.ToolbarCollapsed);
@@ -227,14 +260,14 @@ public partial class App : Application
     bool KeyDown(int vk)
     {
         // which keys are ours is decided in one tested place (KeyPolicy); this only carries it out
-        var (action, color) = KeyPolicy.Decide(vk, mode.Drawing, ctrl, alt || win);
+        var (action, color) = KeyPolicy.Decide(vk, mode.Drawing, ctrl, alt || win, settings.UndoWithZ);
         if (ctrl && !alt && !win) mode.KeyWithCtrl(vk == KeyPolicy.VK_Z);   // Ctrl+C etc.: holding Ctrl was a shortcut, not drawing
         Action? act = action switch
         {
             KeyAction.Pass => null,
             KeyAction.ToggleDrawing => mode.Toggle,
             KeyAction.StopDrawing => mode.Escape,
-            KeyAction.Undo => () => Later(overlay.Undo),
+            KeyAction.Undo => () => Later(Undo),
             KeyAction.Pen => () => Later(() => SetTool(Tool.Pen)),
             KeyAction.Highlighter => () => Later(() => SetTool(Tool.Highlighter)),
             KeyAction.Arrow => () => Later(() => SetTool(Tool.Arrow)),

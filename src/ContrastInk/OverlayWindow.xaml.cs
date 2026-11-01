@@ -23,8 +23,24 @@ public partial class OverlayWindow : Window
     Color color = Colors.Red;
     double width = 5;
 
-    // undo history: what was added or removed, newest last
-    readonly List<(bool added, StrokeCollection strokes)> history = new();
+    // undo history: what was added or removed, newest last (each slide has its own)
+    List<(bool added, StrokeCollection strokes)> history = new();
+
+    // each PowerPoint slide's marks and undo history, by "file#position"; "" is everything outside a slide show
+    sealed record Page(StrokeCollection Strokes, List<(bool added, StrokeCollection strokes)> History);
+    readonly Dictionary<string, Page> pages = new();
+    string pageKey = "";
+
+    /// <summary>A mark was finished: where its bottom-right corner is, in screen pixels (for the undo button beside it).</summary>
+    public event Action<System.Drawing.Point>? MarkDone;
+    /// <summary>The pen or mouse went down on the layer: a new mark is starting.</summary>
+    public event Action? MarkStarting;
+    /// <summary>A right-click or the pen's side button while drawing: the app decides (it may be switched off).</summary>
+    public event Action? UndoGesture;
+    DateTime lastGesture;
+
+    /// <summary>The pen's eraser end removes marks (WPF: the "inverted" stylus).</summary>
+    public bool PenEraserEnd { get; set; } = true;
     bool quiet;   // changes made by undo or fading are not history
 
     // fading ink
@@ -46,7 +62,17 @@ public partial class OverlayWindow : Window
             if (e.Added.Count > 0) Remember(true, e.Added);
             if (e.Removed.Count > 0) Remember(false, e.Removed);
         };
-        Ink.StrokeCollected += (_, e) => StartFading(e.Stroke);
+        Ink.StrokeCollected += (_, e) => { StartFading(e.Stroke); Done(e.Stroke); };
+        Ink.PreviewMouseLeftButtonDown += (_, _) => { if (drawing) MarkStarting?.Invoke(); };
+        Ink.PreviewStylusDown += (_, _) => { if (drawing) MarkStarting?.Invoke(); };
+        // right-click, and the pen's side button (Windows turns side button + touch into a right-click as well:
+        // one press must be one undo, so a second within 0.4 s is the same press)
+        Ink.PreviewMouseRightButtonDown += (_, e) => { if (drawing) { Gesture(); e.Handled = true; } };
+        Ink.PreviewMouseRightButtonUp += (_, e) => { if (drawing) e.Handled = true; };
+        Ink.PreviewStylusButtonDown += (_, e) =>
+        {
+            if (drawing && e.StylusButton.Guid == StylusPointProperties.BarrelButton.Id) { Gesture(); e.Handled = true; }
+        };
         Ink.PreviewMouseLeftButtonDown += ShapeDown;
         Ink.PreviewMouseMove += ShapeMove;
         Ink.PreviewMouseLeftButtonUp += ShapeUp;
@@ -92,6 +118,47 @@ public partial class OverlayWindow : Window
     }
 
     public void SetTool(Tool t) { tool = t; ApplyTool(); }
+    public void SetPenEraserEnd(bool on) { PenEraserEnd = on; ApplyTool(); }
+
+    void Gesture()
+    {
+        var now = DateTime.UtcNow;
+        if (now - lastGesture < TimeSpan.FromMilliseconds(400)) return;
+        lastGesture = now;
+        UndoGesture?.Invoke();
+    }
+
+    void Done(Stroke s)
+    {
+        if (MarkDone == null || hwnd == IntPtr.Zero) return;
+        var b = s.GetBounds();
+        var p = Ink.PointToScreen(new Point(b.Right, b.Bottom));   // real screen pixels, whatever the display scale
+        MarkDone(new System.Drawing.Point((int)p.X, (int)p.Y));
+    }
+
+    /// <summary>
+    /// Shows one slide's marks, keeping the ones on screen for when their slide comes back. A slide never seen starts clean.
+    /// Fading marks are not kept: they were going anyway.
+    /// </summary>
+    public void ShowPage(string key)
+    {
+        if (key == pageKey) return;
+        FinishShape();
+        pages[pageKey] = new Page(new StrokeCollection(Ink.Strokes.Where(s => !fading.ContainsKey(s))), history);
+        var next = pages.TryGetValue(key, out var p) ? p : new Page(new StrokeCollection(), new());
+        quiet = true;
+        try
+        {
+            Ink.Strokes.Clear();
+            Ink.Strokes.Add(next.Strokes);
+        }
+        finally { quiet = false; }
+        history = next.History;
+        pageKey = key;
+    }
+
+    /// <summary>Whether Undo would change anything on this slide.</summary>
+    public bool CanUndo => history.Any(h => !h.added || h.strokes.Any(Ink.Strokes.Contains));
     public void SetColor(Color c) { color = c; ApplyTool(); }
     public void SetWidth(double w) { width = w; ApplyTool(); }
 
@@ -105,6 +172,8 @@ public partial class OverlayWindow : Window
             _ => InkCanvasEditingMode.None,   // arrow and oval are drawn by ShapeDown/Move/Up
         };
         Ink.DefaultDrawingAttributes = Attributes();
+        // the eraser end of a pen erases whatever tool is chosen (or, switched off, does what the tip does)
+        Ink.EditingModeInverted = PenEraserEnd ? InkCanvasEditingMode.EraseByStroke : Ink.EditingMode;
         Ink.Cursor = tool == Tool.Eraser ? null : Cursors.Pen;
         Ink.UseCustomCursor = tool != Tool.Eraser;
     }
@@ -150,6 +219,7 @@ public partial class OverlayWindow : Window
         if (b.Width < 4 && b.Height < 4) { quiet = true; Ink.Strokes.Remove(done); quiet = false; return; }
         Remember(true, new StrokeCollection { done });
         StartFading(done);
+        Done(done);
     }
 
     // ---------- undo and clear ----------

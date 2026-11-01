@@ -14,8 +14,9 @@ public static class KeyPolicy
     /// <param name="vk">Windows virtual-key code of a key being pressed (not released).</param>
     /// <param name="drawing">Whether the drawing layer is on right now.</param>
     /// <param name="ctrl">Ctrl held. <param name="altOrWin">Alt or the Windows key held.</param></param>
+    /// <param name="zUndoes">The "Z key undoes" setting: Z alone undoes while drawing.</param>
     /// <returns>What to do, and for <see cref="KeyAction.Color"/> which colour (0-based).</returns>
-    public static (KeyAction action, int color) Decide(int vk, bool drawing, bool ctrl, bool altOrWin)
+    public static (KeyAction action, int color) Decide(int vk, bool drawing, bool ctrl, bool altOrWin, bool zUndoes = false)
     {
         if (altOrWin) return (KeyAction.Pass, 0);                   // Alt+Tab, Win+D... are Windows'
         if (vk == VK_F9) return (KeyAction.ToggleDrawing, 0);
@@ -30,6 +31,7 @@ public static class KeyPolicy
             case 0x4F: return (KeyAction.Oval, 0);          // O
             case 0x45: return (KeyAction.Eraser, 0);        // E
             case 0x43: return (KeyAction.Clear, 0);         // C
+            case VK_Z when zUndoes: return (KeyAction.Undo, 0);   // Z alone, one finger
             case 0x46: return (KeyAction.Fade, 0);          // F
             case 0xDB: return (KeyAction.Thinner, 0);       // [
             case 0xDD: return (KeyAction.Thicker, 0);       // ]

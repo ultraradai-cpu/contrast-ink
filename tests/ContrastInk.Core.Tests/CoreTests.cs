@@ -247,6 +247,26 @@ public class SettingsTests
     }
 
     [Fact]
+    public void UndoAndSlideOptionsAreOnForASettingsFileFromBeforeThem()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "contrastink-" + Guid.NewGuid() + "/settings.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, "{ \"Color\": 2, \"Width\": 1 }");   // an older version's file
+        var s = Settings.Load(path, 1);
+        Assert.True(s.UndoWithZ && s.UndoWithRightClick && s.PenEraserEnd && s.UndoButtonByPen && s.MarksPerSlide);
+        Assert.Equal(2, s.Color);
+    }
+
+    [Fact]
+    public void UndoOptionsSwitchedOffStayOff()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "contrastink-" + Guid.NewGuid() + "/settings.json");
+        new Settings { UndoWithZ = false, UndoWithRightClick = false, PenEraserEnd = false, UndoButtonByPen = false, MarksPerSlide = false }.Save(path);
+        var s = Settings.Load(path, 1);
+        Assert.False(s.UndoWithZ || s.UndoWithRightClick || s.PenEraserEnd || s.UndoButtonByPen || s.MarksPerSlide);
+    }
+
+    [Fact]
     public void ScreenFallsBackWhenAMonitorIsUnplugged() => Assert.Equal(0, new Settings { Screen = 1 }.Clean(screens: 1).Screen);
 }
 
@@ -346,6 +366,15 @@ public class KeyPolicyTests
         Assert.Equal(KeyAction.Pass, A(Z, drawing: false, ctrl: true));   // PowerPoint's own undo
         Assert.Equal(KeyAction.Pass, A(0x43, drawing: true, ctrl: true)); // Ctrl+C copies, never clears
         Assert.Equal(KeyAction.Pass, A(P, drawing: true, ctrl: true));    // Ctrl+P prints, never picks the pen
+    }
+
+    [Fact]
+    public void ZAloneUndoesOnlyWhenTheSettingIsOnAndWhileDrawing()
+    {
+        Assert.Equal(KeyAction.Undo, KeyPolicy.Decide(Z, true, false, false, zUndoes: true).action);
+        Assert.Equal(KeyAction.Pass, KeyPolicy.Decide(Z, true, false, false, zUndoes: false).action);   // setting off: PowerPoint's
+        Assert.Equal(KeyAction.Pass, KeyPolicy.Decide(Z, false, false, false, zUndoes: true).action);   // not drawing: PowerPoint's
+        Assert.Equal(KeyAction.Pass, KeyPolicy.Decide(Z, true, false, true, zUndoes: true).action);     // Alt+Z / Win+Z: Windows'
     }
 
     [Fact]

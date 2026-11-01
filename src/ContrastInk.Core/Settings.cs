@@ -27,6 +27,18 @@ public sealed class Settings
     public double? ToolbarY { get; set; }
     public bool ToolbarCollapsed { get; set; }
 
+    // ways to undo (⚙ on the toolbar); a settings file from before these existed reads them as on
+    /// <summary>While drawing, Z alone undoes the last mark (Ctrl+Z always does).</summary>
+    public bool UndoWithZ { get; set; } = true;
+    /// <summary>While drawing, a right-click, or the pen's side button, undoes the last mark.</summary>
+    public bool UndoWithRightClick { get; set; } = true;
+    /// <summary>Touching a mark with the pen's eraser end removes it, whatever tool is chosen.</summary>
+    public bool PenEraserEnd { get; set; } = true;
+    /// <summary>A small undo button appears beside the last mark (hidden from recordings like the toolbar).</summary>
+    public bool UndoButtonByPen { get; set; } = true;
+    /// <summary>In a PowerPoint slide show, each slide keeps its own marks: the next slide starts clean, going back shows them again.</summary>
+    public bool MarksPerSlide { get; set; } = true;
+
     /// <summary>Keeps every value in range, so a hand-edited or old file can't break the app.</summary>
     public Settings Clean(int screens)
     {
