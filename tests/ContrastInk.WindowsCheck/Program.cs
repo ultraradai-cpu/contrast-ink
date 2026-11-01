@@ -439,6 +439,9 @@ static class Program
 
             // OBS running, with a password that doesn't match what Contrast Ink read
             File.WriteAllText(FakeObs.ConfigPath, File.ReadAllText(FakeObs.ConfigPath).Replace(FakeObs.Password, "not-the-password"));
+            // a connection attempt begun before (with the right password read) keeps retrying for ~2 s on Windows:
+            // let it give up first, or it reaches the stand-in and this check measures the wrong attempt
+            Thread.Sleep(3000);
             obs = new FakeObs { OutputPath = Path.Combine(outDir, "lecture-check.mkv") };
             Press("Record with OBS");
             WaitFor(() => OnToolbar("OBS refused the password"), 6000);
