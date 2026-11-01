@@ -474,9 +474,13 @@ static class Program
             Shot("50-paused");
             Check(obs.Paused && OnToolbar("Resume recording"), "⏸ pauses OBS, and the button becomes ▶",
                   $"paused {obs.Paused}, clicked at {pausePoint}, the record button at {FindToolbarButton("Stop recording")}, OBS was asked: {string.Join(",", obs.Requests.Where(r => r != "GetRecordStatus").TakeLast(4))}");
+            ppt.SlideShowWindows.Show.View.CurrentShowPosition = 4; Thread.Sleep(1300);   // moved on while paused
+            Check(!obs.ChapterNames.Contains("Slide 4"), "no chapter while paused", string.Join(", ", obs.ChapterNames));
             Press("Resume recording");
             WaitFor(() => !obs.Paused, 2000);
             Check(!obs.Paused && obs.Recording, "▶ resumes", $"paused {obs.Paused}, recording {obs.Recording}");
+            WaitFor(() => obs.ChapterNames.Contains("Slide 4"), 2000);
+            Check(obs.ChapterNames.Contains("Slide 4"), "after ▶, the slide moved to while paused gets its chapter", string.Join(", ", obs.ChapterNames));
 
             Press("Stop recording");
             WaitFor(() => !obs.Recording, 3000);
@@ -484,8 +488,23 @@ static class Program
             Check(!obs.Recording && OnToolbar("Record with OBS"), "⏹ stops OBS recording, and the toolbar is ready again", $"recording {obs.Recording}");
             var chaptersFile = Path.Combine(outDir, "lecture-check chapters.txt");
             var lines = File.Exists(chaptersFile) ? File.ReadAllLines(chaptersFile) : Array.Empty<string>();
-            Check(lines.Length == 3 && lines[0] == "0:00 Slide 1" && lines[1].EndsWith(" Slide 2") && lines[2].EndsWith(" Slide 3") && lines[1] != "0:00 Slide 2",
+            Check(lines.Length == 4 && lines[0] == "0:00 Slide 1" && lines[1].EndsWith(" Slide 2") && lines[2].EndsWith(" Slide 3") && lines[3].EndsWith(" Slide 4") && lines[1] != "0:00 Slide 2",
                   "a chapters file is saved beside the video, ready for a YouTube description", File.Exists(chaptersFile) ? string.Join(" | ", lines) : "no file");
+
+            // started from OBS itself: the toolbar follows
+            ppt.SlideShowWindows.Show.View.CurrentShowPosition = 1; Thread.Sleep(900);
+            obs.StartByItself().Wait();
+            WaitFor(() => OnToolbar("Stop recording"), 3000);
+            Check(OnToolbar("Stop recording"), "recording started in OBS itself: the toolbar shows ⏹ too", OnToolbar("Stop recording") ? "⏹ shown" : "still ⏺");
+
+            // ✕ while recording: warned first, so OBS isn't left recording unseen
+            Press("Quit Contrast Ink");
+            Thread.Sleep(500);
+            Check(!app.HasExited && OnToolbar("OBS is still recording"), "✕ while recording: the first press warns instead of quitting",
+                  $"app running {!app.HasExited}, warning {(OnToolbar("OBS is still recording") ? "shown" : "not shown")}");
+            Press("OBS is still recording");
+            Press("Stop recording");
+            WaitFor(() => !obs.Recording, 3000);
 
             // OBS stops by itself
             Press("Record with OBS");

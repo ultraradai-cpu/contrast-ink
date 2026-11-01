@@ -144,6 +144,13 @@ sealed class FakeObs : IDisposable
         }
     }
 
+    /// <summary>Recording started from OBS's own button or hotkey.</summary>
+    public async Task StartByItself()
+    {
+        Recording = true; Paused = false; started = DateTime.UtcNow; pausedFor = TimeSpan.Zero;
+        await Event("OBS_WEBSOCKET_OUTPUT_STARTED", null);
+    }
+
     /// <summary>OBS stopping by itself (a full disk, an encoder error): the event, without anyone asking.</summary>
     public async Task StopByItself()
     {

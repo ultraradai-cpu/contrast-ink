@@ -27,6 +27,7 @@ public partial class App : Application
     UndoButtonWindow undoButton = null!;
     SlideWatcher? slides;
     Recorder? recorder;
+    DateTime quitWarned;   // ✕ pressed while recording: a second press within 15 s quits
     InputHooks? hooks;
     List<Native.Monitor> monitors = new();
     bool ctrl, shift, alt, win;
@@ -162,7 +163,17 @@ public partial class App : Application
         };
         toolbar.ScreenClicked += NextScreen;
         toolbar.FoldClicked += () => { settings.ToolbarCollapsed = !settings.ToolbarCollapsed; ApplySettings(); };
-        toolbar.CloseClicked += () => Shutdown();
+        toolbar.CloseClicked += () =>
+        {
+            // quitting mid-recording leaves OBS recording with no ⏹ in reach: say so once, quit on the second press
+            if (recorder is { Active: true } && DateTime.UtcNow - quitWarned > TimeSpan.FromSeconds(15))
+            {
+                quitWarned = DateTime.UtcNow;
+                toolbar.Notice("OBS is still recording. Press ⏹ first, or press ✕ again to quit Contrast Ink (OBS keeps recording).");
+                return;
+            }
+            Shutdown();
+        };
     }
 
     void ApplySettings()

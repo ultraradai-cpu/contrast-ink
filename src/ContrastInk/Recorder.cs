@@ -27,6 +27,13 @@ sealed class Recorder
     bool stopAsked;   // a stop we asked for (anything else is OBS stopping by itself)
     TimeSpan elapsed;
     int ticks;
+    bool ticking;           // one status check at a time, even if OBS is slow to answer
+    bool diskWarned;        // the low-disk message once per recording: dismissed, it should stay dismissed
+    bool connectNotice;     // the message on show is about reaching OBS: cleared once OBS is reached
+    string lastChapterSlide = "";
+
+    /// <summary>OBS is recording (or paused) as far as Contrast Ink knows.</summary>
+    public bool Active => state is State.Recording or State.Paused or State.Stopping;
     readonly List<(TimeSpan at, string name)> chapters = new();
 
     public Recorder(ToolbarWindow toolbar, Func<string> currentSlide, Dispatcher ui)
@@ -53,8 +60,8 @@ sealed class Recorder
             if (state != State.Idle) return;
             state = State.Starting; Show();
             var problem = await obs.Connect();
-            if (problem != null) { state = State.Idle; toolbar.Notice(problem); Show(); return; }
-            toolbar.Notice(null);
+            if (problem != null) { state = State.Idle; toolbar.Notice(problem); connectNotice = true; Show(); return; }
+            toolbar.Notice(null); connectNotice = false;
             var scene = await SceneProblem();
             var status = await obs.Request("GetRecordStatus");
             if (status?["outputActive"]?.GetValue<bool>() == true)
@@ -67,15 +74,24 @@ sealed class Recorder
                 state = State.Idle; toolbar.Notice("OBS didn't start recording. Look at OBS for the reason (often the recording folder or the disk)."); Show(); return;
             }
             else state = State.Recording;
-            stopAsked = false;
-            elapsed = TimeSpan.Zero;
-            chapters.Clear();
-            if (Obs.SlideNumber(currentSlide()) is int n) chapters.Add((TimeSpan.Zero, "Slide " + n));
+            Began();
             if (scene != null) toolbar.Notice(scene);
             Show();
             await CheckDisk();
         }
         catch (Exception e) { App.Log(e); state = State.Idle; Show(); }
+    }
+
+    /// <summary>A recording began (here, or in OBS itself): start its chapter list on the slide showing now.</summary>
+    void Began()
+    {
+        stopAsked = false;
+        diskWarned = false;
+        elapsed = TimeSpan.Zero;
+        chapters.Clear();
+        lastChapterSlide = "";
+        var slide = currentSlide();
+        if (Obs.SlideNumber(slide) is int n) { chapters.Add((TimeSpan.Zero, "Slide " + n)); lastChapterSlide = slide; }
     }
 
     /// <summary>⏸ / ▶ pressed.</summary>
@@ -84,7 +100,12 @@ sealed class Recorder
         try
         {
             if (state == State.Recording && await obs.Request("PauseRecord") != null) state = State.Paused;
-            else if (state == State.Paused && await obs.Request("ResumeRecord") != null) state = State.Recording;
+            else if (state == State.Paused && await obs.Request("ResumeRecord") != null)
+            {
+                state = State.Recording;
+                // slides changed while paused: the video goes on from the slide showing now, so it gets its chapter
+                if (currentSlide() != lastChapterSlide) SlideChanged(currentSlide());
+            }
             Show();
         }
         catch (Exception e) { App.Log(e); }
@@ -111,7 +132,8 @@ sealed class Recorder
     {
         try
         {
-            if (state != State.Recording || Obs.SlideNumber(key) is not int n) return;
+            if (state != State.Recording || Obs.SlideNumber(key) is not int n || key == lastChapterSlide) return;
+            lastChapterSlide = key;
             var status = await obs.Request("GetRecordStatus");
             var at = status?["outputDuration"] is JsonNode ms ? TimeSpan.FromMilliseconds(ms.GetValue<double>()) : elapsed;
             chapters.Add((at, "Slide " + n));
@@ -124,6 +146,10 @@ sealed class Recorder
     {
         switch (s)
         {
+            case "OBS_WEBSOCKET_OUTPUT_STARTED":
+                // started from OBS itself (its button or its hotkey): follow it, so ⏹, the timer and chapters work too
+                if (state == State.Idle) { state = State.Recording; Began(); Show(); }
+                break;
             case "OBS_WEBSOCKET_OUTPUT_STOPPED":
                 if (state == State.Idle) return;
                 if (!stopAsked) toolbar.Notice("OBS stopped recording by itself. What was recorded is saved" + (path != null ? ": " + path : "") + ". Press ⏺ to record again.");
@@ -144,6 +170,8 @@ sealed class Recorder
 
     async Task Tick()
     {
+        if (ticking) return;
+        ticking = true;
         try
         {
             if (state is State.Recording or State.Paused)
@@ -152,18 +180,32 @@ sealed class Recorder
                 if (status?["outputDuration"] is JsonNode ms) elapsed = TimeSpan.FromMilliseconds(ms.GetValue<double>());
                 if (++ticks % 15 == 0) await CheckDisk();
             }
-            else if (!obs.Connected && ++ticks % 5 == 0 && Obs.ReadConfig(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData)) is { Enabled: true })
-                await obs.Connect();   // quietly, so ⏺ shows whether OBS is ready
+            else if (!obs.Connected && ++ticks % 5 == 0 && Obs.ReadConfig(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData)) is { Enabled: true }
+                     && await obs.Connect() == null)   // quietly, so ⏺ shows whether OBS is ready
+            {
+                if (connectNotice) { toolbar.Notice(null); connectNotice = false; }   // "can't reach OBS" is no longer true
+                // OBS may already be recording (started before Contrast Ink, or before the line dropped): follow it
+                var status = await obs.Request("GetRecordStatus");
+                if (state == State.Idle && status?["outputActive"]?.GetValue<bool>() == true)
+                {
+                    state = status["outputPaused"]?.GetValue<bool>() == true ? State.Paused : State.Recording;
+                    Began();
+                }
+            }
             Show();
         }
         catch (Exception e) { App.Log(e); }
+        finally { ticking = false; }
     }
 
     async Task CheckDisk()
     {
         var stats = await obs.Request("GetStats");
-        if (stats?["availableDiskSpace"] is JsonNode mb && mb.GetValue<double>() < Obs.LowDiskMB)   // MB (obs-websocket: bytes / 1024²)
+        if (!diskWarned && stats?["availableDiskSpace"] is JsonNode mb && mb.GetValue<double>() < Obs.LowDiskMB)   // MB (obs-websocket: bytes / 1024²)
+        {
+            diskWarned = true;
             toolbar.Notice($"Only {mb.GetValue<double>() / 1024:0.0} GB left on the recording disk. Free some space, or stop soon.");
+        }
     }
 
     /// <summary>A warning if the scene being recorded has no Display Capture (then the marks aren't in the video).</summary>

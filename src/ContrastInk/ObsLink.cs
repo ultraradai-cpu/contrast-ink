@@ -17,7 +17,8 @@ namespace ContrastInk;
 /// </summary>
 sealed class ObsLink
 {
-    ClientWebSocket? ws;
+    volatile ClientWebSocket? ws;
+    Task<string?>? connecting;   // one attempt at a time: two at once left a second line open, whose later drop read as "OBS lost"
     readonly ConcurrentDictionary<string, TaskCompletionSource<JsonObject>> pending = new();
     readonly SemaphoreSlim sending = new(1, 1);
 
@@ -31,9 +32,15 @@ sealed class ObsLink
     /// <summary>
     /// Connects if not connected. Null on success, otherwise what the presenter should do about it.
     /// </summary>
-    public async Task<string?> Connect()
+    public Task<string?> Connect()
     {
-        if (Connected) return null;
+        if (Connected) return Task.FromResult<string?>(null);
+        if (connecting is { IsCompleted: false } running) return running;
+        return connecting = ConnectOnce();
+    }
+
+    async Task<string?> ConnectOnce()
+    {
         var cfg = Obs.ReadConfig(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData));
         if (cfg == null) return "OBS isn't set up on this computer yet. Install OBS Studio 28 or newer and open it once.";
         if (!cfg.Enabled) return "In OBS, open Tools → WebSocket Server Settings and tick Enable WebSocket Server. Then press ⏺ again.";
@@ -116,9 +123,10 @@ sealed class ObsLink
         }
         catch (Exception e) when (e is WebSocketException or JsonException or InvalidOperationException or ObjectDisposedException) { }
         catch (Exception e) { App.Log(e); }
-        if (ws == socket) ws = null;
+        bool current = ws == socket;
+        if (current) ws = null;
         socket.Dispose();
-        Lost?.Invoke();
+        if (current) Lost?.Invoke();   // an old, replaced line closing is not OBS going away
     }
 
     async Task Send(ClientWebSocket socket, JsonObject message, CancellationToken token)
