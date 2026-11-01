@@ -1,15 +1,15 @@
-<Window x:Class="LectureInk.ToolbarWindow"
+<Window x:Class="ContrastInk.ToolbarWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Lecture Ink"
-        WindowStyle="None" AllowsTransparency="False" Background="#2B1512"
+        Title="Contrast Ink"
+        WindowStyle="None" AllowsTransparency="False" Background="#141A22"
         Topmost="True" ShowInTaskbar="False" ShowActivated="False" ResizeMode="NoResize"
-        SizeToContent="WidthAndHeight" FontFamily="Segoe UI" FontSize="13">
+        SizeToContent="WidthAndHeight" FontFamily="Inter, Segoe UI" FontSize="13" Icon="Assets/ContrastInk.ico">
   <Window.Resources>
-    <!-- Gavan colours: deep maroon bar, gold for what is switched on -->
-    <SolidColorBrush x:Key="Bar" Color="#F22B1512"/>
-    <SolidColorBrush x:Key="Ink" Color="#F6EBDD"/>
-    <SolidColorBrush x:Key="Gold" Color="#D8B76E"/>
+    <!-- Contrast colours (from the Contrast app): dark ink bar, logo blue for what is switched on -->
+    <SolidColorBrush x:Key="Bar" Color="#141A22"/>
+    <SolidColorBrush x:Key="Ink" Color="#E3E8F0"/>
+    <SolidColorBrush x:Key="Blue" Color="#2563EB"/>
     <Style x:Key="Tb" TargetType="Button">
       <Setter Property="Foreground" Value="{StaticResource Ink}"/>
       <Setter Property="Background" Value="Transparent"/>
@@ -28,25 +28,29 @@
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Border>
             <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="B" Property="Background" Value="#33F6EBDD"/></Trigger>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="B" Property="Background" Value="#33E3E8F0"/></Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
       </Setter>
     </Style>
     <Style x:Key="Sep" TargetType="Border">
-      <Setter Property="Width" Value="1"/><Setter Property="Margin" Value="5,8"/><Setter Property="Background" Value="#40F6EBDD"/>
+      <Setter Property="Width" Value="1"/><Setter Property="Margin" Value="5,8"/><Setter Property="Background" Value="#408A95A6"/>
     </Style>
   </Window.Resources>
 
   <!-- a solid window (not see-through): the plainest case for hiding from capture (Microsoft's page says nothing about
        see-through windows either way); Windows 11 rounds its corners -->
-  <Border x:Name="Frame" Background="{StaticResource Bar}" Padding="4" BorderBrush="#55D8B76E" BorderThickness="1">
+  <Border x:Name="Frame" Background="{StaticResource Bar}" Padding="4" BorderBrush="#552563EB" BorderThickness="1">
     <StackPanel>
     <StackPanel Orientation="Horizontal">
       <!-- drag handle -->
-      <Border x:Name="Grip" Width="16" Cursor="SizeAll" Background="Transparent" ToolTip="Drag to move. The toolbar is hidden from OBS recordings.">
-        <TextBlock x:Name="GripText" Text="⋮⋮" Foreground="{StaticResource Gold}" VerticalAlignment="Center" HorizontalAlignment="Center" FontSize="14"/>
+      <!-- the Contrast mark is the drag handle; the dots beside it turn red if the toolbar can't be hidden from OBS -->
+      <Border x:Name="Grip" Cursor="SizeAll" Background="Transparent" Padding="4,0,2,0" ToolTip="Contrast Ink. Drag to move. The toolbar is hidden from OBS recordings.">
+        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+          <Image Source="Assets/mark.png" Width="22" Height="22" RenderOptions.BitmapScalingMode="HighQuality"/>
+          <TextBlock x:Name="GripText" Text="⋮" Foreground="{StaticResource Blue}" VerticalAlignment="Center" Margin="3,0,0,0" FontSize="14"/>
+        </StackPanel>
       </Border>
       <Button x:Name="DrawBtn" Style="{StaticResource Tb}" Width="58" ToolTip="Draw on / off (F9). Or hold Ctrl to draw. A pen draws by itself.">
         <StackPanel Orientation="Horizontal"><TextBlock Text="✏"/><TextBlock x:Name="DrawText" Text=" Off" FontSize="12" VerticalAlignment="Center"/></StackPanel>
@@ -72,7 +76,7 @@
         </Button>
       </StackPanel>
       <Button x:Name="FoldBtn" Style="{StaticResource Tb}" Width="26" Content="‹" ToolTip="Make the toolbar small / big"/>
-      <Button x:Name="CloseBtn" Style="{StaticResource Tb}" Width="28" Content="✕" FontSize="13" ToolTip="Quit Lecture Ink"/>
+      <Button x:Name="CloseBtn" Style="{StaticResource Tb}" Width="28" Content="✕" FontSize="13" ToolTip="Quit Contrast Ink"/>
     </StackPanel>
     <!-- hover help is shown here, inside the toolbar, so OBS never records it (real tooltips are separate windows) -->
     <TextBlock x:Name="Hint" Visibility="Collapsed" Foreground="{StaticResource Ink}" FontSize="12" Margin="8,2,8,4" TextWrapping="Wrap" MaxWidth="640"/>

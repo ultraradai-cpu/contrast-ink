@@ -8,9 +8,9 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
-using LectureInk.Core;
+using ContrastInk.Core;
 
-namespace LectureInk;
+namespace ContrastInk;
 
 public partial class OverlayWindow : Window
 {

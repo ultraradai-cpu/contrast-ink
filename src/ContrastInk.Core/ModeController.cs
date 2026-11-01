@@ -1,4 +1,4 @@
-namespace LectureInk.Core;
+namespace ContrastInk.Core;
 
 /// <summary>
 /// Decides whether the overlay is drawing or letting clicks through to PowerPoint.

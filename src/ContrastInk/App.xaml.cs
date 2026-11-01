@@ -5,17 +5,17 @@ using System.Threading;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Threading;
-using LectureInk.Core;
+using ContrastInk.Core;
 
-namespace LectureInk;
+namespace ContrastInk;
 
 /// <summary>
-/// Lecture Ink: draw over PowerPoint (or anything) while OBS records the screen.
+/// Contrast Ink: draw over PowerPoint (or anything) while OBS records the screen.
 /// One transparent drawing layer on the chosen screen, one small toolbar that OBS doesn't record.
 /// </summary>
 public partial class App : Application
 {
-    static readonly string Folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "LectureInk");
+    static readonly string Folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ContrastInk");
     static readonly string SettingsPath = Path.Combine(Folder, "settings.json");
 
     Mutex? single;
@@ -34,10 +34,11 @@ public partial class App : Application
         base.OnStartup(e);
         DispatcherUnhandledException += (_, ex) => { Log(ex.Exception); ex.Handled = true; };   // a bug must not end a lecture
 
-        single = new Mutex(true, @"Local\LectureInk.single", out bool first);
-        if (!first) { MessageBox.Show("Lecture Ink is already running. Look for its toolbar at the top of the screen.", "Lecture Ink"); Shutdown(); return; }
+        single = new Mutex(true, @"Local\ContrastInk.single", out bool first);
+        if (!first) { MessageBox.Show("Contrast Ink is already running. Look for its toolbar at the top of the screen.", "Contrast Ink"); Shutdown(); return; }
 
         monitors = Native.Monitors();
+        CarryOverOldSettings();
         settings = Settings.Load(SettingsPath, monitors.Count);
 
         overlay = new OverlayWindow { ShiftHeld = () => shift };
@@ -54,7 +55,7 @@ public partial class App : Application
 
         hooks = new InputHooks { Key = OnKey, Pointer = OnPointer };
         if (!hooks.Working)   // on the toolbar, not a message box: a message box would be in the recording
-            toolbar.Warn("Windows didn't allow Lecture Ink to watch the keyboard and pen: F9, Ctrl, the letter keys and pen drawing won't work. Use the toolbar buttons.");
+            toolbar.Warn("Windows didn't allow Contrast Ink to watch the keyboard and pen: F9, Ctrl, the letter keys and pen drawing won't work. Use the toolbar buttons.");
 
         // a projector plugged in or out, or the resolution changed: cover the right screen again.
         // after sleep, Windows may have dropped the keyboard and mouse hooks without a word: put them back.
@@ -206,6 +207,22 @@ public partial class App : Application
 
     /// <summary>Do it right after the hook returns: the hook must answer Windows quickly.</summary>
     void Later(Action a) => Dispatcher.BeginInvoke(a, DispatcherPriority.Send);
+
+    /// <summary>The app was called Lecture Ink before: bring its settings across once, so colours and places stay.</summary>
+    static void CarryOverOldSettings()
+    {
+        try
+        {
+            var old = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Lecture" + "Ink", "settings.json");
+            if (!File.Exists(SettingsPath) && File.Exists(old))
+            {
+                Directory.CreateDirectory(Folder);
+                File.Copy(old, SettingsPath);
+            }
+        }
+        catch (IOException e) { Log(e); }
+        catch (UnauthorizedAccessException e) { Log(e); }
+    }
 
     public static void Log(Exception e)
     {

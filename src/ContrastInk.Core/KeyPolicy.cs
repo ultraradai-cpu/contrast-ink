@@ -1,9 +1,9 @@
-namespace LectureInk.Core;
+namespace ContrastInk.Core;
 
 public enum KeyAction { Pass, ToggleDrawing, Undo, StopDrawing, Pen, Highlighter, Arrow, Oval, Eraser, Clear, Fade, Thinner, Thicker, Color }
 
 /// <summary>
-/// Which keys Lecture Ink takes and which reach PowerPoint. The most important rule in the app:
+/// Which keys Contrast Ink takes and which reach PowerPoint. The most important rule in the app:
 /// a key taken by mistake is a slide that won't change; a key let through by mistake types into the slide.
 /// Lifted out of the Windows code so it can be tested.
 /// </summary>

@@ -6,15 +6,16 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Shapes;
-using LectureInk.Core;
+using ContrastInk.Core;
 
-namespace LectureInk;
+namespace ContrastInk;
 
 public partial class ToolbarWindow : Window
 {
-    static readonly Brush On = new SolidColorBrush(Color.FromRgb(0xD8, 0xB7, 0x6E));
-    static readonly Brush OnText = new SolidColorBrush(Color.FromRgb(0x2A, 0x14, 0x08));
-    static readonly Brush OffText = new SolidColorBrush(Color.FromRgb(0xF6, 0xEB, 0xDD));
+    // Contrast: logo blue #2563EB with white text when on (5.2:1), light grey #E3E8F0 on dark ink #141A22 when off
+    static readonly Brush On = new SolidColorBrush(Color.FromRgb(0x25, 0x63, 0xEB));
+    static readonly Brush OnText = Brushes.White;
+    static readonly Brush OffText = new SolidColorBrush(Color.FromRgb(0xE3, 0xE8, 0xF0));
 
     IntPtr hwnd;
     readonly List<Button> colorButtons = new(), widthButtons = new();

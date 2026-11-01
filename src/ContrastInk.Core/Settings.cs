@@ -1,10 +1,10 @@
 using System.Text.Json;
 
-namespace LectureInk.Core;
+namespace ContrastInk.Core;
 
 public enum Tool { Pen, Highlighter, Arrow, Oval, Eraser }
 
-/// <summary>What the app remembers between lectures (saved in %AppData%\LectureInk\settings.json).</summary>
+/// <summary>What the app remembers between lectures (saved in %AppData%\ContrastInk\settings.json).</summary>
 public sealed class Settings
 {
     // Red, yellow, green, cyan and white stand out on dark MR/CT images; black is for white slides; red works on both

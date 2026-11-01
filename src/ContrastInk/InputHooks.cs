@@ -1,8 +1,8 @@
 using System;
 using System.Runtime.InteropServices;
-using LectureInk.Core;
+using ContrastInk.Core;
 
-namespace LectureInk;
+namespace ContrastInk;
 
 /// <summary>
 /// Sees every key and mouse movement on the computer, whichever app has focus, so the

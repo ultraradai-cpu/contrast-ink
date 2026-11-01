@@ -1,4 +1,4 @@
-using LectureInk.Core;
+using ContrastInk.Core;
 using Xunit;
 
 public class ModeControllerTests
@@ -210,7 +210,7 @@ public class SettingsTests
     [Fact]
     public void SavesAndLoads()
     {
-        var path = Path.Combine(Path.GetTempPath(), "lectureink-" + Guid.NewGuid() + "/settings.json");
+        var path = Path.Combine(Path.GetTempPath(), "contrastink-" + Guid.NewGuid() + "/settings.json");
         new Settings { Color = 2, Width = 2, FadingInk = true, Tool = Tool.Arrow, Screen = 1, ToolbarX = 40, ToolbarY = 60 }.Save(path);
         var s = Settings.Load(path, screens: 2);
         Assert.Equal((2, 2, true, Tool.Arrow, 1, 40.0, 60.0), (s.Color, s.Width, s.FadingInk, s.Tool, s.Screen, s.ToolbarX, s.ToolbarY));
@@ -219,7 +219,7 @@ public class SettingsTests
     [Fact]
     public void BrokenOrMissingFileGivesDefaults()
     {
-        var dir = Path.Combine(Path.GetTempPath(), "lectureink-" + Guid.NewGuid());
+        var dir = Path.Combine(Path.GetTempPath(), "contrastink-" + Guid.NewGuid());
         Directory.CreateDirectory(dir);
         File.WriteAllText(Path.Combine(dir, "bad.json"), "{ not json");
         Assert.Equal(Tool.Pen, Settings.Load(Path.Combine(dir, "bad.json"), 1).Tool);

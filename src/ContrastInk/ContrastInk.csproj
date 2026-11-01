@@ -9,12 +9,18 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <AssemblyName>LectureInk</AssemblyName>
-    <RootNamespace>LectureInk</RootNamespace>
-    <Product>Lecture Ink</Product>
-    <Version>0.1.0</Version>
+    <ApplicationIcon>Assets\ContrastInk.ico</ApplicationIcon>
+    <AssemblyName>ContrastInk</AssemblyName>
+    <RootNamespace>ContrastInk</RootNamespace>
+    <Product>Contrast Ink</Product>
+    <Version>0.2.0</Version>
+    <Company>Contrast</Company>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../LectureInk.Core/LectureInk.Core.csproj" />
+    <Resource Include="Assets\mark.png" />
+    <Resource Include="Assets\ContrastInk.ico" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../ContrastInk.Core/ContrastInk.Core.csproj" />
   </ItemGroup>
 </Project>

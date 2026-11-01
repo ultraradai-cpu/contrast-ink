@@ -1,4 +1,4 @@
-namespace LectureInk.Core;
+namespace ContrastInk.Core;
 
 public enum InputKind { Mouse, Pen, Touch }
 

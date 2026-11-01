@@ -1,4 +1,4 @@
-namespace LectureInk.Core;
+namespace ContrastInk.Core;
 
 /// <summary>Fading ink: a mark stays fully visible for a while, then fades out and is removed.</summary>
 public static class Fade

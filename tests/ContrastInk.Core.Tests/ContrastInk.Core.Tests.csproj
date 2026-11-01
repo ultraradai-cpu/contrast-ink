@@ -11,6 +11,6 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="../../src/LectureInk.Core/LectureInk.Core.csproj" />
+    <ProjectReference Include="../../src/ContrastInk.Core/ContrastInk.Core.csproj" />
   </ItemGroup>
 </Project>

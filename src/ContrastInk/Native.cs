@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
 
-namespace LectureInk;
+namespace ContrastInk;
 
 /// <summary>The few Windows functions WPF doesn't offer: click-through, hide-from-capture, topmost, monitors, input hooks.</summary>
 static class Native

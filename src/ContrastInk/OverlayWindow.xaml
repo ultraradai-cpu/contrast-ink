@@ -1,7 +1,7 @@
-<Window x:Class="LectureInk.OverlayWindow"
+<Window x:Class="ContrastInk.OverlayWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Lecture Ink drawing layer"
+        Title="Contrast Ink drawing layer"
         WindowStyle="None" AllowsTransparency="True" Background="Transparent"
         Topmost="True" ShowInTaskbar="False" ShowActivated="False" ResizeMode="NoResize"
         Left="0" Top="0" Width="800" Height="600">

@@ -1,4 +1,4 @@
-namespace LectureInk.Core;
+namespace ContrastInk.Core;
 
 public readonly record struct Pt(double X, double Y);
 
