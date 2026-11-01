@@ -53,23 +53,38 @@ sealed class UndoButtonWindow : Window
             if (!Native.SetExStyle(hwnd, Native.WS_EX_TOOLWINDOW | Native.WS_EX_NOACTIVATE, 0))
                 App.Log(new InvalidOperationException("undo button: no-activate style was not applied"));
         };
-        new WindowInteropHelper(this).EnsureHandle();   // made now (not shown): whether it can be hidden is known before it is ever needed
+        new WindowInteropHelper(this).EnsureHandle();   // made now: whether it can be hidden is known before it is ever needed
+        // Shown once, now, off every screen, and from then on only moved on and off. Showing it fresh at each mark
+        // sometimes left it visible but unpainted (the Windows check's control run caught an empty square 2 times in 6).
+        if (mayShow) { Left = Top = Parked; Show(); }
+    }
+
+    const int Parked = -20000;
+    /// <summary>On a screen beside a mark right now.</summary>
+    public bool Shown { get; private set; }
+
+    /// <summary>Off the screens (the window stays open, so it is painted and ready).</summary>
+    public void Park()
+    {
+        if (!Shown) return;
+        Shown = false;
+        if (hwnd != IntPtr.Zero) Native.SetWindowPos(hwnd, IntPtr.Zero, Parked, Parked, 0, 0, Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_NOACTIVATE);
     }
 
     /// <summary>Shows the button with its top-left corner at (x, y) in screen pixels, kept inside that screen.</summary>
     public void ShowAt(int x, int y, Native.RECT screen)
     {
-        if (!mayShow) return;
-        Show();
+        if (!mayShow || hwnd == IntPtr.Zero) return;
         var r = Native.WindowRect(this);
         int w = r.Right - r.Left, h = r.Bottom - r.Top;
         x = Math.Clamp(x, screen.Left, screen.Right - w);
         y = Math.Clamp(y, screen.Top, screen.Bottom - h);
         Native.SetWindowPos(hwnd, Native.HWND_TOPMOST, x, y, 0, 0, Native.SWP_NOSIZE | Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
+        Shown = true;
     }
 
     public void KeepOnTop()
     {
-        if (hwnd != IntPtr.Zero && IsVisible) Native.SetWindowPos(hwnd, Native.HWND_TOPMOST, 0, 0, 0, 0, Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
+        if (hwnd != IntPtr.Zero && Shown) Native.SetWindowPos(hwnd, Native.HWND_TOPMOST, 0, 0, 0, 0, Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
     }
 }

@@ -70,7 +70,7 @@ public partial class App : Application
             toolbar.PauseClicked += recorder.PauseClicked;
             slides.Changed += slide =>
             {
-                if (settings.MarksPerSlide) { overlay.ShowPage(slide); undoButton.Hide(); }
+                if (settings.MarksPerSlide) { overlay.ShowPage(slide); undoButton.Park(); }
                 recorder.SlideChanged(slide);
             };
 
@@ -116,7 +116,7 @@ public partial class App : Application
             {
                 mode.Tick(DateTime.UtcNow);
                 ReconcileModifiers();
-                if (undoButton.IsVisible && !overlay.CanUndo) undoButton.Hide();   // its mark faded away
+                if (undoButton.Shown && !overlay.CanUndo) undoButton.Park();   // its mark faded away
             };
             penClock.Start();
         }
@@ -137,7 +137,7 @@ public partial class App : Application
 
     void Wire()
     {
-        mode.Changed += on => { overlay.SetDrawing(on); if (!on) undoButton.Hide(); Refresh(); };
+        mode.Changed += on => { overlay.SetDrawing(on); if (!on) undoButton.Park(); Refresh(); };
         toolbar.DrawClicked += () => mode.Toggle();
         toolbar.ToolClicked += t => { settings.Tool = t; ApplySettings(); if (!mode.Drawing) mode.SetManual(true); };
         toolbar.ColorClicked += c => { settings.Color = c; if (settings.Tool == Tool.Eraser) settings.Tool = Tool.Pen; ApplySettings(); };
@@ -148,13 +148,13 @@ public partial class App : Application
         toolbar.OptionChanged += (name, on) =>
         {
             typeof(Settings).GetProperty(name)!.SetValue(settings, on);
-            if (name == nameof(Settings.UndoButtonByPen) && !on) undoButton.Hide();
+            if (name == nameof(Settings.UndoButtonByPen) && !on) undoButton.Park();
             if (name == nameof(Settings.MarksPerSlide) && on && slides != null) overlay.ShowPage(slides.Current);
             ApplySettings();
         };
         undoButton.Clicked += Undo;
         overlay.UndoGesture += () => { if (settings.UndoWithRightClick) Undo(); };
-        overlay.MarkStarting += () => undoButton.Hide();   // never under the pen while drawing
+        overlay.MarkStarting += () => undoButton.Park();   // never under the pen while drawing
         overlay.MarkDone += p =>
         {
             if (!settings.UndoButtonByPen || !mode.Drawing || monitors.Count == 0) return;
@@ -190,7 +190,7 @@ public partial class App : Application
     void Undo()
     {
         overlay.Undo();
-        if (!overlay.CanUndo) undoButton.Hide();
+        if (!overlay.CanUndo) undoButton.Park();
     }
 
     void Refresh() => toolbar.Refresh(mode.Drawing, settings, monitors.Count, settings.ToolbarCollapsed);

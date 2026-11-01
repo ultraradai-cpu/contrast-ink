@@ -103,8 +103,8 @@ static class Program
                 Bitmap cshot; double blue; var waited = Stopwatch.StartNew();
                 do { Thread.Sleep(250); cshot = Shot("control-undo-button"); blue = Share(cshot, ub, UndoBlue); } while (blue < 0.3 && waited.ElapsedMilliseconds < 2500);
                 var mid = ub.Width > 0 ? Hex(cshot.GetPixel(Math.Clamp(ub.Left + 4, 0, cshot.Width - 1), Math.Clamp(ub.Top + 4, 0, cshot.Height - 1))) : "none";
-                Check(Native.IsVisible(UndoTitle) && blue > 0.3, "CONTROL: with hiding switched off, a screen capture DOES show the undo button",
-                      $"visible {Native.IsVisible(UndoTitle)}, {blue:P0} of its area is its blue, at {ub}, its corner pixel {mid}");
+                Check(UndoOnScreen() && blue > 0.3, "CONTROL: with hiding switched off, a screen capture DOES show the undo button",
+                      $"visible {UndoOnScreen()}, {blue:P0} of its area is its blue, at {ub}, its corner pixel {mid}");
                 Key('C'); Key(VK.F9);
                 return failures;
             }
@@ -297,6 +297,9 @@ static class Program
     const string UndoTitle = "Contrast Ink undo button";
     static readonly Color UndoBlue = ColorTranslator.FromHtml("#2563EB");
 
+    /// <summary>The undo button is on the screen (the app parks it off-screen rather than hiding it).</summary>
+    static bool UndoOnScreen() { var b = Native.WindowBox(UndoTitle); return Native.IsVisible(UndoTitle) && b.Width > 0 && b.IntersectsWith(screen); }
+
     static bool Press(string name)
     {
         var p = FindToolbarButton(name);
@@ -335,7 +338,7 @@ static class Program
         // the undo button beside the mark
         Line(2);
         var box = Native.WindowBox(UndoTitle);
-        bool shown = Native.IsVisible(UndoTitle);
+        bool shown = UndoOnScreen();
         Check(box.Width <= 48 && box.Height <= 48, "the undo button is small", $"{box.Width} x {box.Height} px");
         Check(shown && box.Left >= x2 - 5 && box.Left <= x2 + 80 && box.Top >= Row(2) - 10 && box.Top <= Row(2) + 80,
               "the undo button appears beside the end of the mark", $"visible {shown}, at {box}, mark ends at ({x2},{Row(2)})");
@@ -361,7 +364,7 @@ static class Program
             shot = Shot("35-undo-switched-off");
             Check(Red(shot, 3), "settings: with Z and right-click switched off, neither undoes", At(shot, 3));
             Check(slide.Keys.Skip(k0).Contains(Keys.Z), "settings: Z switched off reaches the slides instead", "keys seen: " + string.Join(",", slide.Keys.Skip(k0)));
-            Check(!Native.IsVisible(UndoTitle), "settings: the undo button switched off does not appear", "visible " + Native.IsVisible(UndoTitle));
+            Check(!UndoOnScreen(), "settings: the undo button switched off does not appear", "visible " + UndoOnScreen());
             Press("Z Key"); Press("Right-Click"); Press("Undo Button Beside");
             Press("Settings");
             Key('C'); Thread.Sleep(300);
@@ -394,12 +397,12 @@ static class Program
             var tap = new Point(ub.Left + ub.Width / 2, ub.Top + ub.Height / 2);
             Click(tap); Thread.Sleep(400);
             shot = Shot("44-one-tap");
-            Check(Red(shot, 4) && !Red(shot, 5) && Native.IsVisible(UndoTitle), "undo button: one tap takes the last mark only, and it stays for the next",
-                  $"first mark {At(shot, 4)}, second {At(shot, 5)}, button visible {Native.IsVisible(UndoTitle)}");
+            Check(Red(shot, 4) && !Red(shot, 5) && UndoOnScreen(), "undo button: one tap takes the last mark only, and it stays for the next",
+                  $"first mark {At(shot, 4)}, second {At(shot, 5)}, button visible {UndoOnScreen()}");
             Click(tap); Thread.Sleep(400);
             shot = Shot("45-two-taps");
             Check(!Red(shot, 4), "undo button: a second tap takes the mark before", At(shot, 4));
-            Check(!Native.IsVisible(UndoTitle), "undo button: with nothing left to undo on this slide, it goes", "visible " + Native.IsVisible(UndoTitle));
+            Check(!UndoOnScreen(), "undo button: with nothing left to undo on this slide, it goes", "visible " + UndoOnScreen());
 
             ppt.SlideShowWindows.Show.View.CurrentShowPosition = 2; Thread.Sleep(900);
             ppt.SlideShowWindows.Count = 0; Thread.Sleep(900);          // the slide show ends
