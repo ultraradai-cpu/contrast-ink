@@ -23,9 +23,26 @@ sealed class InputHooks : IDisposable
     {
         keyProc = OnKey;
         mouseProc = OnMouse;
+        Install();
+    }
+
+    void Install()
+    {
         var module = Native.GetModuleHandle(null);
         keyHook = Native.SetWindowsHookEx(Native.WH_KEYBOARD_LL, keyProc, module, 0);
         mouseHook = Native.SetWindowsHookEx(Native.WH_MOUSE_LL, mouseProc, module, 0);
+    }
+
+    /// <summary>
+    /// Microsoft (LowLevelKeyboardProc, Remarks): a hook that times out is, "on Windows 7 and later, ... silently
+    /// removed", and "There is no way for the application to know whether the hook is removed." So the hooks are
+    /// installed again every two minutes, after a wake and after a screen change: a lost hook costs minutes, not a lecture.
+    /// </summary>
+    public void Reinstall()
+    {
+        Dispose();
+        Install();
+        if (!Working) App.Log(new InvalidOperationException("keyboard/mouse hooks could not be installed again"));
     }
 
     public bool Working => keyHook != IntPtr.Zero && mouseHook != IntPtr.Zero;

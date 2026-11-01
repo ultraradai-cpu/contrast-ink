@@ -39,7 +39,8 @@
     </Style>
   </Window.Resources>
 
-  <!-- a solid window (not see-through): Windows reliably keeps it out of OBS; Windows 11 rounds its corners -->
+  <!-- a solid window (not see-through): the plainest case for hiding from capture (Microsoft's page says nothing about
+       see-through windows either way); Windows 11 rounds its corners -->
   <Border x:Name="Frame" Background="{StaticResource Bar}" Padding="4" BorderBrush="#55D8B76E" BorderThickness="1">
     <StackPanel>
     <StackPanel Orientation="Horizontal">

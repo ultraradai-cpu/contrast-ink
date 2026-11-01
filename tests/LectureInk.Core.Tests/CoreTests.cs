@@ -271,3 +271,68 @@ public class ColorTests
         Assert.True(Settings.HighlighterWidth(Settings.Widths[0]) > Settings.Widths[^1]);
     }
 }
+
+public class KeyPolicyTests
+{
+    static KeyAction A(int vk, bool drawing, bool ctrl = false, bool altOrWin = false) => KeyPolicy.Decide(vk, drawing, ctrl, altOrWin).action;
+    const int Right = 0x27, PageDown = 0x22, Space = 0x20, Esc = 0x1B, F9 = 0x78, Z = 0x5A, P = 0x50, B = 0x42, W = 0x57, Tab = 0x09;
+
+    [Theory]
+    [InlineData(0x50)] [InlineData(0x48)] [InlineData(0x45)] [InlineData(0x43)] [InlineData(0x31)] [InlineData(Esc)] [InlineData(0xDB)]
+    public void NotDrawingEveryKeyIsPowerPoints(int vk) => Assert.Equal(KeyAction.Pass, A(vk, drawing: false));
+
+    [Theory]
+    [InlineData(Right)] [InlineData(PageDown)] [InlineData(Space)] [InlineData(B)] [InlineData(W)] [InlineData(0x25)] [InlineData(0x21)]
+    public void SlideKeysAndBlackWhiteScreenReachPowerPointWhileDrawing(int vk) => Assert.Equal(KeyAction.Pass, A(vk, drawing: true));
+
+    [Fact]
+    public void ToolKeysAreOursOnlyWhileDrawing()
+    {
+        Assert.Equal(KeyAction.Pen, A(P, true));
+        Assert.Equal(KeyAction.Highlighter, A(0x48, true));
+        Assert.Equal(KeyAction.Arrow, A(0x41, true));
+        Assert.Equal(KeyAction.Oval, A(0x4F, true));
+        Assert.Equal(KeyAction.Eraser, A(0x45, true));
+        Assert.Equal(KeyAction.Clear, A(0x43, true));
+        Assert.Equal(KeyAction.Fade, A(0x46, true));
+        Assert.Equal(KeyAction.Thinner, A(0xDB, true));
+        Assert.Equal(KeyAction.Thicker, A(0xDD, true));
+        Assert.Equal(KeyAction.StopDrawing, A(Esc, true));
+    }
+
+    [Fact]
+    public void ColoursOneToSixOnBothRowsAndSevenPasses()
+    {
+        for (int i = 0; i < Settings.Colors.Length; i++)
+        {
+            Assert.Equal((KeyAction.Color, i), KeyPolicy.Decide(0x31 + i, true, false, false));
+            Assert.Equal((KeyAction.Color, i), KeyPolicy.Decide(0x61 + i, true, false, false));
+        }
+        Assert.Equal(KeyAction.Pass, A(0x31 + Settings.Colors.Length, true));
+        Assert.Equal(KeyAction.Pass, A(0x61 + Settings.Colors.Length, true));
+    }
+
+    [Fact]
+    public void F9TogglesInEveryState()
+    {
+        Assert.Equal(KeyAction.ToggleDrawing, A(F9, false));
+        Assert.Equal(KeyAction.ToggleDrawing, A(F9, true));
+    }
+
+    [Fact]
+    public void CtrlShortcutsArePowerPointsExceptUndoWhileDrawing()
+    {
+        Assert.Equal(KeyAction.Undo, A(Z, drawing: true, ctrl: true));
+        Assert.Equal(KeyAction.Pass, A(Z, drawing: false, ctrl: true));   // PowerPoint's own undo
+        Assert.Equal(KeyAction.Pass, A(0x43, drawing: true, ctrl: true)); // Ctrl+C copies, never clears
+        Assert.Equal(KeyAction.Pass, A(P, drawing: true, ctrl: true));    // Ctrl+P prints, never picks the pen
+    }
+
+    [Fact]
+    public void AltAndWindowsKeyCombinationsAreNeverOurs()
+    {
+        Assert.Equal(KeyAction.Pass, A(Tab, true, altOrWin: true));
+        Assert.Equal(KeyAction.Pass, A(F9, true, altOrWin: true));
+        Assert.Equal(KeyAction.Pass, A(P, true, altOrWin: true));
+    }
+}

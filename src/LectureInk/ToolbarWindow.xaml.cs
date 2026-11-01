@@ -70,7 +70,6 @@ public partial class ToolbarWindow : Window
         SourceInitialized += (_, _) =>
         {
             hwnd = new WindowInteropHelper(this).Handle;
-            Native.SetExStyle(hwnd, Native.WS_EX_TOOLWINDOW | Native.WS_EX_NOACTIVATE, 0);
             HwndSource.FromHwnd(hwnd)!.AddHook((IntPtr h, int msg, IntPtr w, IntPtr l, ref bool handled) =>
             {
                 // tapping a toolbar button leaves the keyboard with PowerPoint
@@ -78,14 +77,28 @@ public partial class ToolbarWindow : Window
                 return IntPtr.Zero;
             });
             Native.RoundCorners(hwnd);
-            HiddenFromCapture = Native.SetWindowDisplayAffinity(hwnd, Native.WDA_EXCLUDEFROMCAPTURE);
+            HiddenFromCapture = Native.HideFromCapture(hwnd);
             if (!HiddenFromCapture)
-            {
-                // say so where it can't be missed: the handle turns red
-                GripText.Foreground = Brushes.Red;
-                Grip.ToolTip = "Windows did not hide this toolbar from recordings (needs Windows 10 version 2004 or newer). It will show in OBS: make it small (‹) or move it to a corner.";
-            }
+                Warn("This toolbar is NOT hidden from recordings (it needs Windows 10 version 2004 or newer). It will show in OBS: make it small (‹) or move it to a corner.");
+            if (!Native.SetExStyle(hwnd, Native.WS_EX_TOOLWINDOW | Native.WS_EX_NOACTIVATE, 0))
+                App.Log(new InvalidOperationException("toolbar: no-activate style was not applied"));
         };
+    }
+
+    string? warning;
+
+    /// <summary>
+    /// A problem the presenter must know about: the handle turns red and the line under the buttons stays visible.
+    /// (Inside the toolbar, so it is no more recorded than the toolbar is; a message box would be.)
+    /// </summary>
+    public void Warn(string text)
+    {
+        warning = text;
+        GripText.Foreground = Brushes.Red;
+        Grip.ToolTip = text;
+        Hint.Text = text;
+        Hint.Foreground = Brushes.Salmon;
+        Hint.Visibility = Visibility.Visible;
     }
 
     /// <summary>Every ToolTip becomes a hint line inside the toolbar; no tooltip window ever opens.</summary>
@@ -97,8 +110,15 @@ public partial class ToolbarWindow : Window
             if (fe.ToolTip is string text)
             {
                 ToolTipService.SetIsEnabled(fe, false);
-                fe.MouseEnter += (_, _) => { Hint.Text = fe.ToolTip as string ?? text; Hint.Visibility = Visibility.Visible; };
-                fe.MouseLeave += (_, _) => Hint.Visibility = Visibility.Collapsed;
+                // screen readers name the button by its hint (the visible label is only a symbol)
+                System.Windows.Automation.AutomationProperties.SetName(fe, text);
+                fe.MouseEnter += (_, _) => { Hint.Text = fe.ToolTip as string ?? text; Hint.Foreground = OffText; Hint.Visibility = Visibility.Visible; };
+                fe.MouseLeave += (_, _) =>
+                {
+                    // a standing warning stays; an ordinary hint goes
+                    if (warning != null) { Hint.Text = warning; Hint.Foreground = Brushes.Salmon; }
+                    else Hint.Visibility = Visibility.Collapsed;
+                };
             }
             HintsInside(fe);
         }

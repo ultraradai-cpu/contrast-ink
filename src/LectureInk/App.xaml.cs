@@ -28,7 +28,6 @@ public partial class App : Application
     bool ctrl, shift, alt, win;
     readonly HashSet<int> swallowed = new();   // keys we kept from PowerPoint: their key-up is kept too
 
-    const int VK_ESC = 0x1B, VK_F9 = 0x78, VK_Z = 0x5A;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -54,13 +53,24 @@ public partial class App : Application
         Wire();
 
         hooks = new InputHooks { Key = OnKey, Pointer = OnPointer };
-        if (!hooks.Working)
-            MessageBox.Show("Windows didn't allow Lecture Ink to watch the keyboard, so F9, Ctrl and the letter keys won't work. Use the toolbar buttons.", "Lecture Ink");
+        if (!hooks.Working)   // on the toolbar, not a message box: a message box would be in the recording
+            toolbar.Warn("Windows didn't allow Lecture Ink to watch the keyboard and pen: F9, Ctrl, the letter keys and pen drawing won't work. Use the toolbar buttons.");
+
+        // a projector plugged in or out, or the resolution changed: cover the right screen again.
+        // after sleep, Windows may have dropped the keyboard and mouse hooks without a word: put them back.
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (_, _) => Dispatcher.BeginInvoke(() => { monitors = Native.Monitors(); Cover(); hooks?.Reinstall(); Refresh(); });
+        Microsoft.Win32.SystemEvents.PowerModeChanged += (_, ev) =>
+        {
+            if (ev.Mode == Microsoft.Win32.PowerModes.Resume) Dispatcher.BeginInvoke(() => { hooks?.Reinstall(); mode.Escape(); });
+        };
 
         // PowerPoint's slide show likes to come to the front: stay above it
         var top = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
         top.Tick += (_, _) => { overlay.KeepOnTop(); toolbar.KeepOnTop(); };
         top.Start();
+        var rehook = new DispatcherTimer { Interval = TimeSpan.FromMinutes(2) };
+        rehook.Tick += (_, _) => hooks?.Reinstall();
+        rehook.Start();
         var penClock = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         penClock.Tick += (_, _) => mode.Tick(DateTime.UtcNow);
         penClock.Start();
@@ -107,6 +117,7 @@ public partial class App : Application
         if (monitors.Count == 0) return;
         settings.Screen = Math.Clamp(settings.Screen, 0, monitors.Count - 1);
         overlay.Cover(monitors[settings.Screen].Bounds);
+        toolbar?.KeepOnTop();   // moving the layer puts it on top: the toolbar must be above it again at once
     }
 
     void NextScreen()
@@ -156,36 +167,29 @@ public partial class App : Application
     /// <summary>A key was pressed. True = it was ours (draw keys), so PowerPoint doesn't see it.</summary>
     bool KeyDown(int vk)
     {
-        if (alt || win) return false;
-        if (vk == VK_F9) { mode.Toggle(); return true; }
-        if (ctrl)
+        // which keys are ours is decided in one tested place (KeyPolicy); this only carries it out
+        var (action, color) = KeyPolicy.Decide(vk, mode.Drawing, ctrl, alt || win);
+        if (ctrl && !alt && !win) mode.KeyWithCtrl(vk == KeyPolicy.VK_Z);   // Ctrl+C etc.: holding Ctrl was a shortcut, not drawing
+        Action? act = action switch
         {
-            bool undo = vk == VK_Z, mine = undo && mode.Drawing;
-            mode.KeyWithCtrl(undo);
-            if (mine) Later(overlay.Undo);
-            return mine;
-        }
-        // letter keys are ours only while drawing; otherwise PowerPoint gets them
-        if (!mode.Drawing) return false;
-        Action? act = vk switch
-        {
-            VK_ESC => null,
-            0x50 => () => SetTool(Tool.Pen),          // P
-            0x48 => () => SetTool(Tool.Highlighter),  // H
-            0x41 => () => SetTool(Tool.Arrow),        // A
-            0x4F => () => SetTool(Tool.Oval),         // O
-            0x45 => () => SetTool(Tool.Eraser),       // E
-            0x43 => overlay.ClearAll,                 // C
-            0x46 => () => { settings.FadingInk = !settings.FadingInk; ApplySettings(); },   // F
-            >= 0x31 and <= 0x39 when vk - 0x31 < Settings.Colors.Length => () => SetColor(vk - 0x31),   // 1-6
-            >= 0x61 and <= 0x69 when vk - 0x61 < Settings.Colors.Length => () => SetColor(vk - 0x61),   // number pad 1-6
-            0xDB => () => { settings.Width = Math.Max(0, settings.Width - 1); ApplySettings(); },                          // [ thinner
-            0xDD => () => { settings.Width = Math.Min(Settings.Widths.Length - 1, settings.Width + 1); ApplySettings(); },  // ] thicker
+            KeyAction.Pass => null,
+            KeyAction.ToggleDrawing => mode.Toggle,
+            KeyAction.StopDrawing => mode.Escape,
+            KeyAction.Undo => () => Later(overlay.Undo),
+            KeyAction.Pen => () => Later(() => SetTool(Tool.Pen)),
+            KeyAction.Highlighter => () => Later(() => SetTool(Tool.Highlighter)),
+            KeyAction.Arrow => () => Later(() => SetTool(Tool.Arrow)),
+            KeyAction.Oval => () => Later(() => SetTool(Tool.Oval)),
+            KeyAction.Eraser => () => Later(() => SetTool(Tool.Eraser)),
+            KeyAction.Clear => () => Later(overlay.ClearAll),
+            KeyAction.Fade => () => Later(() => { settings.FadingInk = !settings.FadingInk; ApplySettings(); }),
+            KeyAction.Thinner => () => Later(() => { settings.Width = Math.Max(0, settings.Width - 1); ApplySettings(); }),
+            KeyAction.Thicker => () => Later(() => { settings.Width = Math.Min(Settings.Widths.Length - 1, settings.Width + 1); ApplySettings(); }),
+            KeyAction.Color => () => Later(() => SetColor(color)),
             _ => null,
         };
-        if (vk == VK_ESC) { mode.Escape(); return true; }
-        if (act == null) return false;   // arrows, Page Down, Space... still change slides while drawing
-        Later(act);
+        if (act == null) return false;   // PowerPoint gets it
+        act();   // mode changes at once (the next key must already know); the rest right after the hook returns
         return true;
     }
 

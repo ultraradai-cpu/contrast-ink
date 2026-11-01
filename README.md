@@ -51,11 +51,16 @@ Marks stay until you clear them. The 🖥 button moves the drawing layer to your
 
 - Use **Display Capture** (the whole screen), not Window Capture of PowerPoint, or your drawings won't be recorded.
 - The toolbar, and its hover help, are hidden from recordings on Windows 10 (version 2004 or newer) and Windows 11.
-  If Windows refuses, the ⋮⋮ handle turns **red**: then make the toolbar small (‹) or move it to a corner.
+  On older Windows 10 it can't be hidden (Microsoft: there the setting records the window as an empty box), so the
+  ⋮⋮ handle turns **red** and a warning line stays under the buttons: make the toolbar small (‹) or move it to a corner.
 - Hover help appears as a line inside the toolbar (never as a pop-up, which OBS could record).
 - Turn off **Capture Cursor** in the Display Capture settings if you don't want the mouse arrow in the video.
 
 ## If Something Goes Wrong
+
+- If F9 or the letter keys stop working, wait up to two minutes: Windows can silently drop the app's keyboard
+  watcher, and Lecture Ink installs it again every two minutes, after sleep, and when a screen is plugged in or out.
+- A projector plugged in or out mid-lecture: the drawing layer moves to cover the right screen by itself.
 
 Errors are written to `%AppData%\LectureInk\error.log`. Send that file along with what you were doing.
 Settings are in `%AppData%\LectureInk\settings.json` (delete it to start fresh).

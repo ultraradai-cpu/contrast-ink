@@ -14,15 +14,27 @@ static class Native
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] static extern IntPtr GetWindowLongPtr(IntPtr hwnd, int index);
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")] static extern IntPtr SetWindowLongPtr(IntPtr hwnd, int index, IntPtr value);
 
-    public static void SetExStyle(IntPtr hwnd, int add, int remove)
+    /// <summary>Changes a window's extended style and reads it back: true only if Windows now has what was asked.</summary>
+    public static bool SetExStyle(IntPtr hwnd, int add, int remove)
     {
         long style = GetWindowLongPtr(hwnd, GWL_EXSTYLE).ToInt64();
-        SetWindowLongPtr(hwnd, GWL_EXSTYLE, new IntPtr((style | (uint)add) & ~(long)(uint)remove));
+        long want = (style | (uint)add) & ~(long)(uint)remove;
+        SetWindowLongPtr(hwnd, GWL_EXSTYLE, new IntPtr(want));
+        return GetWindowLongPtr(hwnd, GWL_EXSTYLE).ToInt64() == want;
     }
 
     /// <summary>Windows 10 2004+: the window is shown on screen but left out of every screen capture (OBS included).</summary>
     public const uint WDA_EXCLUDEFROMCAPTURE = 0x11;
-    [DllImport("user32.dll")] public static extern bool SetWindowDisplayAffinity(IntPtr hwnd, uint affinity);
+    [DllImport("user32.dll")] static extern bool SetWindowDisplayAffinity(IntPtr hwnd, uint affinity);
+
+    /// <summary>
+    /// Hides the window from screen capture. True only when it really is hidden.
+    /// Microsoft (SetWindowDisplayAffinity, Remarks): on Windows before 10 version 2004 this value "will behave as
+    /// if WDA_MONITOR is applied", which records the window as an empty box, and the call can still report success.
+    /// So older Windows is answered "not hidden" without asking, and the toolbar says so.
+    /// </summary>
+    public static bool HideFromCapture(IntPtr hwnd) =>
+        Environment.OSVersion.Version.Build >= 19041 && SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
 
     public static readonly IntPtr HWND_TOPMOST = new(-1);
     public const uint SWP_NOSIZE = 0x1, SWP_NOMOVE = 0x2, SWP_NOACTIVATE = 0x10, SWP_SHOWWINDOW = 0x40;

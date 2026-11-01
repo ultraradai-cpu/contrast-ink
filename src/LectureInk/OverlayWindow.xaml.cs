@@ -54,7 +54,8 @@ public partial class OverlayWindow : Window
         SourceInitialized += (_, _) =>
         {
             hwnd = new WindowInteropHelper(this).Handle;
-            Native.SetExStyle(hwnd, Native.WS_EX_LAYERED | Native.WS_EX_TOOLWINDOW | Native.WS_EX_NOACTIVATE | Native.WS_EX_TRANSPARENT, 0);
+            if (!Native.SetExStyle(hwnd, Native.WS_EX_LAYERED | Native.WS_EX_TOOLWINDOW | Native.WS_EX_NOACTIVATE | Native.WS_EX_TRANSPARENT, 0))
+                App.Log(new InvalidOperationException("overlay: click-through style was not applied at start"));
             HwndSource.FromHwnd(hwnd)!.AddHook((IntPtr h, int msg, IntPtr w, IntPtr l, ref bool handled) =>
             {
                 // clicking the drawing layer must never take the keyboard away from PowerPoint
@@ -84,8 +85,9 @@ public partial class OverlayWindow : Window
         if (drawing == on) return;
         drawing = on;
         if (!on) FinishShape();
-        if (hwnd != IntPtr.Zero)
-            Native.SetExStyle(hwnd, on ? 0 : Native.WS_EX_TRANSPARENT, on ? Native.WS_EX_TRANSPARENT : 0);
+        // read back: a layer stuck in the wrong mode either blocks PowerPoint or never draws, and says nothing
+        if (hwnd != IntPtr.Zero && !Native.SetExStyle(hwnd, on ? 0 : Native.WS_EX_TRANSPARENT, on ? Native.WS_EX_TRANSPARENT : 0))
+            App.Log(new InvalidOperationException("overlay: could not switch drawing " + (on ? "on" : "off")));
         Ink.Background = on ? Catch : Brushes.Transparent;
     }
 
