@@ -50,49 +50,59 @@ public partial class App : Application
         toolbar.Show();
         toolbar.Moved += () => { settings.ToolbarX = toolbar.Left; settings.ToolbarY = toolbar.Top; settings.Save(SettingsPath); };
 
-        ApplySettings();
-        Wire();
-
-        bool testRun = Environment.GetEnvironmentVariable("CONTRASTINK_TEST") == "1";
-        hooks = new InputHooks { Key = OnKey, Pointer = OnPointer, AcceptInjectedKeys = testRun };
-        if (!hooks.Working)   // on the toolbar, not a message box: a message box would be in the recording
-            toolbar.Warn("Windows didn't allow Contrast Ink to watch the keyboard and pen: F9, Ctrl, the letter keys and pen drawing won't work. Use the toolbar buttons.");
-
-        // a projector plugged in or out, or the resolution changed: cover the right screen again.
-        // after sleep, Windows may have dropped the keyboard and mouse hooks without a word: put them back.
-        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (_, _) => Dispatcher.BeginInvoke(() => { monitors = Native.Monitors(); Cover(); hooks?.Reinstall(); Refresh(); });
-        Microsoft.Win32.SystemEvents.PowerModeChanged += (_, ev) =>
+        // Everything after the toolbar appears. A failure here once left a toolbar with dead buttons and nothing said
+        // (the global handler above swallowed it): now the toolbar says so in red, and the error goes to the log.
+        try
         {
-            if (ev.Mode == Microsoft.Win32.PowerModes.Resume) Dispatcher.BeginInvoke(() => { hooks?.Reinstall(); mode.Escape(); });
-        };
+            ApplySettings();
+            Wire();
 
-        // PowerPoint's slide show likes to come to the front: stay above it
-        // test runs: say what Windows answered, for the Windows check to read (never written in normal use)
-        if (Environment.GetEnvironmentVariable("CONTRASTINK_STATUS") is { Length: > 0 } statusPath)
-        {
-            string json;
-            try
+            bool testRun = Environment.GetEnvironmentVariable("CONTRASTINK_TEST") == "1";
+            hooks = new InputHooks { Key = OnKey, Pointer = OnPointer, AcceptInjectedKeys = testRun };
+            if (!hooks.Working)   // on the toolbar, not a message box: a message box would be in the recording
+                toolbar.Warn("Windows didn't allow Contrast Ink to watch the keyboard and pen: F9, Ctrl, the letter keys and pen drawing won't work. Use the toolbar buttons.");
+
+            // a projector plugged in or out, or the resolution changed: cover the right screen again.
+            // after sleep, Windows may have dropped the keyboard and mouse hooks without a word: put them back.
+            Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (_, _) => Dispatcher.BeginInvoke(() => { monitors = Native.Monitors(); Cover(); hooks?.Reinstall(); Refresh(); });
+            Microsoft.Win32.SystemEvents.PowerModeChanged += (_, ev) =>
             {
-                var o = Native.WindowRect(overlay); var t = Native.WindowRect(toolbar);
-                json = "{\"hiddenFromCapture\":" + (toolbar.HiddenFromCapture ? "true" : "false")
-                     + ",\"hooksWorking\":" + (hooks.Working ? "true" : "false")
-                     + ",\"windowsBuild\":" + Environment.OSVersion.Version.Build
-                     + ",\"dpi\":" + Native.Dpi(overlay)
-                     + ",\"overlay\":[" + o.Left + "," + o.Top + "," + o.Right + "," + o.Bottom + "]"
-                     + ",\"toolbar\":[" + t.Left + "," + t.Top + "," + t.Right + "," + t.Bottom + "]}";
+                if (ev.Mode == Microsoft.Win32.PowerModes.Resume) Dispatcher.BeginInvoke(() => { hooks?.Reinstall(); mode.Escape(); });
+            };
+
+            // PowerPoint's slide show likes to come to the front: stay above it
+            // test runs: say what Windows answered, for the Windows check to read (never written in normal use)
+            if (Environment.GetEnvironmentVariable("CONTRASTINK_STATUS") is { Length: > 0 } statusPath)
+            {
+                string json;
+                try
+                {
+                    var o = Native.WindowRect(overlay); var t = Native.WindowRect(toolbar);
+                    json = "{\"hiddenFromCapture\":" + (toolbar.HiddenFromCapture ? "true" : "false")
+                         + ",\"hooksWorking\":" + (hooks.Working ? "true" : "false")
+                         + ",\"windowsBuild\":" + Environment.OSVersion.Version.Build
+                         + ",\"dpi\":" + Native.Dpi(overlay)
+                         + ",\"overlay\":[" + o.Left + "," + o.Top + "," + o.Right + "," + o.Bottom + "]"
+                         + ",\"toolbar\":[" + t.Left + "," + t.Top + "," + t.Right + "," + t.Bottom + "]}";
+                }
+                catch (Exception ex) { json = "{\"error\":" + System.Text.Json.JsonSerializer.Serialize(ex.ToString()) + "}"; }
+                try { File.WriteAllText(statusPath, json); } catch (Exception ex) { Log(ex); }
             }
-            catch (Exception ex) { json = "{\"error\":" + System.Text.Json.JsonSerializer.Serialize(ex.ToString()) + "}"; }
-            try { File.WriteAllText(statusPath, json); } catch (Exception ex) { Log(ex); }
+            var top = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
+            top.Tick += (_, _) => { overlay.KeepOnTop(); toolbar.KeepOnTop(); };
+            top.Start();
+            var rehook = new DispatcherTimer { Interval = TimeSpan.FromMinutes(2) };
+            rehook.Tick += (_, _) => hooks?.Reinstall();
+            rehook.Start();
+            var penClock = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+            penClock.Tick += (_, _) => mode.Tick(DateTime.UtcNow);
+            penClock.Start();
         }
-        var top = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
-        top.Tick += (_, _) => { overlay.KeepOnTop(); toolbar.KeepOnTop(); };
-        top.Start();
-        var rehook = new DispatcherTimer { Interval = TimeSpan.FromMinutes(2) };
-        rehook.Tick += (_, _) => hooks?.Reinstall();
-        rehook.Start();
-        var penClock = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
-        penClock.Tick += (_, _) => mode.Tick(DateTime.UtcNow);
-        penClock.Start();
+        catch (Exception ex)
+        {
+            Log(ex);
+            toolbar.Warn("Contrast Ink did not start properly, so some buttons or keys may not work. Quit (✕) and start it again; if this stays, send %AppData%\\ContrastInk\\error.log.");
+        }
     }
 
     protected override void OnExit(ExitEventArgs e)
@@ -150,7 +160,7 @@ public partial class App : Application
 
     void PlaceToolbar()
     {
-        double x = settings.ToolbarX, y = settings.ToolbarY;
+        double x = settings.ToolbarX ?? double.NaN, y = settings.ToolbarY ?? double.NaN;
         bool visible = !double.IsNaN(x) && !double.IsNaN(y)
             && x > SystemParameters.VirtualScreenLeft - 50 && x < SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth - 80
             && y > SystemParameters.VirtualScreenTop - 10 && y < SystemParameters.VirtualScreenTop + SystemParameters.VirtualScreenHeight - 40;

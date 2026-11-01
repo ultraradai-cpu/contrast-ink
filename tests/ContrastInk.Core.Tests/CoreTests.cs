@@ -204,7 +204,7 @@ public class SettingsTests
         Assert.Equal(0, s.Width);
         Assert.Equal(1, s.Screen);
         Assert.Equal(Tool.Pen, s.Tool);
-        Assert.True(double.IsNaN(s.ToolbarX));
+        Assert.Null(s.ToolbarX);
     }
 
     [Fact]
@@ -213,7 +213,7 @@ public class SettingsTests
         var path = Path.Combine(Path.GetTempPath(), "contrastink-" + Guid.NewGuid() + "/settings.json");
         new Settings { Color = 2, Width = 2, FadingInk = true, Tool = Tool.Arrow, Screen = 1, ToolbarX = 40, ToolbarY = 60 }.Save(path);
         var s = Settings.Load(path, screens: 2);
-        Assert.Equal((2, 2, true, Tool.Arrow, 1, 40.0, 60.0), (s.Color, s.Width, s.FadingInk, s.Tool, s.Screen, s.ToolbarX, s.ToolbarY));
+        Assert.Equal((2, 2, true, Tool.Arrow, 1, (double?)40.0, (double?)60.0), (s.Color, s.Width, s.FadingInk, s.Tool, s.Screen, s.ToolbarX, s.ToolbarY));
     }
 
     [Fact]
@@ -224,6 +224,26 @@ public class SettingsTests
         File.WriteAllText(Path.Combine(dir, "bad.json"), "{ not json");
         Assert.Equal(Tool.Pen, Settings.Load(Path.Combine(dir, "bad.json"), 1).Tool);
         Assert.Equal(Tool.Pen, Settings.Load(Path.Combine(dir, "missing.json"), 1).Tool);
+    }
+
+    [Fact]
+    public void BrandNewDefaultSettingsSaveAndLoad()
+    {
+        // the first launch: nothing chosen yet, no toolbar position. This crashed start-up on Windows once.
+        var path = Path.Combine(Path.GetTempPath(), "contrastink-" + Guid.NewGuid() + "/settings.json");
+        new Settings().Save(path);
+        Assert.True(File.Exists(path), "the default settings were not written");
+        var s = Settings.Load(path, screens: 1);
+        Assert.Equal(Tool.Pen, s.Tool);
+    }
+
+    [Fact]
+    public void SavingNeverThrowsWhateverIsInTheSettings()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "contrastink-" + Guid.NewGuid() + "/settings.json");
+        var odd = new Settings();
+        typeof(Settings).GetProperty("ToolbarX")!.SetValue(odd, typeof(Settings).GetProperty("ToolbarX")!.PropertyType == typeof(double) ? double.NaN : (double?)double.PositiveInfinity);
+        odd.Save(path);   // must not throw: settings are a convenience, never a reason for the app to stop
     }
 
     [Fact]

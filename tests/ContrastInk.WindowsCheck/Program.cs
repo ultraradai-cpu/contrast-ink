@@ -41,7 +41,7 @@ static class Program
         int code = 1;
         slide.Shown += (_, _) => new Thread(() =>
         {
-            try { code = Run(); }
+            try { Run(); code = failures; }
             catch (Exception e) { Log("FAIL  the check itself crashed: " + e); code = 1; }
             finally
             {
@@ -94,7 +94,7 @@ static class Program
                 return failures;
             }
             Normal(st, toolbar);
-            return failures;
+            return 0;
         }
         finally
         {
@@ -102,7 +102,9 @@ static class Program
             try { if (!app.HasExited) app.Kill(); } catch (InvalidOperationException) { }
             // the app's own error log, if it wrote one
             var errLog = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ContrastInk", "error.log");
-            if (File.Exists(errLog)) { Log("      app error.log:"); foreach (var l in File.ReadAllLines(errLog)) Log("        " + l); File.Delete(errLog); }
+            bool errors = File.Exists(errLog);
+            Check(!errors, "the app logged no errors", errors ? "error.log below" : "no error.log");
+            if (errors) { foreach (var l in File.ReadAllLines(errLog)) Log("        " + l); File.Delete(errLog); }
         }
     }
 

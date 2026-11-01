@@ -22,8 +22,9 @@ public sealed class Settings
     public int Width { get; set; } = 1;
     public bool FadingInk { get; set; }
     public int Screen { get; set; }
-    public double ToolbarX { get; set; } = double.NaN;
-    public double ToolbarY { get; set; } = double.NaN;
+    /// <summary>Where the toolbar was left; empty until it is first dragged (never NaN: JSON cannot store it).</summary>
+    public double? ToolbarX { get; set; }
+    public double? ToolbarY { get; set; }
     public bool ToolbarCollapsed { get; set; }
 
     /// <summary>Keeps every value in range, so a hand-edited or old file can't break the app.</summary>
@@ -33,8 +34,8 @@ public sealed class Settings
         Color = Math.Clamp(Color, 0, Colors.Length - 1);
         Width = Math.Clamp(Width, 0, Widths.Length - 1);
         Screen = screens <= 0 ? 0 : Math.Clamp(Screen, 0, screens - 1);
-        if (!double.IsFinite(ToolbarX)) ToolbarX = double.NaN;
-        if (!double.IsFinite(ToolbarY)) ToolbarY = double.NaN;
+        if (ToolbarX is { } x && !double.IsFinite(x)) ToolbarX = null;
+        if (ToolbarY is { } y && !double.IsFinite(y)) ToolbarY = null;
         return this;
     }
 
@@ -47,13 +48,20 @@ public sealed class Settings
         { return new Settings().Clean(screens); }
     }
 
-    public void Save(string path)
+    /// <summary>
+    /// Writes the settings. Never throws: settings are a convenience, and a failure here once stopped the app
+    /// half way through starting (a NaN position cannot be written as JSON), leaving a toolbar with dead buttons.
+    /// </summary>
+    public bool Save(string path)
     {
         try
         {
+            Clean(int.MaxValue);   // never write a value that can't be read back
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.WriteAllText(path, JsonSerializer.Serialize(this, Json));
+            return true;
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* settings are a convenience */ }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or JsonException)
+        { return false; }
     }
 }
