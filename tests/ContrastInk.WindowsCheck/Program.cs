@@ -284,6 +284,7 @@ static class Program
         Check(slide.Clicks == c0 + 1, "letting go of Ctrl: clicks reach the slides again", $"clicks {c0} -> {slide.Clicks}");
 
         SlidesAndUndo();
+        RecordingWithObs();
         ToolbarAndPromises();
 
         // still hidden at the end, after all of that
@@ -408,6 +409,111 @@ static class Program
         finally { FakePowerPoint.Revoke(cookie); }
         Thread.Sleep(900);
         Key('C'); Key(VK.F9); Thread.Sleep(300);
+    }
+
+    // ---------------------------------------------------------------- recording with OBS, against a stand-in OBS
+    static bool OnToolbar(string textStarts) => FindToolbarButton(textStarts) != null;
+    static void WaitFor(Func<bool> done, int ms) { var sw = Stopwatch.StartNew(); while (!done() && sw.ElapsedMilliseconds < ms) Thread.Sleep(100); }
+
+    static void RecordingWithObs()
+    {
+        var ppt = new FakePowerPoint();
+        uint cookie = FakePowerPoint.Register(ppt);
+        FakeObs? obs = null;
+        try
+        {
+            Thread.Sleep(900);   // the app sees slide 1
+
+            // OBS's remote control switched off (OBS's default)
+            Directory.CreateDirectory(Path.GetDirectoryName(FakeObs.ConfigPath)!);
+            File.WriteAllText(FakeObs.ConfigPath, "{\"server_enabled\":false,\"server_password\":\"x\"}");
+            Press("Record with OBS");
+            WaitFor(() => OnToolbar("In OBS, open Tools"), 3000);
+            Check(OnToolbar("In OBS, open Tools"), "OBS's remote control off: the toolbar says how to switch it on", OnToolbar("In OBS, open Tools") ? "shown" : "not shown");
+
+            // switched on, OBS not running
+            FakeObs.WriteConfig();
+            Press("Record with OBS");
+            WaitFor(() => OnToolbar("Can't reach OBS"), 6000);
+            Check(OnToolbar("Can't reach OBS"), "OBS not running: the toolbar says to open it", OnToolbar("Can't reach OBS") ? "shown" : "not shown");
+
+            // OBS running, with a password that doesn't match what Contrast Ink read
+            obs = new FakeObs { OutputPath = Path.Combine(outDir, "lecture-check.mkv") };
+            File.WriteAllText(FakeObs.ConfigPath, File.ReadAllText(FakeObs.ConfigPath).Replace(FakeObs.Password, "not-the-password"));
+            Press("Record with OBS");
+            WaitFor(() => OnToolbar("OBS refused the password"), 6000);
+            Check(obs.WrongPassword && !obs.Identified && OnToolbar("OBS refused the password"), "a wrong password: OBS refuses, and the toolbar says so",
+                  $"refused {obs.WrongPassword}, toolbar {(OnToolbar("OBS refused the password") ? "says so" : "silent")}");
+            Check(obs.Count("StartRecord") == 0, "a wrong password records nothing", "StartRecord asked " + obs.Count("StartRecord") + " times");
+
+            // the real thing: OBS's own password, read from OBS's settings
+            FakeObs.WriteConfig();
+            Press("Record with OBS");
+            WaitFor(() => obs.Recording, 6000);
+            Check(obs.Identified, "Contrast Ink connects with the password from OBS's own settings", "identified " + obs.Identified);
+            Check(obs.Recording && obs.Count("StartRecord") == 1, "⏺ starts OBS recording", $"recording {obs.Recording}, StartRecord asked {obs.Count("StartRecord")} time(s)");
+            WaitFor(() => OnToolbar("Stop recording"), 2000);
+            Check(OnToolbar("Stop recording") && !OnToolbar("OBS refused"), "the toolbar shows ⏹ while recording, and the old message is gone", OnToolbar("Stop recording") ? "⏹ shown" : "no ⏹");
+            Thread.Sleep(1500);
+            ppt.SlideShowWindows.Show.View.CurrentShowPosition = 2; Thread.Sleep(1500);
+            ppt.SlideShowWindows.Show.View.CurrentShowPosition = 3; Thread.Sleep(1300);
+            Check(OnToolbar("0:0"), "the toolbar shows the recording time", OnToolbar("0:0") ? "timer shown" : "no timer");
+            var names = string.Join(", ", obs.ChapterNames);
+            Check(names == "Slide 2, Slide 3", "each slide change is a chapter in OBS's video", "chapters asked: " + names);
+
+            Press("Pause recording");
+            WaitFor(() => obs.Paused, 2000);
+            Check(obs.Paused && OnToolbar("Resume recording"), "⏸ pauses OBS, and the button becomes ▶", $"paused {obs.Paused}");
+            Press("Resume recording");
+            WaitFor(() => !obs.Paused, 2000);
+            Check(!obs.Paused && obs.Recording, "▶ resumes", $"paused {obs.Paused}, recording {obs.Recording}");
+
+            Press("Stop recording");
+            WaitFor(() => !obs.Recording, 3000);
+            Thread.Sleep(500);
+            Check(!obs.Recording && OnToolbar("Record with OBS"), "⏹ stops OBS recording, and the toolbar is ready again", $"recording {obs.Recording}");
+            var chaptersFile = Path.Combine(outDir, "lecture-check chapters.txt");
+            var lines = File.Exists(chaptersFile) ? File.ReadAllLines(chaptersFile) : Array.Empty<string>();
+            Check(lines.Length == 3 && lines[0] == "0:00 Slide 1" && lines[1].EndsWith(" Slide 2") && lines[2].EndsWith(" Slide 3") && lines[1] != "0:00 Slide 2",
+                  "a chapters file is saved beside the video, ready for a YouTube description", File.Exists(chaptersFile) ? string.Join(" | ", lines) : "no file");
+
+            // OBS stops by itself
+            Press("Record with OBS");
+            WaitFor(() => obs.Recording, 3000);
+            obs.StopByItself().Wait();
+            WaitFor(() => OnToolbar("OBS stopped recording by itself"), 3000);
+            Check(OnToolbar("OBS stopped recording by itself") && OnToolbar("Record with OBS"), "OBS stopping by itself: the toolbar says so, and is ready to record again",
+                  OnToolbar("OBS stopped recording by itself") ? "said" : "silent");
+            Press("OBS stopped recording by itself");
+            Check(!OnToolbar("OBS stopped recording by itself"), "clicking a message dismisses it", OnToolbar("OBS stopped recording by itself") ? "still there" : "gone");
+
+            // the disk filling up
+            obs.DiskMB = 900;
+            Press("Record with OBS");
+            WaitFor(() => OnToolbar("Only 0.9 GB left"), 3000);
+            Check(OnToolbar("Only 0.9 GB left"), "low disk space while recording: the toolbar warns", OnToolbar("Only 0.9 GB left") ? "warned" : "silent");
+            Press("Stop recording");
+            WaitFor(() => !obs.Recording, 3000);
+
+            // a scene without Display Capture (the marks would not be in the video)
+            obs.DiskMB = 50_000; obs.SceneHasScreen = false;
+            Press("Record with OBS");
+            WaitFor(() => OnToolbar("OBS's scene \"Lecture\" has no Display Capture"), 3000);
+            Check(OnToolbar("OBS's scene \"Lecture\" has no Display Capture"), "a scene without Display Capture: the toolbar warns the marks won't be recorded", "");
+
+            // OBS closes while recording
+            obs.Dispose(); obs = null;
+            WaitFor(() => OnToolbar("Lost contact with OBS"), 4000);
+            Check(OnToolbar("Lost contact with OBS") && OnToolbar("Record with OBS"), "OBS closing mid-recording: the toolbar says so", OnToolbar("Lost contact with OBS") ? "said" : "silent");
+            Press("Lost contact with OBS");
+        }
+        finally
+        {
+            obs?.Dispose();
+            FakePowerPoint.Revoke(cookie);
+            try { File.Delete(FakeObs.ConfigPath); } catch (IOException) { }
+            Thread.Sleep(900);
+        }
     }
 
     // ---------------------------------------------------------------- the toolbar's own buttons, and the README's promises

@@ -27,6 +27,7 @@ public partial class ToolbarWindow : Window
     public event Action<string, bool>? OptionChanged;
     bool refreshing;
 
+    public event Action? RecordClicked, PauseClicked;
     public event Action? DrawClicked, UndoClicked, ClearClicked, FadeClicked, ScreenClicked, FoldClicked, CloseClicked, Moved;
     public event Action<Tool>? ToolClicked;
     public event Action<int>? ColorClicked, WidthClicked;
@@ -67,6 +68,8 @@ public partial class ToolbarWindow : Window
         ScreenBtn.Click += (_, _) => ScreenClicked?.Invoke();
         FoldBtn.Click += (_, _) => FoldClicked?.Invoke();
         CloseBtn.Click += (_, _) => CloseClicked?.Invoke();
+        RecBtn.Click += (_, _) => RecordClicked?.Invoke();
+        PauseBtn.Click += (_, _) => PauseClicked?.Invoke();
         SettingsBtn.Click += (_, _) =>
         {
             SettingsPanel.Visibility = SettingsPanel.IsVisible ? Visibility.Collapsed : Visibility.Visible;
@@ -81,6 +84,8 @@ public partial class ToolbarWindow : Window
         Grip.MouseLeftButtonDown += (_, e) => { if (e.ButtonState == MouseButtonState.Pressed) { DragMove(); Moved?.Invoke(); } };
 
         HintsInside(this);
+        // a notice is dismissed by clicking it (a start-up warning stays: it is about this computer, not this moment)
+        Hint.MouseLeftButtonUp += (_, _) => { if (warning == null && notice != null && Hint.Text == notice) Notice(null); };
 
         SourceInitialized += (_, _) =>
         {
@@ -101,7 +106,52 @@ public partial class ToolbarWindow : Window
         };
     }
 
-    string? warning;
+    string? warning, notice;
+
+    /// <summary>
+    /// Something the presenter should know about recording (OBS not reachable, stopped by itself, disk filling up),
+    /// shown under the buttons until it is replaced or cleared with null. A start-up warning still comes first.
+    /// </summary>
+    public void Notice(string? text)
+    {
+        notice = text;
+        Standing();
+    }
+
+    /// <summary>Shows the standing message (a warning, else a notice), or nothing.</summary>
+    void Standing()
+    {
+        var text = warning ?? notice;
+        if (text == null) { Hint.Visibility = Visibility.Collapsed; return; }
+        Hint.Text = text;
+        Hint.Foreground = Brushes.Salmon;
+        Hint.Visibility = Visibility.Visible;
+    }
+
+    static readonly Brush Grey = new SolidColorBrush(Color.FromRgb(0x8A, 0x95, 0xA6));
+    static readonly Brush RecRed = new SolidColorBrush(Color.FromRgb(0xFF, 0x3B, 0x30));
+    static readonly Brush Amber = new SolidColorBrush(Color.FromRgb(0xFF, 0xB0, 0x20));
+
+    /// <summary>The recording buttons: grey ⏺ when OBS isn't connected, white when ready, red ⏹ and a timer while recording.</summary>
+    internal void ShowRecording(Recorder.State state, bool connected, TimeSpan elapsed)
+    {
+        bool on = state is Recorder.State.Recording or Recorder.State.Paused or Recorder.State.Stopping;
+        RecDot.Text = on ? "⏹" : "⏺";
+        RecDot.Foreground = state == Recorder.State.Paused ? Amber : on ? RecRed : connected ? RecRed : Grey;
+        Label(RecBtn, on ? "Stop recording (OBS)" : state == Recorder.State.Starting ? "Starting OBS recording" : connected ? "Record with OBS (start / stop)" : "Record with OBS (OBS not connected yet: press to connect)");
+        PauseBtn.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        PauseBtn.Content = state == Recorder.State.Paused ? "▶" : "⏸";
+        Label(PauseBtn, state == Recorder.State.Paused ? "Resume recording" : "Pause recording");
+        RecTime.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        RecTime.Text = Obs.Time(elapsed, elapsed.TotalHours >= 1) + (state == Recorder.State.Paused ? " paused" : "");
+    }
+
+    /// <summary>A button's hint and its name for screen readers (and the Windows check), kept the same.</summary>
+    static void Label(FrameworkElement e, string text)
+    {
+        e.ToolTip = text;
+        System.Windows.Automation.AutomationProperties.SetName(e, text);
+    }
 
     /// <summary>
     /// A problem the presenter must know about: the handle turns red and the line under the buttons stays visible.
@@ -129,12 +179,7 @@ public partial class ToolbarWindow : Window
                 // screen readers name the button by its hint (the visible label is only a symbol)
                 System.Windows.Automation.AutomationProperties.SetName(fe, text);
                 fe.MouseEnter += (_, _) => { Hint.Text = fe.ToolTip as string ?? text; Hint.Foreground = OffText; Hint.Visibility = Visibility.Visible; };
-                fe.MouseLeave += (_, _) =>
-                {
-                    // a standing warning stays; an ordinary hint goes
-                    if (warning != null) { Hint.Text = warning; Hint.Foreground = Brushes.Salmon; }
-                    else Hint.Visibility = Visibility.Collapsed;
-                };
+                fe.MouseLeave += (_, _) => Standing();   // a standing warning or notice comes back; an ordinary hint goes
             }
             HintsInside(fe);
         }

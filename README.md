@@ -66,6 +66,32 @@ ends, the marks drawn on its slides go away with it. Switch this off under ⚙ S
 This needs the desktop PowerPoint app (Microsoft 365, 2016, 2019, 2021). In other apps (PowerPoint on the web, a PDF
 viewer, a DICOM viewer) marks stay until you clear them.
 
+## Record From the Toolbar
+
+Contrast Ink can start and stop OBS for you, so you never have to switch to OBS mid-lecture. OBS still does the
+recording, with your OBS settings.
+
+**Once, in OBS:** open **Tools → WebSocket Server Settings**, tick **Enable WebSocket Server**, and press **OK**.
+Contrast Ink reads the port and password from OBS's own settings, so there's nothing to type. (OBS 28 or newer.)
+
+| Button | What it does |
+|---|---|
+| ⏺ | Start recording (grey until OBS is open and connected; press it to connect) |
+| ⏹ | Stop recording |
+| ⏸ / ▶ | Pause / resume |
+
+While recording, the toolbar shows the time, and a message under the buttons if:
+- OBS stops recording by itself (what was recorded is saved),
+- OBS closes,
+- less than 2 GB is left on the recording disk, or
+- the OBS scene has no Display Capture, so your marks wouldn't be in the video.
+
+Click a message to dismiss it.
+
+**Chapters:** in a PowerPoint slide show, every slide change becomes a chapter. When you stop, a file named
+`<your video> chapters.txt` is saved next to the video, ready to paste into a YouTube description. With OBS 30.2 or newer
+and the **Hybrid MP4** recording format (Settings → Output → Recording Format), the chapters are also inside the video.
+
 ## OBS Settings
 
 - Use **Display Capture** (the whole screen), not Window Capture of PowerPoint, or your drawings won't be recorded.

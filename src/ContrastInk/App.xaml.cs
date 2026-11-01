@@ -26,6 +26,7 @@ public partial class App : Application
     ToolbarWindow toolbar = null!;
     UndoButtonWindow undoButton = null!;
     SlideWatcher? slides;
+    Recorder? recorder;
     InputHooks? hooks;
     List<Native.Monitor> monitors = new();
     bool ctrl, shift, alt, win;
@@ -63,7 +64,14 @@ public partial class App : Application
             ApplySettings();
             Wire();
             slides = new SlideWatcher(Dispatcher);
-            slides.Changed += slide => { if (settings.MarksPerSlide) { overlay.ShowPage(slide); undoButton.Hide(); } };
+            recorder = new Recorder(toolbar, () => slides.Current, Dispatcher);
+            toolbar.RecordClicked += recorder.RecordClicked;
+            toolbar.PauseClicked += recorder.PauseClicked;
+            slides.Changed += slide =>
+            {
+                if (settings.MarksPerSlide) { overlay.ShowPage(slide); undoButton.Hide(); }
+                recorder.SlideChanged(slide);
+            };
 
             bool testRun = Environment.GetEnvironmentVariable("CONTRASTINK_TEST") == "1";
             hooks = new InputHooks { Key = OnKey, Pointer = OnPointer, AcceptInjectedKeys = testRun };

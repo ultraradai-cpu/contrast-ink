@@ -55,6 +55,13 @@
       <Button x:Name="DrawBtn" Style="{StaticResource Tb}" Width="58" ToolTip="Draw on / off (F9). Or hold Ctrl to draw. A pen draws by itself.">
         <StackPanel Orientation="Horizontal"><TextBlock Text="✏"/><TextBlock x:Name="DrawText" Text=" Off" FontSize="12" VerticalAlignment="Center"/></StackPanel>
       </Button>
+      <!-- recording with OBS: stays visible when the toolbar is made small -->
+      <Border Style="{StaticResource Sep}"/>
+      <Button x:Name="RecBtn" Style="{StaticResource Tb}" ToolTip="Record with OBS (start / stop)">
+        <TextBlock x:Name="RecDot" Text="⏺" Foreground="#8A95A6"/>
+      </Button>
+      <Button x:Name="PauseBtn" Style="{StaticResource Tb}" Content="⏸" Visibility="Collapsed" ToolTip="Pause recording"/>
+      <TextBlock x:Name="RecTime" Visibility="Collapsed" Foreground="{StaticResource Ink}" FontSize="12" VerticalAlignment="Center" Margin="2,0,6,0" FontFamily="Consolas, Segoe UI"/>
       <StackPanel x:Name="Full" Orientation="Horizontal">
         <Border Style="{StaticResource Sep}"/>
         <Button x:Name="PenBtn" Style="{StaticResource Tb}" Content="🖊" ToolTip="Pen (P)"/>
@@ -98,7 +105,7 @@
       <CheckBox x:Name="OptSlides" Content="Each PowerPoint Slide Keeps Its Own Marks"/>
     </StackPanel>
     <!-- hover help is shown here, inside the toolbar, so OBS never records it (real tooltips are separate windows) -->
-    <TextBlock x:Name="Hint" Visibility="Collapsed" Foreground="{StaticResource Ink}" FontSize="12" Margin="8,2,8,4" TextWrapping="Wrap" MaxWidth="640"/>
+    <TextBlock x:Name="Hint" Cursor="Hand" Visibility="Collapsed" Foreground="{StaticResource Ink}" FontSize="12" Margin="8,2,8,4" TextWrapping="Wrap" MaxWidth="640"/>
     </StackPanel>
   </Border>
 </Window>

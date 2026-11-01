@@ -439,3 +439,86 @@ public class PlacementTests
     public void NothingToDoLeavesItWhereItIs()
         => Assert.Equal((300, 40), Placement.KeepInside(new Box(300, 40, 1170, 90), Both));
 }
+
+public class ObsTests
+{
+    [Fact]
+    public void PasswordAnswerMatchesTheProtocolsRecipe()
+    {
+        // the salt and challenge from obs-websocket's protocol.md example; the answer worked out separately in Python
+        // (hashlib + base64), so this is not the C# checking itself
+        Assert.Equal("1Ct943GAT+6YQUUX47Ia/ncufilbe6+oD6lY+5kaCu4=",
+            Obs.Auth("supersecretpassword", "lM1GncleQOaCu9lT1yeUZhFYnqhsLLP1G5lAGo3ixaI=", "+IxH4CnCiqpX1rM9scsNynZzbOe4KhDeYcTNS3PDaeY="));
+    }
+
+    static string AppData(Action<string> write)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "contrastink-obs-" + Guid.NewGuid());
+        Directory.CreateDirectory(Path.Combine(dir, "obs-studio", "plugin_config", "obs-websocket"));
+        write(Path.Combine(dir, "obs-studio"));
+        return dir;
+    }
+
+    [Fact]
+    public void ReadsObs30Settings()
+    {
+        var dir = AppData(obs => File.WriteAllText(Path.Combine(obs, "plugin_config", "obs-websocket", "config.json"),
+            "{\"alerts_enabled\":false,\"auth_required\":true,\"first_load\":false,\"server_enabled\":true,\"server_password\":\"pw1\",\"server_port\":4466}"));
+        Assert.Equal(new Obs.Connection(true, 4466, "pw1"), Obs.ReadConfig(dir));
+    }
+
+    [Fact]
+    public void Obs30DefaultsAreOffAnd4455WithAPassword()
+    {
+        var dir = AppData(obs => File.WriteAllText(Path.Combine(obs, "plugin_config", "obs-websocket", "config.json"), "{}"));
+        Assert.Equal(new Obs.Connection(false, 4455, ""), Obs.ReadConfig(dir));   // OBS's own defaults (src/Config.h)
+    }
+
+    [Fact]
+    public void NoPasswordWhenObsAsksForNone()
+    {
+        var dir = AppData(obs => File.WriteAllText(Path.Combine(obs, "plugin_config", "obs-websocket", "config.json"),
+            "{\"server_enabled\":true,\"auth_required\":false,\"server_password\":\"ignored\"}"));
+        Assert.Null(Obs.ReadConfig(dir)!.Password);
+    }
+
+    [Fact]
+    public void ReadsObs28GlobalIni()
+    {
+        var dir = AppData(obs => File.WriteAllText(Path.Combine(obs, "global.ini"),
+            "[General]\nName=x\n\n[OBSWebSocket]\nFirstLoad=false\nServerEnabled=true\nServerPort=4455\nAuthRequired=true\nServerPassword=abc=def\n\n[Video]\nServerPort=1\n"));
+        Assert.Equal(new Obs.Connection(true, 4455, "abc=def"), Obs.ReadConfig(dir));   // '=' inside a password survives
+    }
+
+    [Fact]
+    public void Obs28WithoutAPassword()
+    {
+        var dir = AppData(obs => File.WriteAllText(Path.Combine(obs, "global.ini"), "[OBSWebSocket]\nServerEnabled=true\nAuthRequired=false\nServerPassword=x\n"));
+        Assert.Equal(new Obs.Connection(true, 4455, null), Obs.ReadConfig(dir));
+    }
+
+    [Fact]
+    public void NoObsSettingsIsNull() => Assert.Null(Obs.ReadConfig(Path.Combine(Path.GetTempPath(), "nothing-" + Guid.NewGuid())));
+
+    [Fact]
+    public void ChaptersStartAtZeroAndSkipQuickClicks()
+    {
+        var text = Obs.Chapters(new[] { (TimeSpan.FromSeconds(0.2), "Slide 1"), (TimeSpan.FromSeconds(65), "Slide 2"),
+                                        (TimeSpan.FromSeconds(65.4), "Slide 3"), (TimeSpan.FromSeconds(130), "Slide 4") });
+        Assert.Equal("0:00 Slide 1\n1:05 Slide 3\n2:10 Slide 4\n", text);
+    }
+
+    [Fact]
+    public void ChaptersGetAStartLineAndHoursWhenNeeded()
+    {
+        Assert.Equal("0:00:00 Start\n0:05:00 Slide 2\n1:02:03 Slide 9\n",
+            Obs.Chapters(new[] { (TimeSpan.FromMinutes(5), "Slide 2"), (new TimeSpan(1, 2, 3), "Slide 9") }));
+        Assert.Equal("", Obs.Chapters(Array.Empty<(TimeSpan, string)>()));
+    }
+
+    [Theory]
+    [InlineData(@"C:\a#b\Lecture.pptx#12", 12)]
+    [InlineData("", null)]
+    [InlineData(@"C:\x.pptx#0", null)]
+    public void SlideNumberFromTheWatchersKey(string key, int? n) => Assert.Equal(n, Obs.SlideNumber(key));
+}

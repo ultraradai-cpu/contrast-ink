@@ -13,7 +13,7 @@
     <AssemblyName>ContrastInk</AssemblyName>
     <RootNamespace>ContrastInk</RootNamespace>
     <Product>Contrast Ink</Product>
-    <Version>0.3.0</Version>
+    <Version>0.4.0</Version>
     <Company>Contrast</Company>
   </PropertyGroup>
   <ItemGroup>
