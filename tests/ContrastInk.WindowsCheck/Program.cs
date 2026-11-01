@@ -65,10 +65,12 @@ static class Program
         Log($"Contrast Ink Windows check ({runMode}) on Windows build {Environment.OSVersion.Version.Build}, screen {screen.Width}x{screen.Height}");
         string status = Path.Combine(outDir, $"status-{runMode}.json");
         File.Delete(status);
+        // fresh settings, so every run starts from the defaults
+        var settingsFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ContrastInk", "settings.json");
+        if (File.Exists(settingsFile)) File.Delete(settingsFile);
         var psi = new ProcessStartInfo(exe) { UseShellExecute = false };
         psi.Environment["CONTRASTINK_TEST"] = "1";
         psi.Environment["CONTRASTINK_STATUS"] = status;
-        psi.Environment["APPDATA"] = Path.Combine(outDir, "appdata-" + runMode);   // fresh settings: defaults
         if (runMode == "control") psi.Environment["CONTRASTINK_TEST_NOHIDE"] = "1";
         using var app = Process.Start(psi)!;
         try
@@ -80,6 +82,7 @@ static class Program
             if (!File.Exists(status)) { Shot("no-start"); return 1; }
             var st = JsonDocument.Parse(File.ReadAllText(status)).RootElement;
             Log("      app status: " + st.GetRawText());
+            if (st.TryGetProperty("error", out var err)) { Check(false, "the app could read its own state", err.GetString() ?? ""); return failures; }
             scale = st.GetProperty("dpi").GetUInt32() / 96.0;
             int[] tb = st.GetProperty("toolbar").EnumerateArray().Select(e => e.GetInt32()).ToArray();
             var toolbar = Rectangle.FromLTRB(tb[0], tb[1], tb[2], tb[3]);
@@ -93,7 +96,14 @@ static class Program
             Normal(st, toolbar);
             return failures;
         }
-        finally { try { if (!app.HasExited) app.Kill(); } catch (InvalidOperationException) { } }
+        finally
+        {
+            Log("      app still running at the end: " + !app.HasExited + (app.HasExited ? ", exit code " + app.ExitCode : ""));
+            try { if (!app.HasExited) app.Kill(); } catch (InvalidOperationException) { }
+            // the app's own error log, if it wrote one
+            var errLog = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ContrastInk", "error.log");
+            if (File.Exists(errLog)) { Log("      app error.log:"); foreach (var l in File.ReadAllLines(errLog)) Log("        " + l); File.Delete(errLog); }
+        }
     }
 
     // ---------------------------------------------------------------- the checks

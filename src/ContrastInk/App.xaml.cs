@@ -69,16 +69,21 @@ public partial class App : Application
         // PowerPoint's slide show likes to come to the front: stay above it
         // test runs: say what Windows answered, for the Windows check to read (never written in normal use)
         if (Environment.GetEnvironmentVariable("CONTRASTINK_STATUS") is { Length: > 0 } statusPath)
-            Dispatcher.BeginInvoke(() =>
+        {
+            string json;
+            try
             {
                 var o = Native.WindowRect(overlay); var t = Native.WindowRect(toolbar);
-                File.WriteAllText(statusPath, System.Text.Json.JsonSerializer.Serialize(new
-                {
-                    hiddenFromCapture = toolbar.HiddenFromCapture, hooksWorking = hooks.Working,
-                    windowsBuild = Environment.OSVersion.Version.Build, dpi = Native.Dpi(overlay),
-                    overlay = new[] { o.Left, o.Top, o.Right, o.Bottom }, toolbar = new[] { t.Left, t.Top, t.Right, t.Bottom },
-                }));
-            }, DispatcherPriority.ApplicationIdle);
+                json = "{\"hiddenFromCapture\":" + (toolbar.HiddenFromCapture ? "true" : "false")
+                     + ",\"hooksWorking\":" + (hooks.Working ? "true" : "false")
+                     + ",\"windowsBuild\":" + Environment.OSVersion.Version.Build
+                     + ",\"dpi\":" + Native.Dpi(overlay)
+                     + ",\"overlay\":[" + o.Left + "," + o.Top + "," + o.Right + "," + o.Bottom + "]"
+                     + ",\"toolbar\":[" + t.Left + "," + t.Top + "," + t.Right + "," + t.Bottom + "]}";
+            }
+            catch (Exception ex) { json = "{\"error\":" + System.Text.Json.JsonSerializer.Serialize(ex.ToString()) + "}"; }
+            try { File.WriteAllText(statusPath, json); } catch (Exception ex) { Log(ex); }
+        }
         var top = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
         top.Tick += (_, _) => { overlay.KeepOnTop(); toolbar.KeepOnTop(); };
         top.Start();
