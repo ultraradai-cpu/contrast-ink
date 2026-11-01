@@ -1,0 +1,40 @@
+name: Build
+
+# Every push to main: run the tests, build LectureInk.exe, and put it on the "Latest" release
+# so there is always one download link: Releases → Latest → LectureInk.exe
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Test
+        run: dotnet test tests/LectureInk.Core.Tests -c Release
+      - name: Build LectureInk.exe
+        run: >
+          dotnet publish src/LectureInk -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true -p:DebugType=none -o out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LectureInk
+          path: out/LectureInk.exe
+      - name: Update the Latest release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest out/LectureInk.exe --title "Latest" --target "$GITHUB_SHA" \
+            --notes "Built from ${GITHUB_SHA::7}. Download LectureInk.exe and run it (no install needed)."
