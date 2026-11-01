@@ -55,6 +55,13 @@ public sealed class ModeController
         if (mouseTravel >= MouseTakeoverPixels) { penActive = false; mouseTravel = 0; }
     });
 
+    /// <summary>
+    /// What the keyboard says right now about Ctrl. Windows can swallow a key's release (Ctrl+Alt+Del, Win+L,
+    /// a UAC prompt), which would leave "Ctrl held" on and drawing stuck on, catching every click meant for PowerPoint.
+    /// Called a few times a second with the real key state; it can only end Ctrl drawing, never start it.
+    /// </summary>
+    public void CtrlActuallyDown(bool down) => Set(() => { if (ctrlHeld && !down) { ctrlHeld = false; ctrlUsedForShortcut = false; } });
+
     public void Escape() => Set(() => { manual = false; penActive = false; ctrlUsedForShortcut = ctrlHeld; });
 
     void Set(Action change)

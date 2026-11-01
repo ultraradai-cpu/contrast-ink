@@ -356,3 +356,57 @@ public class KeyPolicyTests
         Assert.Equal(KeyAction.Pass, A(P, true, altOrWin: true));
     }
 }
+
+public class LostKeyReleaseTests
+{
+    [Fact]
+    public void ALostCtrlReleaseIsNoticedFromTheRealKeyState()
+    {
+        var m = new ModeController();
+        m.CtrlDown();                 // ...then Windows swallowed the release (e.g. Ctrl+Alt+Del)
+        Assert.True(m.Drawing);
+        m.CtrlActuallyDown(false);
+        Assert.False(m.Drawing);
+    }
+
+    [Fact]
+    public void TheRealKeyStateNeverStartsDrawingAndLeavesF9Alone()
+    {
+        var m = new ModeController();
+        m.CtrlActuallyDown(true);
+        Assert.False(m.Drawing);
+        m.Toggle(); m.CtrlActuallyDown(false);
+        Assert.True(m.Drawing);
+    }
+}
+
+public class PlacementTests
+{
+    // laptop 1920x1040 work area, projector to its right 1024x768
+    static readonly Box Laptop = new(0, 0, 1920, 1040), Projector = new(1920, 0, 2944, 768);
+    static readonly Box[] Both = { Laptop, Projector };
+
+    [Fact]
+    public void AToolbarOnTheProjectorStaysOnTheProjector()
+        => Assert.Equal((2000, 10), Placement.KeepInside(new Box(2000, 10, 2870, 60), Both));
+
+    [Fact]
+    public void ARunOffOnTheProjectorIsPulledInOnTheProjector()
+        => Assert.Equal((2944 - 870, 10), Placement.KeepInside(new Box(2100, 10, 2970, 60), Both));
+
+    [Fact]
+    public void ARunOffOnTheLaptopIsPulledInOnTheLaptop()
+        => Assert.Equal((1920 - 870, 10), Placement.KeepInside(new Box(1500, 10, 2370, 60), new[] { Laptop }));
+
+    [Fact]
+    public void TheWindowsCheckCase1024Wide()
+        => Assert.Equal((154, 8), Placement.KeepInside(new Box(182, 8, 1052, 58), new[] { new Box(0, 0, 1024, 768) }));
+
+    [Fact]
+    public void OffEveryScreenGoesToTheNearestOne()
+        => Assert.Equal((Projector.Right - 870, 0), Placement.KeepInside(new Box(4000, -200, 4870, -150), Both));
+
+    [Fact]
+    public void NothingToDoLeavesItWhereItIs()
+        => Assert.Equal((300, 40), Placement.KeepInside(new Box(300, 40, 1170, 90), Both));
+}

@@ -43,7 +43,7 @@ public partial class ToolbarWindow : Window
         for (int i = 0; i < Settings.Widths.Length; i++)
         {
             int n = i;
-            // the dot takes the button's text colour, so it stays visible when the button turns gold
+            // the dot takes the button's text colour, so it stays visible when the button turns blue
             var line = new Ellipse { Width = Settings.Widths[i] + 2, Height = Settings.Widths[i] + 2 };
             line.SetBinding(Shape.FillProperty, new System.Windows.Data.Binding("Foreground") { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.FindAncestor, typeof(Button), 1) });
             var b = new Button { Style = (Style)Resources["Tb"], Width = 28, Content = line, ToolTip = $"{Settings.WidthNames[i]} ([ thinner, ] thicker)" };

@@ -45,6 +45,15 @@ static class Native
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
     [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr hwnd);
     public static RECT WindowRect(System.Windows.Window w) { GetWindowRect(new System.Windows.Interop.WindowInteropHelper(w).Handle, out var r); return r; }
+    public const uint SWP_NOZORDER = 0x4;
+    /// <summary>Moves a window's top-left corner to (x, y) in real screen pixels, keeping its size and stacking.</summary>
+    public static void MoveTo(System.Windows.Window w, int x, int y) =>
+        SetWindowPos(new System.Windows.Interop.WindowInteropHelper(w).Handle, IntPtr.Zero, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+
+    [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vk);
+    /// <summary>Whether a key is physically down right now (not what our watcher last saw).</summary>
+    public static bool IsDown(int vk) => (GetAsyncKeyState(vk) & 0x8000) != 0;
+
     public static uint Dpi(System.Windows.Window w) => GetDpiForWindow(new System.Windows.Interop.WindowInteropHelper(w).Handle);
 
     [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
@@ -67,7 +76,7 @@ static class Native
     [DllImport("user32.dll")] static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr clip, MonitorEnumProc proc, IntPtr data);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool GetMonitorInfo(IntPtr monitor, ref MONITORINFOEX info);
 
-    public sealed record Monitor(RECT Bounds, bool Primary);
+    public sealed record Monitor(RECT Bounds, RECT Work, bool Primary);
 
     /// <summary>Monitors, the main one first, then left to right.</summary>
     public static List<Monitor> Monitors()
@@ -76,7 +85,7 @@ static class Native
         EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr m, IntPtr dc, ref RECT r, IntPtr d) =>
         {
             var mi = new MONITORINFOEX { cbSize = Marshal.SizeOf<MONITORINFOEX>(), szDevice = "" };
-            if (GetMonitorInfo(m, ref mi)) list.Add(new Monitor(mi.rcMonitor, (mi.dwFlags & 1) != 0));
+            if (GetMonitorInfo(m, ref mi)) list.Add(new Monitor(mi.rcMonitor, mi.rcWork, (mi.dwFlags & 1) != 0));
             return true;
         }, IntPtr.Zero);
         return list.OrderByDescending(m => m.Primary).ThenBy(m => m.Bounds.Left).ThenBy(m => m.Bounds.Top).ToList();

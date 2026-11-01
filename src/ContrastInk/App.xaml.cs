@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Windows;
 using System.Windows.Media;
@@ -97,7 +98,7 @@ public partial class App : Application
             rehook.Tick += (_, _) => hooks?.Reinstall();
             rehook.Start();
             var penClock = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
-            penClock.Tick += (_, _) => mode.Tick(DateTime.UtcNow);
+            penClock.Tick += (_, _) => { mode.Tick(DateTime.UtcNow); ReconcileModifiers(); };
             penClock.Start();
         }
         catch (Exception ex)
@@ -178,16 +179,29 @@ public partial class App : Application
 
     /// <summary>
     /// The toolbar is about 870 points wide: on a 1024-wide projector screen it ran 27 px off the right edge,
-    /// half hiding ✕ (seen in the Windows check's screenshots). Pull it back inside the screen it is on.
+    /// half hiding ✕ (seen in the Windows check's screenshots). Pull it back inside the screen it is ON, in real
+    /// pixels (the first version used the main screen only and pulled a toolbar on the projector back to the laptop).
     /// </summary>
     void KeepToolbarOnScreen()
     {
-        var area = SystemParameters.WorkArea;
-        double w = toolbar.ActualWidth;
-        if (w <= 0) return;
-        if (toolbar.Left + w > area.Right) toolbar.Left = Math.Max(area.Left, area.Right - w);
-        if (toolbar.Left < area.Left) toolbar.Left = area.Left;
-        if (toolbar.Top < area.Top) toolbar.Top = area.Top;
+        var r = Native.WindowRect(toolbar);
+        if (r.Right <= r.Left) return;
+        var areas = Native.Monitors().Select(m => new Box(m.Work.Left, m.Work.Top, m.Work.Right, m.Work.Bottom)).ToList();
+        var (x, y) = Placement.KeepInside(new Box(r.Left, r.Top, r.Right, r.Bottom), areas);
+        if (x != r.Left || y != r.Top) Native.MoveTo(toolbar, x, y);
+    }
+
+    /// <summary>
+    /// Windows can swallow a key's release (Ctrl+Alt+Del, Win+L, a UAC prompt). Trusting only what the watcher saw
+    /// would leave Ctrl "held" and drawing stuck on, catching every click meant for PowerPoint. Check the real keys.
+    /// </summary>
+    void ReconcileModifiers()
+    {
+        mode.CtrlActuallyDown(Native.IsDown(0x11));
+        if (ctrl && !Native.IsDown(0x11)) ctrl = false;
+        if (shift && !Native.IsDown(0x10)) shift = false;
+        if (alt && !Native.IsDown(0x12)) alt = false;
+        if (win && !Native.IsDown(0x5B) && !Native.IsDown(0x5C)) win = false;
     }
 
     // ---------- keyboard ----------

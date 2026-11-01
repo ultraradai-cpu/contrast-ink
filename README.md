@@ -10,7 +10,7 @@ OBS records your drawings; the toolbar stays out of the recording.
 3. The first time, Windows may say "Windows protected your PC" (the app isn't signed):
    click **More info → Run anyway**.
 
-A small maroon toolbar appears at the top of the screen. Drag it by the ⋮⋮ handle.
+A small dark Contrast Ink toolbar appears at the top of the screen. Drag it by the blue Contrast mark at its left end.
 
 ## Draw
 
@@ -52,7 +52,7 @@ Marks stay until you clear them. The 🖥 button moves the drawing layer to your
 - Use **Display Capture** (the whole screen), not Window Capture of PowerPoint, or your drawings won't be recorded.
 - The toolbar, and its hover help, are hidden from recordings on Windows 10 (version 2004 or newer) and Windows 11.
   On older Windows 10 it can't be hidden (Microsoft: there the setting records the window as an empty box), so the
-  ⋮⋮ handle turns **red** and a warning line stays under the buttons: make the toolbar small (‹) or move it to a corner.
+  dot beside the Contrast mark turns **red** and a warning line stays under the buttons: make the toolbar small (‹) or move it to a corner.
 - Hover help appears as a line inside the toolbar (never as a pop-up, which OBS could record).
 - Turn off **Capture Cursor** in the Display Capture settings if you don't want the mouse arrow in the video.
 
