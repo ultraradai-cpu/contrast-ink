@@ -60,6 +60,10 @@ static class Program
         Log($"{(ok ? "PASS" : "FAIL")}  {what}  [{measured}]");
     }
 
+    static Process app = null!;
+    static ProcessStartInfo startInfo = null!;
+    static string statusPath = "";
+
     static int Run()
     {
         Log($"Contrast Ink Windows check ({runMode}) on Windows build {Environment.OSVersion.Version.Build}, screen {screen.Width}x{screen.Height}");
@@ -72,7 +76,8 @@ static class Program
         psi.Environment["CONTRASTINK_TEST"] = "1";
         psi.Environment["CONTRASTINK_STATUS"] = status;
         if (runMode == "control") psi.Environment["CONTRASTINK_TEST_NOHIDE"] = "1";
-        using var app = Process.Start(psi)!;
+        app = Process.Start(psi)!;
+        startInfo = psi; statusPath = status;
         try
         {
             var sw = Stopwatch.StartNew();
@@ -268,10 +273,110 @@ static class Program
         c0 = slide.Clicks; Click(clickSpot); Thread.Sleep(300);
         Check(slide.Clicks == c0 + 1, "letting go of Ctrl: clicks reach the slides again", $"clicks {c0} -> {slide.Clicks}");
 
+        ToolbarAndPromises();
+
         // still hidden at the end, after all of that
         dark = ToolbarDarkShare(Shot("13-end"), toolbar);
         Check(dark < 0.05, "at the end, a screen capture still does NOT show the toolbar", $"{dark:P1} toolbar colour");
         Log($"{(failures == 0 ? "ALL PASSED" : failures + " FAILED")}");
+    }
+
+    // ---------------------------------------------------------------- the toolbar's own buttons, and the README's promises
+    /// <summary>Everything above used keys. Each action here goes through its toolbar button, with the real mouse.</summary>
+    static void ToolbarAndPromises()
+    {
+        int W = screen.Width;
+        int x1 = (int)(W * 0.12), x2 = (int)(W * 0.58), xm = (int)(W * 0.35);
+        var red = ColorTranslator.FromHtml(Settings.Colors[0]);
+        var green = ColorTranslator.FromHtml(Settings.Colors[2]);
+        bool Press(string name)
+        {
+            var p = FindToolbarButton(name);
+            if (p == null) { Check(false, $"toolbar button \"{name}...\" is there", "not found"); return false; }
+            Click(p.Value); Thread.Sleep(250); return true;
+        }
+        if (!Press("Draw on / off")) return;               // drawing on, from the toolbar
+        Press("Clear all marks");
+
+        // colour, thickness and tool from the toolbar
+        Press("Green (3)"); Press("Thick ("); Press("Pen (P)");
+        Drag(new Point(x1, Row(0)), new Point(x2, Row(0)));
+        Thread.Sleep(400);
+        var shot = Shot("20-toolbar-green-thick");
+        var got = Closest(shot, xm, Row(0), green, 8);
+        Check(Diff(got, green) <= 40, "toolbar: the green dot makes the pen green", $"want {Hex(green)}, screen has {Hex(got)}");
+        int t = Thickness(shot, xm, Row(0));
+        Check(Math.Abs(t - Settings.Widths[2] * scale) <= Math.Max(2, Settings.Widths[2] * scale * 0.35), "toolbar: the Thick button draws thick", $"{t} px");
+        Press("Highlighter (H)");
+        Drag(new Point(x1, Row(2)), new Point(x2, Row(2)));
+        Thread.Sleep(400);
+        int hw = Thickness(Shot("21-toolbar-highlighter"), xm, Row(2));
+        Check(hw > t, "toolbar: the Highlighter button draws the wide highlighter", $"{hw} px vs pen {t} px");
+
+        // Clear from the toolbar, then Undo from the toolbar brings it all back (README: "Undo brings them back")
+        Press("Clear all marks"); Thread.Sleep(300);
+        var cleared = Closest(Shot("22-toolbar-clear"), xm, Row(0), green, 8);
+        Check(IsWhite(cleared), "toolbar: Clear removes the marks", Hex(cleared));
+        Press("Undo (Ctrl+Z)"); Thread.Sleep(400);
+        var back = Closest(Shot("23-toolbar-undo-clear"), xm, Row(0), green, 8);
+        Check(Diff(back, green) <= 40, "toolbar: Undo after Clear brings the marks back", Hex(back));
+        // the same promise with the keys: C, then Ctrl+Z
+        Key('C'); Thread.Sleep(300); KeyCombo(VK.Control, 'Z'); Thread.Sleep(400);
+        back = Closest(Shot("24-keys-undo-clear"), xm, Row(0), green, 8);
+        Check(Diff(back, green) <= 40, "keys: Ctrl+Z after C brings the marks back", Hex(back));
+        Press("Clear all marks");
+
+        // fading ink: holding Shift while drawing keeps that mark (README and hint)
+        Press("Pen (P)"); Press("Red (1)"); Press("Fading ink");
+        Native.KeyDown(VK.Shift); Thread.Sleep(150);
+        Drag(new Point(x1, Row(1)), new Point(x2, Row(1)));
+        Native.KeyUp(VK.Shift); Thread.Sleep(150);
+        Drag(new Point(x1, Row(3)), new Point(x2, Row(3)));   // drawn without Shift: must fade
+        Thread.Sleep(4000);
+        shot = Shot("25-fade-shift-keeps");
+        var kept = Closest(shot, xm, Row(1), red, 8); var faded = Closest(shot, xm, Row(3), red, 8);
+        Check(Diff(kept, red) <= 40 && IsWhite(faded), "fading ink: the mark drawn holding Shift stays, the other fades", $"held {Hex(kept)}, not held {Hex(faded)}");
+        Press("Fading ink"); Press("Clear all marks");
+
+        // circle tool: holding Shift makes a perfect circle (README and hint)
+        Press("Circle a finding");
+        int cx0 = x1, cy0 = Row(0) - 20, side = 180;
+        Native.KeyDown(VK.Shift); Thread.Sleep(150);
+        Drag(new Point(cx0, cy0), new Point(cx0 + side, cy0 + side / 3));   // a flat box: Shift must make it round
+        Native.KeyUp(VK.Shift); Thread.Sleep(400);
+        shot = Shot("26-shift-circle");
+        var bottom = Closest(shot, cx0 + side / 2, cy0 + side, red, 6);
+        var flatBottom = shot.GetPixel(cx0 + side / 2, cy0 + side / 3);
+        Check(Diff(bottom, red) <= 40 && IsWhite(flatBottom), "circle tool: holding Shift makes it as tall as it is wide", $"edge at full height {Hex(bottom)}, where a flat oval would end {Hex(flatBottom)}");
+        Press("Clear all marks");
+
+        // ‹ makes the toolbar small, › big again
+        var before = Native.WindowBox("Contrast Ink");
+        Press("Make the toolbar small"); Thread.Sleep(300);
+        var small = Native.WindowBox("Contrast Ink");
+        Check(small.Width > 0 && small.Width < before.Width / 2, "‹ makes the toolbar small", $"{before.Width} px -> {small.Width} px");
+        Press("Make the toolbar small"); Thread.Sleep(300);
+        var big = Native.WindowBox("Contrast Ink");
+        Check(Math.Abs(big.Width - before.Width) <= 2, "› makes it big again", $"{small.Width} px -> {big.Width} px");
+
+        // settings remembered: green pen chosen above; quit with ✕, start again, draw without choosing
+        Press("Green (3)"); Press("Pen (P)"); Press("Draw on / off");   // drawing off before quitting
+        Press("Quit Contrast Ink");
+        bool quit = app.WaitForExit(5000);
+        Check(quit, "✕ quits the app", quit ? "exited" : "still running after 5 s");
+        if (!quit) return;
+        File.Delete(statusPath);
+        app = Process.Start(startInfo)!;
+        var sw = Stopwatch.StartNew();
+        while (!File.Exists(statusPath) && sw.Elapsed.TotalSeconds < 20) Thread.Sleep(200);
+        Thread.Sleep(800);
+        Check(File.Exists(statusPath), "it starts again after quitting", File.Exists(statusPath) ? "status written" : "no status");
+        Key(VK.F9); Thread.Sleep(300);
+        Drag(new Point(x1, Row(4)), new Point(x2, Row(4)));
+        Thread.Sleep(400);
+        got = Closest(Shot("27-remembered"), xm, Row(4), green, 8);
+        Check(Diff(got, green) <= 40, "settings are remembered: the next start draws in the colour chosen last time", $"want {Hex(green)}, screen has {Hex(got)}");
+        Key('C'); Key(VK.F9); Thread.Sleep(300);
     }
 
     // ---------------------------------------------------------------- measuring
@@ -364,7 +469,7 @@ static class Program
     static void KeyCombo(ushort mod, char c) { Native.KeyDown(mod); Thread.Sleep(40); Key(c); Native.KeyUp(mod); Thread.Sleep(80); }
 }
 
-static class VK { public const ushort Control = 0x11, Escape = 0x1B, F9 = 0x78, Next = 0x22; }
+static class VK { public const ushort Control = 0x11, Shift = 0x10, Escape = 0x1B, F9 = 0x78, Next = 0x22; }
 
 /// <summary>The "slide": a white full-screen window with a black stripe, counting clicks and keys that reach it.</summary>
 sealed class Slide : Form
@@ -420,6 +525,15 @@ static class Native
     delegate bool EnumProc(IntPtr hwnd, IntPtr data);
     [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc proc, IntPtr data);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr hwnd, System.Text.StringBuilder s, int n);
+    [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hwnd, out RECT r);
+    /// <summary>The on-screen rectangle of the (first) window with this exact title.</summary>
+    public static Rectangle WindowBox(string title)
+    {
+        foreach (var h in ProcessWindows(title)) { GetWindowRect(h, out var r); return Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom); }
+        return Rectangle.Empty;
+    }
+
     public static List<IntPtr> ProcessWindows(string title)
     {
         var found = new List<IntPtr>();
