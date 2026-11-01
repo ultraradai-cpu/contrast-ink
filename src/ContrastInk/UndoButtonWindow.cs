@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
@@ -13,6 +14,7 @@ namespace ContrastInk;
 sealed class UndoButtonWindow : Window
 {
     IntPtr hwnd;
+    const int WM_GETMINMAXINFO = 0x24;
     public event Action? Clicked;
     /// <summary>True when Windows hides it from recordings. False: it is never shown (it would be recorded).</summary>
     public bool HiddenFromCapture { get; private set; }
@@ -26,23 +28,21 @@ sealed class UndoButtonWindow : Window
         Topmost = true;
         ShowInTaskbar = false;
         ShowActivated = false;
-        SizeToContent = SizeToContent.WidthAndHeight;
-        Background = new SolidColorBrush(Color.FromRgb(0x14, 0x1A, 0x22));
-        var button = new Button
-        {
-            Content = "↶",
-            Width = 36, Height = 36, FontSize = 20, Focusable = false, Cursor = System.Windows.Input.Cursors.Hand,
-            Foreground = Brushes.White, Background = new SolidColorBrush(Color.FromRgb(0x25, 0x63, 0xEB)), BorderThickness = new Thickness(0),
-        };
-        System.Windows.Automation.AutomationProperties.SetName(button, "Undo the last mark");
-        button.Click += (_, _) => Clicked?.Invoke();
-        Content = button;
+        Width = Height = 36;
+        // the whole window is the button: one solid Contrast blue square with the undo arrow
+        Background = new SolidColorBrush(Color.FromRgb(0x25, 0x63, 0xEB));
+        Cursor = System.Windows.Input.Cursors.Hand;
+        Content = new TextBlock { Text = "↶", FontSize = 20, Foreground = Brushes.White, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        System.Windows.Automation.AutomationProperties.SetName(this, "Undo the last mark");
+        MouseLeftButtonUp += (_, _) => Clicked?.Invoke();
         SourceInitialized += (_, _) =>
         {
             hwnd = new WindowInteropHelper(this).Handle;
             HwndSource.FromHwnd(hwnd)!.AddHook((IntPtr h, int msg, IntPtr w, IntPtr l, ref bool handled) =>
             {
                 if (msg == Native.WM_MOUSEACTIVATE) { handled = true; return new IntPtr(Native.MA_NOACTIVATE); }   // keyboard stays with PowerPoint
+                // Windows' smallest window is about 136 px wide (seen in the Windows check): this one may be 36
+                if (msg == WM_GETMINMAXINFO) { Marshal.WriteInt32(l, 24, 1); Marshal.WriteInt32(l, 28, 1); }   // MINMAXINFO.ptMinTrackSize
                 return IntPtr.Zero;
             });
             Native.RoundCorners(hwnd);

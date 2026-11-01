@@ -100,8 +100,11 @@ static class Program
                 Drag(new Point((int)(screen.Width * 0.12), Row(0)), new Point((int)(screen.Width * 0.58), Row(0)));
                 Thread.Sleep(500);
                 var ub = Native.WindowBox(UndoTitle);
-                double blue = Share(Shot("control-undo-button"), ub, UndoBlue);
-                Check(Native.IsVisible(UndoTitle) && blue > 0.3, "CONTROL: with hiding switched off, a screen capture DOES show the undo button", $"{blue:P0} of its area is its blue, at {ub}");
+                var cshot = Shot("control-undo-button");
+                double blue = Share(cshot, ub, UndoBlue);
+                var mid = ub.Width > 0 ? Hex(cshot.GetPixel(Math.Clamp(ub.Left + 4, 0, cshot.Width - 1), Math.Clamp(ub.Top + 4, 0, cshot.Height - 1))) : "none";
+                Check(Native.IsVisible(UndoTitle) && blue > 0.3, "CONTROL: with hiding switched off, a screen capture DOES show the undo button",
+                      $"visible {Native.IsVisible(UndoTitle)}, {blue:P0} of its area is its blue, at {ub}, its corner pixel {mid}");
                 Key('C'); Key(VK.F9);
                 return failures;
             }
@@ -332,6 +335,7 @@ static class Program
         Line(2);
         var box = Native.WindowBox(UndoTitle);
         bool shown = Native.IsVisible(UndoTitle);
+        Check(box.Width <= 48 && box.Height <= 48, "the undo button is small", $"{box.Width} x {box.Height} px");
         Check(shown && box.Left >= x2 - 5 && box.Left <= x2 + 80 && box.Top >= Row(2) - 10 && box.Top <= Row(2) + 80,
               "the undo button appears beside the end of the mark", $"visible {shown}, at {box}, mark ends at ({x2},{Row(2)})");
         shot = Shot("33-undo-button");
@@ -342,7 +346,6 @@ static class Program
             Click(new Point(box.Left + box.Width / 2, box.Top + box.Height / 2)); Thread.Sleep(400);
             shot = Shot("34-undo-button-clicked");
             Check(!Red(shot, 2), "clicking the undo button removes the mark", At(shot, 2));
-            Check(!Native.IsVisible(UndoTitle), "with nothing left to undo, the button goes", "visible " + Native.IsVisible(UndoTitle));
             Check(Native.GetForegroundWindow() == slide.Hwnd, "clicking it did not take the keyboard from the slides", "foreground is the slide window: " + (Native.GetForegroundWindow() == slide.Hwnd));
         }
 
@@ -382,6 +385,22 @@ static class Program
             ppt.SlideShowWindows.Show.View.CurrentShowPosition = 2; Thread.Sleep(900);
             shot = Shot("42-undo-is-per-slide");
             Check(Red(shot, 1) && !Red(shot, 0), "undo on slide 1 removed slide 1's mark, not slide 2's", $"slide 2's {At(shot, 1)}, slide 1's {At(shot, 0)}");
+
+            // a fresh slide: two marks, two taps on the undo button take both; then it goes, as nothing is left
+            ppt.SlideShowWindows.Show.View.CurrentShowPosition = 3; Thread.Sleep(900);
+            Line(4); Line(5);
+            var ub = Native.WindowBox(UndoTitle);
+            var tap = new Point(ub.Left + ub.Width / 2, ub.Top + ub.Height / 2);
+            Click(tap); Thread.Sleep(400);
+            shot = Shot("44-one-tap");
+            Check(Red(shot, 4) && !Red(shot, 5) && Native.IsVisible(UndoTitle), "undo button: one tap takes the last mark only, and it stays for the next",
+                  $"first mark {At(shot, 4)}, second {At(shot, 5)}, button visible {Native.IsVisible(UndoTitle)}");
+            Click(tap); Thread.Sleep(400);
+            shot = Shot("45-two-taps");
+            Check(!Red(shot, 4), "undo button: a second tap takes the mark before", At(shot, 4));
+            Check(!Native.IsVisible(UndoTitle), "undo button: with nothing left to undo on this slide, it goes", "visible " + Native.IsVisible(UndoTitle));
+
+            ppt.SlideShowWindows.Show.View.CurrentShowPosition = 2; Thread.Sleep(900);
             ppt.SlideShowWindows.Count = 0; Thread.Sleep(900);          // the slide show ends
             shot = Shot("43-show-ended");
             Check(!Red(shot, 1), "slide show ended: the slides' marks go with it", At(shot, 1));
