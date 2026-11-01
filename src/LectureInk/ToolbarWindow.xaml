@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Lecture Ink"
-        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        WindowStyle="None" AllowsTransparency="False" Background="#2B1512"
         Topmost="True" ShowInTaskbar="False" ShowActivated="False" ResizeMode="NoResize"
         SizeToContent="WidthAndHeight" FontFamily="Segoe UI" FontSize="13">
   <Window.Resources>
@@ -39,11 +39,13 @@
     </Style>
   </Window.Resources>
 
-  <Border Background="{StaticResource Bar}" CornerRadius="14" Padding="4" BorderBrush="#55D8B76E" BorderThickness="1">
+  <!-- a solid window (not see-through): Windows reliably keeps it out of OBS; Windows 11 rounds its corners -->
+  <Border x:Name="Frame" Background="{StaticResource Bar}" Padding="4" BorderBrush="#55D8B76E" BorderThickness="1">
+    <StackPanel>
     <StackPanel Orientation="Horizontal">
       <!-- drag handle -->
       <Border x:Name="Grip" Width="16" Cursor="SizeAll" Background="Transparent" ToolTip="Drag to move. The toolbar is hidden from OBS recordings.">
-        <TextBlock Text="⋮⋮" Foreground="{StaticResource Gold}" VerticalAlignment="Center" HorizontalAlignment="Center" FontSize="14"/>
+        <TextBlock x:Name="GripText" Text="⋮⋮" Foreground="{StaticResource Gold}" VerticalAlignment="Center" HorizontalAlignment="Center" FontSize="14"/>
       </Border>
       <Button x:Name="DrawBtn" Style="{StaticResource Tb}" Width="58" ToolTip="Draw on / off (F9). Or hold Ctrl to draw. A pen draws by itself.">
         <StackPanel Orientation="Horizontal"><TextBlock Text="✏"/><TextBlock x:Name="DrawText" Text=" Off" FontSize="12" VerticalAlignment="Center"/></StackPanel>
@@ -60,7 +62,7 @@
         <Border Style="{StaticResource Sep}"/>
         <StackPanel x:Name="WidthPanel" Orientation="Horizontal"/>
         <Border Style="{StaticResource Sep}"/>
-        <Button x:Name="FadeBtn" Style="{StaticResource Tb}" Content="⏳" ToolTip="Fading ink (F): marks disappear after 3 seconds. Hold Shift to keep one."/>
+        <Button x:Name="FadeBtn" Style="{StaticResource Tb}" Content="⏳" ToolTip="Fading ink (F): marks disappear after 3 seconds. Hold Shift while drawing to keep one."/>
         <Button x:Name="UndoBtn" Style="{StaticResource Tb}" Content="↶" ToolTip="Undo (Ctrl+Z)"/>
         <Button x:Name="ClearBtn" Style="{StaticResource Tb}" Content="🗑" ToolTip="Clear all marks (C). Undo brings them back."/>
         <Border Style="{StaticResource Sep}"/>
@@ -70,6 +72,9 @@
       </StackPanel>
       <Button x:Name="FoldBtn" Style="{StaticResource Tb}" Width="26" Content="‹" ToolTip="Make the toolbar small / big"/>
       <Button x:Name="CloseBtn" Style="{StaticResource Tb}" Width="28" Content="✕" FontSize="13" ToolTip="Quit Lecture Ink"/>
+    </StackPanel>
+    <!-- hover help is shown here, inside the toolbar, so OBS never records it (real tooltips are separate windows) -->
+    <TextBlock x:Name="Hint" Visibility="Collapsed" Foreground="{StaticResource Ink}" FontSize="12" Margin="8,2,8,4" TextWrapping="Wrap" MaxWidth="640"/>
     </StackPanel>
   </Border>
 </Window>

@@ -30,6 +30,14 @@ static class Native
 
     public const int WM_MOUSEACTIVATE = 0x21, MA_NOACTIVATE = 3;
 
+    [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+    /// <summary>Windows 11 rounds the corners of a solid window when asked; Windows 10 ignores it.</summary>
+    public static void RoundCorners(IntPtr hwnd)
+    {
+        int round = 2;   // DWMWCP_ROUND
+        DwmSetWindowAttribute(hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, ref round, sizeof(int));
+    }
+
     // ---------- monitors ----------
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]

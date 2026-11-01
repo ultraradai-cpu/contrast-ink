@@ -27,7 +27,7 @@ While drawing, slide keys (→, Page Down, Space, a presenter clicker) still go 
 Good to know:
 - While Lecture Ink is running, holding Ctrl anywhere switches drawing on, so a Ctrl+click in another
   program (e.g. picking several files) lands on the drawing layer. Quit it (✕) when you're not lecturing.
-- The pen switches drawing on when it hovers near the screen. A stylus that can't hover (some cheap
+- The pen switches drawing on when it hovers near the screen, and off 3 seconds after it leaves (or when the mouse moves). A stylus that can't hover (some cheap
   touch-screen styluses) sends its first tap to PowerPoint, which may change the slide: use F9 with those.
 
 ## Keys While Drawing
@@ -39,7 +39,8 @@ Good to know:
 | A | Arrow: drag from the tail to the tip |
 | O | Circle a finding; hold Shift for a perfect circle |
 | E | Eraser: touch a mark to remove it |
-| 1 2 3 4 5 | Red, yellow, green, blue, white |
+| 1 2 3 4 5 6 | Red, yellow, green, cyan, white, black (bright colours for dark images, black for white slides, red for both) |
+| [ and ] | Thinner / thicker |
 | F | Fading ink on/off: marks disappear after 3 seconds (hold Shift while drawing to keep one) |
 | C | Clear all marks |
 | Ctrl+Z | Undo (also brings back a Clear) |
@@ -49,8 +50,9 @@ Marks stay until you clear them. The 🖥 button moves the drawing layer to your
 ## OBS Settings
 
 - Use **Display Capture** (the whole screen), not Window Capture of PowerPoint, or your drawings won't be recorded.
-- The toolbar is hidden from recordings on Windows 10 (version 2004 or newer) and Windows 11.
-  Hover over ⋮⋮ to check: it tells you if your Windows can't hide it.
+- The toolbar, and its hover help, are hidden from recordings on Windows 10 (version 2004 or newer) and Windows 11.
+  If Windows refuses, the ⋮⋮ handle turns **red**: then make the toolbar small (‹) or move it to a corner.
+- Hover help appears as a line inside the toolbar (never as a pop-up, which OBS could record).
 - Turn off **Capture Cursor** in the Display Capture settings if you don't want the mouse arrow in the video.
 
 ## If Something Goes Wrong

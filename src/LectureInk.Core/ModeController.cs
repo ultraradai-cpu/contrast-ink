@@ -12,9 +12,16 @@ public sealed class ModeController
 {
     bool manual, ctrlHeld, ctrlUsedForShortcut, penActive;
     int mouseTravel;
+    DateTime lastPen;
 
     /// <summary>How far (in pixels) the real mouse must move before it takes over from the pen.</summary>
     public int MouseTakeoverPixels { get; init; } = 8;
+
+    /// <summary>
+    /// The pen gives no signal when it is put down or moves away, so pen drawing ends this long after
+    /// the pen was last seen (otherwise the letter keys would stay taken until the mouse moves).
+    /// </summary>
+    public TimeSpan PenTimeout { get; init; } = TimeSpan.FromSeconds(3);
 
     public bool Drawing => manual || (ctrlHeld && !ctrlUsedForShortcut) || penActive;
     public bool Manual => manual;
@@ -35,7 +42,10 @@ public sealed class ModeController
     public void KeyWithCtrl(bool isUndo) => Set(() => { if (ctrlHeld && !isUndo) ctrlUsedForShortcut = true; });
 
     /// <summary>The pen or stylus moved or touched (Windows marks its input).</summary>
-    public void PenSeen() => Set(() => { penActive = true; mouseTravel = 0; });
+    public void PenSeen(DateTime now) => Set(() => { penActive = true; mouseTravel = 0; lastPen = now; });
+
+    /// <summary>Called a few times a second: ends pen drawing once the pen has been away for <see cref="PenTimeout"/>.</summary>
+    public void Tick(DateTime now) => Set(() => { if (penActive && now - lastPen >= PenTimeout) penActive = false; });
 
     /// <summary>The real mouse moved by (dx, dy) pixels.</summary>
     public void MouseMoved(int dx, int dy) => Set(() =>

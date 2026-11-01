@@ -7,9 +7,15 @@ public enum Tool { Pen, Highlighter, Arrow, Oval, Eraser }
 /// <summary>What the app remembers between lectures (saved in %AppData%\LectureInk\settings.json).</summary>
 public sealed class Settings
 {
-    public static readonly string[] Colors = { "#E53935", "#FDD835", "#43A047", "#1E88E5", "#FFFFFF" };
-    public static readonly string[] ColorNames = { "Red", "Yellow", "Green", "Blue", "White" };
-    public static readonly double[] Widths = { 3, 5, 9 };
+    // Red, yellow, green, cyan and white stand out on dark MR/CT images; black is for white slides; red works on both
+    public static readonly string[] Colors = { "#FF3B30", "#FFD60A", "#34C759", "#00D4FF", "#FFFFFF", "#111111" };
+    public static readonly string[] ColorNames = { "Red", "Yellow", "Green", "Cyan", "White", "Black" };
+    // pen thickness in screen points (×1.5 on a 150% display): thin for labels, thick to be seen in a video
+    public static readonly double[] Widths = { 3, 6, 10 };
+    public static readonly string[] WidthNames = { "Thin", "Medium", "Thick" };
+
+    /// <summary>The highlighter is a wide, see-through version of the same thickness.</summary>
+    public static double HighlighterWidth(double width) => width * 4 + 6;
 
     public Tool Tool { get; set; } = Tool.Pen;
     public int Color { get; set; }

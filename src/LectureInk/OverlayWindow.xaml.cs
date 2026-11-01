@@ -108,7 +108,7 @@ public partial class OverlayWindow : Window
     }
 
     DrawingAttributes Attributes() => tool == Tool.Highlighter
-        ? new DrawingAttributes { Color = color, Width = width * 4 + 6, Height = width * 4 + 6, IsHighlighter = true, IgnorePressure = true, FitToCurve = true }
+        ? new DrawingAttributes { Color = color, Width = Settings.HighlighterWidth(width), Height = Settings.HighlighterWidth(width), IsHighlighter = true, IgnorePressure = true, FitToCurve = true }
         : new DrawingAttributes { Color = color, Width = width, Height = width, FitToCurve = tool == Tool.Pen, IgnorePressure = tool != Tool.Pen, StylusTip = StylusTip.Ellipse };
 
     // ---------- arrow and oval ----------
@@ -173,7 +173,12 @@ public partial class OverlayWindow : Window
                     if (still.Count == 0) continue;   // already faded away: undo the step before it
                     foreach (var s in still) Ink.Strokes.Remove(s);
                 }
-                else foreach (var s in strokes) if (!Ink.Strokes.Contains(s)) Ink.Strokes.Add(s);
+                else foreach (var s in strokes)
+                {
+                    if (Ink.Strokes.Contains(s)) continue;
+                    if (fading.TryGetValue(s, out var f)) { s.DrawingAttributes.Color = f.baseColor; fading[s] = (DateTime.UtcNow, f.baseColor); fadeTimer.Start(); }
+                    Ink.Strokes.Add(s);
+                }
             }
             finally { quiet = false; }
             return;
@@ -184,8 +189,7 @@ public partial class OverlayWindow : Window
     public void ClearAll()
     {
         FinishShape();
-        if (Ink.Strokes.Count > 0) Ink.Strokes.Clear();
-        fading.Clear();
+        if (Ink.Strokes.Count > 0) Ink.Strokes.Clear();   // fading marks stay listed, so Undo can bring them back properly
     }
 
     public bool HasInk => Ink.Strokes.Count > 0;
@@ -203,7 +207,11 @@ public partial class OverlayWindow : Window
         var now = DateTime.UtcNow;
         foreach (var (s, (born, baseColor)) in fading.ToList())
         {
-            if (!Ink.Strokes.Contains(s)) { fading.Remove(s); continue; }
+            if (!Ink.Strokes.Contains(s))   // cleared or erased: forget it once it could no longer be undone sensibly
+            {
+                if (now - born > TimeSpan.FromMinutes(2)) fading.Remove(s);
+                continue;
+            }
             double o = Fade.Opacity(now - born);
             if (o <= 0)
             {
@@ -213,6 +221,6 @@ public partial class OverlayWindow : Window
             }
             else s.DrawingAttributes.Color = Color.FromArgb((byte)(baseColor.A * o), baseColor.R, baseColor.G, baseColor.B);
         }
-        if (fading.Count == 0) fadeTimer.Stop();
+        if (!fading.Keys.Any(Ink.Strokes.Contains)) fadeTimer.Stop();
     }
 }

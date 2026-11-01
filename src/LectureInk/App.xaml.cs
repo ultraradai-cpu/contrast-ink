@@ -48,7 +48,7 @@ public partial class App : Application
         toolbar = new ToolbarWindow();
         PlaceToolbar();
         toolbar.Show();
-        toolbar.LocationChanged += (_, _) => { settings.ToolbarX = toolbar.Left; settings.ToolbarY = toolbar.Top; settings.Save(SettingsPath); };
+        toolbar.Moved += () => { settings.ToolbarX = toolbar.Left; settings.ToolbarY = toolbar.Top; settings.Save(SettingsPath); };
 
         ApplySettings();
         Wire();
@@ -61,6 +61,9 @@ public partial class App : Application
         var top = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
         top.Tick += (_, _) => { overlay.KeepOnTop(); toolbar.KeepOnTop(); };
         top.Start();
+        var penClock = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+        penClock.Tick += (_, _) => mode.Tick(DateTime.UtcNow);
+        penClock.Start();
     }
 
     protected override void OnExit(ExitEventArgs e)
@@ -174,8 +177,10 @@ public partial class App : Application
             0x45 => () => SetTool(Tool.Eraser),       // E
             0x43 => overlay.ClearAll,                 // C
             0x46 => () => { settings.FadingInk = !settings.FadingInk; ApplySettings(); },   // F
-            >= 0x31 and <= 0x35 => () => SetColor(vk - 0x31),   // 1-5
-            >= 0x61 and <= 0x65 => () => SetColor(vk - 0x61),   // number pad 1-5
+            >= 0x31 and <= 0x39 when vk - 0x31 < Settings.Colors.Length => () => SetColor(vk - 0x31),   // 1-6
+            >= 0x61 and <= 0x69 when vk - 0x61 < Settings.Colors.Length => () => SetColor(vk - 0x61),   // number pad 1-6
+            0xDB => () => { settings.Width = Math.Max(0, settings.Width - 1); ApplySettings(); },                          // [ thinner
+            0xDD => () => { settings.Width = Math.Min(Settings.Widths.Length - 1, settings.Width + 1); ApplySettings(); },  // ] thicker
             _ => null,
         };
         if (vk == VK_ESC) { mode.Escape(); return true; }
@@ -190,7 +195,7 @@ public partial class App : Application
     // ---------- pen and mouse ----------
     void OnPointer(InputKind kind, int dx, int dy)
     {
-        if (kind == InputKind.Pen) mode.PenSeen();
+        if (kind == InputKind.Pen) mode.PenSeen(DateTime.UtcNow);
         else if (kind == InputKind.Mouse && (dx != 0 || dy != 0)) mode.MouseMoved(dx, dy);
         // a finger (touch) clicks, it never switches drawing on
     }

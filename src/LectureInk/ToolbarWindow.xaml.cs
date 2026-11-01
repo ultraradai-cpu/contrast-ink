@@ -22,7 +22,7 @@ public partial class ToolbarWindow : Window
     /// <summary>True when Windows hides the toolbar from screen recordings (Windows 10 2004 or newer).</summary>
     public bool HiddenFromCapture { get; private set; }
 
-    public event Action? DrawClicked, UndoClicked, ClearClicked, FadeClicked, ScreenClicked, FoldClicked, CloseClicked;
+    public event Action? DrawClicked, UndoClicked, ClearClicked, FadeClicked, ScreenClicked, FoldClicked, CloseClicked, Moved;
     public event Action<Tool>? ToolClicked;
     public event Action<int>? ColorClicked, WidthClicked;
 
@@ -34,16 +34,18 @@ public partial class ToolbarWindow : Window
             int n = i;
             var dot = new Ellipse { Width = 18, Height = 18, Fill = (Brush)new BrushConverter().ConvertFromString(Settings.Colors[i])!, Stroke = Brushes.Black, StrokeThickness = 0.5 };
             var b = new Button { Style = (Style)Resources["Tb"], Width = 30, Content = dot, ToolTip = $"{Settings.ColorNames[i]} ({i + 1})", BorderBrush = On };
+            if (Settings.ColorNames[i] == "Black") dot.Stroke = OffText;   // visible on the dark bar
             b.Click += (_, _) => ColorClicked?.Invoke(n);
             colorButtons.Add(b);
             ColorPanel.Children.Add(b);
         }
-        string[] widthNames = { "Thin", "Medium", "Thick" };
         for (int i = 0; i < Settings.Widths.Length; i++)
         {
             int n = i;
-            var line = new Ellipse { Width = Settings.Widths[i] + 3, Height = Settings.Widths[i] + 3, Fill = OffText };
-            var b = new Button { Style = (Style)Resources["Tb"], Width = 28, Content = line, ToolTip = widthNames[i] };
+            // the dot takes the button's text colour, so it stays visible when the button turns gold
+            var line = new Ellipse { Width = Settings.Widths[i] + 2, Height = Settings.Widths[i] + 2 };
+            line.SetBinding(Shape.FillProperty, new System.Windows.Data.Binding("Foreground") { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.FindAncestor, typeof(Button), 1) });
+            var b = new Button { Style = (Style)Resources["Tb"], Width = 28, Content = line, ToolTip = $"{Settings.WidthNames[i]} ([ thinner, ] thicker)" };
             b.Click += (_, _) => WidthClicked?.Invoke(n);
             widthButtons.Add(b);
             WidthPanel.Children.Add(b);
@@ -60,7 +62,10 @@ public partial class ToolbarWindow : Window
         ScreenBtn.Click += (_, _) => ScreenClicked?.Invoke();
         FoldBtn.Click += (_, _) => FoldClicked?.Invoke();
         CloseBtn.Click += (_, _) => CloseClicked?.Invoke();
-        Grip.MouseLeftButtonDown += (_, e) => { if (e.ButtonState == MouseButtonState.Pressed) DragMove(); };
+        // DragMove returns when the mouse is let go: save the place once, not on every pixel
+        Grip.MouseLeftButtonDown += (_, e) => { if (e.ButtonState == MouseButtonState.Pressed) { DragMove(); Moved?.Invoke(); } };
+
+        HintsInside(this);
 
         SourceInitialized += (_, _) =>
         {
@@ -72,11 +77,31 @@ public partial class ToolbarWindow : Window
                 if (msg == Native.WM_MOUSEACTIVATE) { handled = true; return new IntPtr(Native.MA_NOACTIVATE); }
                 return IntPtr.Zero;
             });
+            Native.RoundCorners(hwnd);
             HiddenFromCapture = Native.SetWindowDisplayAffinity(hwnd, Native.WDA_EXCLUDEFROMCAPTURE);
-            Grip.ToolTip = HiddenFromCapture
-                ? "Drag to move. The toolbar is hidden from OBS recordings."
-                : "Drag to move. This Windows version can't hide the toolbar from recordings: move it to a corner or make it small.";
+            if (!HiddenFromCapture)
+            {
+                // say so where it can't be missed: the handle turns red
+                GripText.Foreground = Brushes.Red;
+                Grip.ToolTip = "Windows did not hide this toolbar from recordings (needs Windows 10 version 2004 or newer). It will show in OBS: make it small (‹) or move it to a corner.";
+            }
         };
+    }
+
+    /// <summary>Every ToolTip becomes a hint line inside the toolbar; no tooltip window ever opens.</summary>
+    void HintsInside(DependencyObject root)
+    {
+        foreach (var child in LogicalTreeHelper.GetChildren(root))
+        {
+            if (child is not FrameworkElement fe) continue;
+            if (fe.ToolTip is string text)
+            {
+                ToolTipService.SetIsEnabled(fe, false);
+                fe.MouseEnter += (_, _) => { Hint.Text = fe.ToolTip as string ?? text; Hint.Visibility = Visibility.Visible; };
+                fe.MouseLeave += (_, _) => Hint.Visibility = Visibility.Collapsed;
+            }
+            HintsInside(fe);
+        }
     }
 
     public void KeepOnTop()

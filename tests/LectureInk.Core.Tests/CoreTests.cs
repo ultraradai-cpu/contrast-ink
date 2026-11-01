@@ -3,6 +3,30 @@ using Xunit;
 
 public class ModeControllerTests
 {
+    static readonly DateTime T0 = new(2026, 11, 1, 9, 0, 0, DateTimeKind.Utc);
+
+    [Fact]
+    public void PenDrawingEndsThreeSecondsAfterThePenLeaves()
+    {
+        var m = new ModeController();
+        m.PenSeen(T0);
+        m.Tick(T0.AddSeconds(2.9)); Assert.True(m.Drawing);
+        m.PenSeen(T0.AddSeconds(2.9));                  // still hovering: the clock restarts
+        m.Tick(T0.AddSeconds(5)); Assert.True(m.Drawing);
+        m.Tick(T0.AddSeconds(5.9)); Assert.False(m.Drawing);
+    }
+
+    [Fact]
+    public void PenTimeoutDoesNotEndF9OrCtrlDrawing()
+    {
+        var m = new ModeController();
+        m.Toggle(); m.PenSeen(T0); m.Tick(T0.AddMinutes(1));
+        Assert.True(m.Drawing);
+        var c = new ModeController();
+        c.CtrlDown(); c.PenSeen(T0); c.Tick(T0.AddMinutes(1));
+        Assert.True(c.Drawing);
+    }
+
     static (ModeController m, List<bool> changes) New()
     {
         var m = new ModeController();
@@ -57,7 +81,7 @@ public class ModeControllerTests
     public void PenDrawsAndRealMouseTakesBackAfterSmallTravel()
     {
         var (m, _) = New();
-        m.PenSeen(); Assert.True(m.Drawing);
+        m.PenSeen(T0); Assert.True(m.Drawing);
         m.MouseMoved(2, 1); Assert.True(m.Drawing);    // a nudge of the desk is not a takeover
         m.MouseMoved(3, 3); Assert.False(m.Drawing);   // 9 px in total
     }
@@ -66,7 +90,7 @@ public class ModeControllerTests
     public void PenSeenResetsMouseTravel()
     {
         var (m, _) = New();
-        m.PenSeen(); m.MouseMoved(5, 0); m.PenSeen(); m.MouseMoved(5, 0);
+        m.PenSeen(T0); m.MouseMoved(5, 0); m.PenSeen(T0); m.MouseMoved(5, 0);
         Assert.True(m.Drawing);
     }
 
@@ -74,7 +98,7 @@ public class ModeControllerTests
     public void MouseDoesNotEndManualDrawMode()
     {
         var (m, _) = New();
-        m.Toggle(); m.PenSeen(); m.MouseMoved(100, 100);
+        m.Toggle(); m.PenSeen(T0); m.MouseMoved(100, 100);
         Assert.True(m.Drawing);
     }
 
@@ -82,7 +106,7 @@ public class ModeControllerTests
     public void EscapeLeavesEveryMode()
     {
         var (m, _) = New();
-        m.Toggle(); m.PenSeen(); m.CtrlDown();
+        m.Toggle(); m.PenSeen(T0); m.CtrlDown();
         m.Escape();
         Assert.False(m.Drawing);
         m.CtrlUp(); m.CtrlDown();
@@ -93,7 +117,7 @@ public class ModeControllerTests
     public void TurningManualOffAlsoDropsPen()
     {
         var (m, _) = New();
-        m.Toggle(); m.PenSeen(); m.Toggle();
+        m.Toggle(); m.PenSeen(T0); m.Toggle();
         Assert.False(m.Drawing);
     }
 }
@@ -204,4 +228,46 @@ public class SettingsTests
 
     [Fact]
     public void ScreenFallsBackWhenAMonitorIsUnplugged() => Assert.Equal(0, new Settings { Screen = 1 }.Clean(screens: 1).Screen);
+}
+
+public class ColorTests
+{
+    // WCAG relative luminance and contrast ratio
+    static double Lum(string hex)
+    {
+        double C(int i) { double c = Convert.ToInt32(hex.Substring(i, 2), 16) / 255.0; return c <= 0.03928 ? c / 12.92 : Math.Pow((c + 0.055) / 1.055, 2.4); }
+        return 0.2126 * C(1) + 0.7152 * C(3) + 0.0722 * C(5);
+    }
+    static double Contrast(string a, string b) { double x = Lum(a), y = Lum(b); return (Math.Max(x, y) + 0.05) / (Math.Min(x, y) + 0.05); }
+
+    [Fact]
+    public void EveryColourHasANameAndIsValid()
+    {
+        Assert.Equal(Settings.Colors.Length, Settings.ColorNames.Length);
+        Assert.All(Settings.Colors, c => Assert.Matches("^#[0-9A-F]{6}$", c));
+        Assert.Equal(Settings.Widths.Length, Settings.WidthNames.Length);
+    }
+
+    [Fact]
+    public void BrightColoursStandOutOnBlackImages()
+    {
+        for (int i = 0; i < Settings.Colors.Length; i++)
+            if (Settings.ColorNames[i] != "Black")
+                Assert.True(Contrast(Settings.Colors[i], "#000000") >= 4.5, $"{Settings.ColorNames[i]} on black: {Contrast(Settings.Colors[i], "#000000"):0.0}");
+    }
+
+    [Fact]
+    public void BlackAndRedWorkOnWhiteSlides()
+    {
+        Assert.True(Contrast(Settings.Colors[Array.IndexOf(Settings.ColorNames, "Black")], "#FFFFFF") >= 7);
+        Assert.True(Contrast(Settings.Colors[Array.IndexOf(Settings.ColorNames, "Red")], "#FFFFFF") >= 3);
+    }
+
+    [Fact]
+    public void WidthsGrowAndThickIsVisibleInA1080pVideo()
+    {
+        Assert.True(Settings.Widths.Zip(Settings.Widths.Skip(1)).All(p => p.First < p.Second));
+        Assert.True(Settings.Widths[^1] >= 8);
+        Assert.True(Settings.HighlighterWidth(Settings.Widths[0]) > Settings.Widths[^1]);
+    }
 }
