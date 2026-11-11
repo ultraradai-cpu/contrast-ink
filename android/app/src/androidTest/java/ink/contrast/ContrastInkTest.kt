@@ -33,11 +33,17 @@ class ContrastInkTest {
         device.executeShellCommand("appops set $pkg SYSTEM_ALERT_WINDOW allow")
         device.executeShellCommand("pm grant $pkg android.permission.POST_NOTIFICATIONS")
         shots.mkdirs()
-        // another app in front: Contrast Ink must draw over it, and let its taps through
+        // started as a person starts it: "Start Contrast Ink" on the setup screen (Android 14 lets an app start its
+        // drawing layer only while the app is on screen)
+        device.executeShellCommand("am start -W -n $pkg/.MainActivity")
+        val start = device.wait(Until.findObject(By.text("Start Contrast Ink")), 8000)
+        assertNotNull("the setup screen opens", start)
+        start.click()
+        assertNotNull("the toolbar appears", device.wait(Until.findObject(By.desc("Draw on / off")), 8000))
+        // then another app in front: Contrast Ink must draw over it, and let its taps through
         device.executeShellCommand("am start -W -a android.settings.SETTINGS")
         device.wait(Until.hasObject(By.pkg("com.android.settings").depth(0)), 8000)
-        inst.runOnMainSync { InkService.start(ctx) }
-        assertNotNull("the toolbar appears", device.wait(Until.findObject(By.desc("Draw on / off")), 8000))
+        assertNotNull("the toolbar stays over Settings", device.wait(Until.findObject(By.desc("Draw on / off")), 4000))
     }
 
     @After fun tearDown() {
