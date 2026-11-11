@@ -121,7 +121,7 @@ class ContrastInkTest {
         shot("06 undo brought them back")
 
         press("Eraser")
-        drag(0.5f, 0.52f, 0.5f, 0.68f)   // across the pen line only
+        drag(0.5f, 0.56f, 0.5f, 0.63f)   // across the pen line only (at x 0.5 it is at y 0.6; the arrow tip is at 0.7)
         assertEquals("the eraser removes the mark it touches", 2, marks())
         shot("07 erased the pen line")
 
