@@ -20,8 +20,8 @@ final class ContrastInkUITests: XCTestCase {
         add(a)
     }
 
-    /// A drag on the slide. The sample slides are 4:3 at the top of a portrait iPad, below the toolbar:
-    /// every drag here stays between 10% and 45% of the screen's height, well inside the slide.
+    /// A drag on the slide. The 4:3 sample slides sit in the middle of a portrait iPad, from about 28% to 80% of
+    /// the screen's height: every drag here starts and ends between 38% and 72%, well inside the slide.
     private func drag(_ from: CGVector, _ to: CGVector) {
         let a = app.coordinate(withNormalizedOffset: from), b = app.coordinate(withNormalizedOffset: to)
         a.press(forDuration: 0.1, thenDragTo: b, withVelocity: 600, thenHoldForDuration: 0.1)
@@ -41,7 +41,7 @@ final class ContrastInkUITests: XCTestCase {
         expectMarks(0, "a new deck starts clean")
         shot("01 slide 1")
 
-        drag(CGVector(dx: 0.15, dy: 0.15), CGVector(dx: 0.8, dy: 0.42))
+        drag(CGVector(dx: 0.15, dy: 0.40), CGVector(dx: 0.8, dy: 0.70))
         expectMarks(1, "pen: one line")
         shot("02 red line on slide 1")
 
@@ -51,7 +51,7 @@ final class ContrastInkUITests: XCTestCase {
         shot("03 slide 2 starts clean")
 
         app.buttons["Black (6)"].tap()
-        drag(CGVector(dx: 0.2, dy: 0.42), CGVector(dx: 0.7, dy: 0.15))
+        drag(CGVector(dx: 0.2, dy: 0.70), CGVector(dx: 0.7, dy: 0.40))
         expectMarks(1, "black line on slide 2")
         shot("04 black line on slide 2")
 
@@ -67,17 +67,17 @@ final class ContrastInkUITests: XCTestCase {
 
         app.buttons["Red (1)"].tap()
         app.buttons["Arrow (A)"].tap()
-        drag(CGVector(dx: 0.15, dy: 0.42), CGVector(dx: 0.45, dy: 0.2))
+        drag(CGVector(dx: 0.15, dy: 0.70), CGVector(dx: 0.45, dy: 0.45))
         expectMarks(1, "arrow: one mark")
         shot("07 arrow")
 
         app.buttons["Circle (O)"].tap()
-        drag(CGVector(dx: 0.55, dy: 0.12), CGVector(dx: 0.88, dy: 0.38))
+        drag(CGVector(dx: 0.55, dy: 0.42), CGVector(dx: 0.88, dy: 0.66))
         expectMarks(2, "circle: one more mark")
         shot("08 circle")
 
         app.buttons["Highlighter (H)"].tap()
-        drag(CGVector(dx: 0.1, dy: 0.3), CGVector(dx: 0.5, dy: 0.3))
+        drag(CGVector(dx: 0.1, dy: 0.56), CGVector(dx: 0.5, dy: 0.56))
         expectMarks(3, "highlighter: one more mark")
         shot("09 highlighter")
 
