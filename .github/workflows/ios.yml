@@ -1,10 +1,10 @@
 name: iOS
 
-# Started by hand, for a change to the iPad/iPhone app: test the shared rules, build the app, run it on a simulated iPad
+# Every push that changes the iPad/iPhone app: test the shared rules, build the app, run it on a simulated iPad
 # (draw, change slides, undo, shapes) and keep the screenshots of every step as "ios-screenshots".
-# Only when started by hand (Actions → this workflow → Run workflow): GitHub's free minutes are limited, and
-# macOS minutes count ten times.
 on:
+  push:
+    paths: ["ios/**", ".github/workflows/ios.yml"]
   workflow_dispatch:
 
 jobs:
