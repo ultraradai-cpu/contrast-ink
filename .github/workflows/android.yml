@@ -1,11 +1,11 @@
 name: Android
 
-# Every push that changes the Android app: test the shared rules, build the APK, run the app on an Android
+# Started by hand, for a change to the Android app: test the shared rules, build the APK, run the app on an Android
 # emulator over another app (tap-through, every tool, undo, clear, eraser) and keep the screenshots as
 # "android-screenshots". On main, the APK also goes to the "android-latest" release: one download link.
+# Only when started by hand (Actions → this workflow → Run workflow): GitHub's free minutes are limited, and
+# macOS minutes count ten times.
 on:
-  push:
-    paths: ["android/**", ".github/workflows/android.yml"]
   workflow_dispatch:
 
 permissions:
