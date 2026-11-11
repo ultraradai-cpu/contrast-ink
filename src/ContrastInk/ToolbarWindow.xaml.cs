@@ -85,7 +85,7 @@ public partial class ToolbarWindow : Window
 
         HintsInside(this);
         // a notice is dismissed by clicking it (a start-up warning stays: it is about this computer, not this moment)
-        Hint.MouseLeftButtonUp += (_, _) => { if (warning == null && notice != null && Hint.Text == notice) Notice(null); };
+        Hint.MouseLeftButtonUp += (_, _) => { if (notice != null && Hint.Text == Standing(notice, warning)) Notice(null); };
 
         SourceInitialized += (_, _) =>
         {
@@ -118,15 +118,21 @@ public partial class ToolbarWindow : Window
         Standing();
     }
 
-    /// <summary>Shows the standing message (a warning, else a notice), or nothing.</summary>
+    /// <summary>
+    /// Shows the standing messages, or nothing. A notice (OBS stopped, disk filling up) comes first and a start-up
+    /// warning stays under it: before, a warning that never goes away (older Windows 10) hid every recording notice.
+    /// </summary>
     void Standing()
     {
-        var text = warning ?? notice;
+        var text = Standing(notice, warning);
         if (text == null) { Hint.Visibility = Visibility.Collapsed; return; }
         Hint.Text = text;
         Hint.Foreground = Brushes.Salmon;
         Hint.Visibility = Visibility.Visible;
     }
+
+    static string? Standing(string? notice, string? warning) =>
+        notice != null && warning != null ? notice + "\n" + warning : notice ?? warning;
 
     static readonly Brush Grey = new SolidColorBrush(Color.FromRgb(0x8A, 0x95, 0xA6));
     static readonly Brush RecRed = new SolidColorBrush(Color.FromRgb(0xFF, 0x3B, 0x30));
@@ -159,12 +165,11 @@ public partial class ToolbarWindow : Window
     /// </summary>
     public void Warn(string text)
     {
-        warning = text;
+        // a second warning joins the first instead of replacing it (both are about this computer)
+        warning = warning == null || warning == text ? text : warning + "\n" + text;
         GripText.Foreground = Brushes.Red;
-        Grip.ToolTip = text;
-        Hint.Text = text;
-        Hint.Foreground = Brushes.Salmon;
-        Hint.Visibility = Visibility.Visible;
+        Grip.ToolTip = warning;
+        Standing();
     }
 
     /// <summary>Every ToolTip becomes a hint line inside the toolbar; no tooltip window ever opens.</summary>

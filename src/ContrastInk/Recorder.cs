@@ -31,6 +31,7 @@ sealed class Recorder
     bool diskWarned;        // the low-disk message once per recording: dismissed, it should stay dismissed
     bool connectNotice;     // the message on show is about reaching OBS: cleared once OBS is reached
     string lastChapterSlide = "";
+    string? recordFolder;   // OBS's recording folder, learned at the start: OBS may be gone when the chapters are saved
 
     /// <summary>OBS is recording (or paused) as far as Contrast Ink knows.</summary>
     public bool Active => state is State.Recording or State.Paused or State.Stopping;
@@ -92,6 +93,13 @@ sealed class Recorder
         lastChapterSlide = "";
         var slide = currentSlide();
         if (Obs.SlideNumber(slide) is int n) { chapters.Add((TimeSpan.Zero, "Slide " + n)); lastChapterSlide = slide; }
+        LearnRecordFolder();
+    }
+
+    async void LearnRecordFolder()
+    {
+        try { recordFolder = (await obs.Request("GetRecordDirectory"))?["recordDirectory"]?.GetValue<string>(); }
+        catch (Exception e) { App.Log(e); }
     }
 
     /// <summary>⏸ / ▶ pressed.</summary>
@@ -163,9 +171,28 @@ sealed class Recorder
     void OnLost()
     {
         if (state is State.Recording or State.Paused or State.Stopping)
-            toolbar.Notice("Lost contact with OBS while recording. Check OBS: if it closed, what was recorded so far is in its recording folder.");
+        {
+            // the video's name is only known when OBS reports it stopped, which it now can't: keep the chapters anyway
+            string? saved = SaveOrphanChapters();
+            toolbar.Notice("Lost contact with OBS while recording. Check OBS: if it closed, what was recorded so far is in its recording folder."
+                + (saved != null ? " The chapters are in " + saved + "." : ""));
+        }
         state = State.Idle;
         Show();
+    }
+
+    /// <summary>The chapters, saved in OBS's recording folder (else Documents) with the time in the name. Null if none.</summary>
+    string? SaveOrphanChapters()
+    {
+        if (chapters.Count < 2) return null;
+        try
+        {
+            string folder = recordFolder is { Length: > 0 } f && Directory.Exists(f) ? f : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+            string path = Path.Combine(folder, $"Contrast Ink chapters {DateTime.Now:yyyy-MM-dd HHmm}.txt");
+            File.WriteAllText(path, Obs.Chapters(chapters));
+            return path;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { App.Log(e); return null; }
     }
 
     async Task Tick()

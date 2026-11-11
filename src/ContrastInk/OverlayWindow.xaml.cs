@@ -139,12 +139,16 @@ public partial class OverlayWindow : Window
     /// <summary>
     /// Shows one slide's marks, keeping the ones on screen for when their slide comes back. A slide never seen starts clean.
     /// Fading marks are not kept: they were going anyway.
+    /// The slide show ending ("") forgets every slide's marks: starting the show again (a rehearsal, then the real
+    /// recording) must start clean, not bring the rehearsal's marks back into the video.
     /// </summary>
     public void ShowPage(string key)
     {
         if (key == pageKey) return;
         FinishShape();
         pages[pageKey] = new Page(new StrokeCollection(Ink.Strokes.Where(s => !fading.ContainsKey(s))), history);
+        if (key == "")
+            foreach (var slide in pages.Keys.Where(k => k != "").ToList()) pages.Remove(slide);
         var next = pages.TryGetValue(key, out var p) ? p : new Page(new StrokeCollection(), new());
         quiet = true;
         try

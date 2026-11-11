@@ -130,6 +130,8 @@ sealed class FakeObs : IDisposable
             case "CreateRecordChapter":
                 if (!Recording) return (false, null);
                 ChapterNames.Enqueue(data?["chapterName"]?.GetValue<string>() ?? ""); return (true, null);
+            case "GetRecordDirectory":
+                return (true, new JsonObject { ["recordDirectory"] = Path.GetDirectoryName(OutputPath) ?? "" });
             case "GetStats":
                 return (true, new JsonObject { ["availableDiskSpace"] = DiskMB, ["cpuUsage"] = 1.0 });
             case "GetCurrentProgramScene":

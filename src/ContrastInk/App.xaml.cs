@@ -254,6 +254,9 @@ public partial class App : Application
         if (shift && !Native.IsDown(0x10)) shift = false;
         if (alt && !Native.IsDown(0x12)) alt = false;
         if (win && !Native.IsDown(0x5B) && !Native.IsDown(0x5C)) win = false;
+        // a key we kept whose release Windows never showed us (the watcher dropped, or put back mid-press) would have
+        // its NEXT release kept from PowerPoint, which then sees the key as still held: forget it once it is really up
+        swallowed.RemoveWhere(vk => !Native.IsDown(vk));
     }
 
     // ---------- keyboard ----------

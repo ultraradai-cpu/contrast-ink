@@ -408,6 +408,10 @@ static class Program
             ppt.SlideShowWindows.Count = 0; Thread.Sleep(900);          // the slide show ends
             shot = Shot("43-show-ended");
             Check(!Red(shot, 1), "slide show ended: the slides' marks go with it", At(shot, 1));
+            ppt.SlideShowWindows.Count = 1; Thread.Sleep(900);          // the same show started again (rehearsal, then the real one)
+            shot = Shot("46-show-started-again");
+            Check(!Red(shot, 1), "the same slide show started again: the last show's marks don't come back", At(shot, 1));
+            ppt.SlideShowWindows.Count = 0; Thread.Sleep(900);
         }
         finally { FakePowerPoint.Revoke(cookie); }
         Thread.Sleep(900);
@@ -466,10 +470,12 @@ static class Program
             Check(OnToolbar("Stop recording") && !OnToolbar("OBS refused"), "the toolbar shows ⏹ while recording, and the old message is gone", OnToolbar("Stop recording") ? "⏹ shown" : "no ⏹");
             Thread.Sleep(1500);
             ppt.SlideShowWindows.Show.View.CurrentShowPosition = 2; Thread.Sleep(1500);
+            ppt.SlideShowWindows.Show.View.Hidden = 2;               // two hidden slides: position 3 in the show is slide 5
+            ppt.SlideShowWindows.Show.View.HiddenFrom = 3;
             ppt.SlideShowWindows.Show.View.CurrentShowPosition = 3; Thread.Sleep(1300);
             Check(OnToolbar("0:0"), "the toolbar shows the recording time", OnToolbar("0:0") ? "timer shown" : "no timer");
             var names = string.Join(", ", obs.ChapterNames);
-            Check(names == "Slide 2, Slide 3", "each slide change is a chapter in OBS's video", "chapters asked: " + names);
+            Check(names == "Slide 2, Slide 5", "each slide change is a chapter in OBS's video, named by PowerPoint's own slide number", "chapters asked: " + names);
 
             var pausePoint = FindToolbarButton("Pause recording");
             Press("Pause recording");
@@ -478,12 +484,12 @@ static class Program
             Check(obs.Paused && OnToolbar("Resume recording"), "⏸ pauses OBS, and the button becomes ▶",
                   $"paused {obs.Paused}, clicked at {pausePoint}, the record button at {FindToolbarButton("Stop recording")}, OBS was asked: {string.Join(",", obs.Requests.Where(r => r != "GetRecordStatus").TakeLast(4))}");
             ppt.SlideShowWindows.Show.View.CurrentShowPosition = 4; Thread.Sleep(1300);   // moved on while paused
-            Check(!obs.ChapterNames.Contains("Slide 4"), "no chapter while paused", string.Join(", ", obs.ChapterNames));
+            Check(!obs.ChapterNames.Contains("Slide 6"), "no chapter while paused", string.Join(", ", obs.ChapterNames));
             Press("Resume recording");
             WaitFor(() => !obs.Paused, 2000);
             Check(!obs.Paused && obs.Recording, "▶ resumes", $"paused {obs.Paused}, recording {obs.Recording}");
-            WaitFor(() => obs.ChapterNames.Contains("Slide 4"), 2000);
-            Check(obs.ChapterNames.Contains("Slide 4"), "after ▶, the slide moved to while paused gets its chapter", string.Join(", ", obs.ChapterNames));
+            WaitFor(() => obs.ChapterNames.Contains("Slide 6"), 2000);
+            Check(obs.ChapterNames.Contains("Slide 6"), "after ▶, the slide moved to while paused gets its chapter", string.Join(", ", obs.ChapterNames));
 
             Press("Stop recording");
             WaitFor(() => !obs.Recording, 3000);
@@ -491,9 +497,10 @@ static class Program
             Check(!obs.Recording && OnToolbar("Record with OBS"), "⏹ stops OBS recording, and the toolbar is ready again", $"recording {obs.Recording}");
             var chaptersFile = Path.Combine(outDir, "lecture-check chapters.txt");
             var lines = File.Exists(chaptersFile) ? File.ReadAllLines(chaptersFile) : Array.Empty<string>();
-            Check(lines.Length == 4 && lines[0] == "0:00 Slide 1" && lines[1].EndsWith(" Slide 2") && lines[2].EndsWith(" Slide 3") && lines[3].EndsWith(" Slide 4") && lines[1] != "0:00 Slide 2",
+            Check(lines.Length == 4 && lines[0] == "0:00 Slide 1" && lines[1].EndsWith(" Slide 2") && lines[2].EndsWith(" Slide 5") && lines[3].EndsWith(" Slide 6") && lines[1] != "0:00 Slide 2",
                   "a chapters file is saved beside the video, ready for a YouTube description", File.Exists(chaptersFile) ? string.Join(" | ", lines) : "no file");
 
+            ppt.SlideShowWindows.Show.View.HiddenFrom = int.MaxValue;
             // started from OBS itself: the toolbar follows
             ppt.SlideShowWindows.Show.View.CurrentShowPosition = 1; Thread.Sleep(900);
             obs.StartByItself().Wait();
@@ -533,10 +540,15 @@ static class Program
             WaitFor(() => OnToolbar("OBS's scene \"Lecture\" has no Display Capture"), 3000);
             Check(OnToolbar("OBS's scene \"Lecture\" has no Display Capture"), "a scene without Display Capture: the toolbar warns the marks won't be recorded", "");
 
-            // OBS closes while recording
+            // OBS closes while recording (after a slide change, so there are chapters to keep)
+            ppt.SlideShowWindows.Show.View.CurrentShowPosition = 2; Thread.Sleep(1300);
+            var orphansBefore = Directory.GetFiles(outDir, "Contrast Ink chapters *.txt").Length;
             obs.Dispose(); obs = null;
             WaitFor(() => OnToolbar("Lost contact with OBS"), 4000);
             Check(OnToolbar("Lost contact with OBS") && OnToolbar("Record with OBS"), "OBS closing mid-recording: the toolbar says so", OnToolbar("Lost contact with OBS") ? "said" : "silent");
+            var orphans = Directory.GetFiles(outDir, "Contrast Ink chapters *.txt");
+            Check(orphans.Length > orphansBefore && OnToolbar("Lost contact with OBS"), "OBS closing mid-recording: the chapters are still saved in its recording folder",
+                  orphans.Length > 0 ? string.Join(" | ", File.ReadAllLines(orphans[^1])) : "no chapters file");
             Press("Lost contact with OBS");
         }
         finally
@@ -836,6 +848,15 @@ public class FakeShow
     public FakePresentation Presentation { get; } = new();
 }
 [ComVisible(true), ClassInterface(ClassInterfaceType.AutoDispatch)]
-public class FakeView { public int CurrentShowPosition { get; set; } = 1; }
+public class FakeView
+{
+    public int CurrentShowPosition { get; set; } = 1;
+    /// <summary>Hidden slides: from position <see cref="HiddenFrom"/> on, PowerPoint's slide number is the position plus this.</summary>
+    public int Hidden { get; set; }
+    public int HiddenFrom { get; set; } = int.MaxValue;
+    public FakeSlide Slide => new() { SlideNumber = CurrentShowPosition + (CurrentShowPosition >= HiddenFrom ? Hidden : 0) };
+}
+[ComVisible(true), ClassInterface(ClassInterfaceType.AutoDispatch)]
+public class FakeSlide { public int SlideNumber { get; set; } }
 [ComVisible(true), ClassInterface(ClassInterfaceType.AutoDispatch)]
 public class FakePresentation { public string FullName => @"C:\Lectures\Cardiac MR.pptx"; }

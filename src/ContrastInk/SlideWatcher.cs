@@ -11,7 +11,7 @@ namespace ContrastInk;
 /// Which PowerPoint slide is showing, so each slide can keep its own marks.
 /// Asks a running PowerPoint (desktop Office) through its automation interface, a few times a second, on its own
 /// thread: a busy PowerPoint can take a moment to answer and must never freeze the drawing layer.
-/// The answer is "file#position" during a slide show, and "" when no slide show is running.
+/// The answer is "file#position#slide number" during a slide show, and "" when no slide show is running.
 /// </summary>
 sealed class SlideWatcher
 {
@@ -39,7 +39,15 @@ sealed class SlideWatcher
     {
         while (true)
         {
-            var now = Read();
+            string? now;
+            // any other failure from PowerPoint must not end the app mid-lecture (an error on this thread would):
+            // treated as "PowerPoint didn't answer", logged once per kind
+            try { now = Read(); }
+            catch (Exception e)
+            {
+                if (logged.Add("unexpected " + e.GetType().Name)) App.Log(e);
+                now = null;
+            }
             if (now != null && now != current)
             {
                 current = now;
@@ -60,9 +68,17 @@ sealed class SlideWatcher
             var shows = Get(app, "SlideShowWindows", held);
             if (Convert.ToInt32(Get(shows, "Count", held)) < 1) return "";
             var show = Call(shows, "Item", held, 1);
-            int position = Convert.ToInt32(Get(Get(show, "View", held), "CurrentShowPosition", held));
+            var view = Get(show, "View", held);
+            int position = Convert.ToInt32(Get(view, "CurrentShowPosition", held));
             string file = Convert.ToString(Get(Get(show, "Presentation", held), "FullName", held)) ?? "";
-            return file + "#" + position;
+            // the slide's own number, for chapter names: with hidden slides or a custom show the position in the show
+            // differs ("Slide 5" for what PowerPoint calls slide 6). The black "end of slide show" screen has no slide:
+            // the position stands in for it.
+            int number = position;
+            try { number = Convert.ToInt32(Get(Get(view, "Slide", held), "SlideNumber", held)); }
+            catch (Exception e) when (e is COMException or TargetInvocationException or InvalidCastException or MissingMemberException or FormatException) { }
+            // "file#position#number": each position keeps its own marks; the last part names the chapter (Obs.SlideNumber)
+            return file + "#" + position + "#" + number;
         }
         catch (Exception e) when (e is COMException or TargetInvocationException or InvalidCastException or MissingMemberException or FormatException)
         {

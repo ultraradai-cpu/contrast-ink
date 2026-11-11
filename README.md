@@ -19,7 +19,7 @@ A small dark Contrast Ink toolbar appears at the top of the screen. Drag it by t
 | **Hold Ctrl** | Draw while Ctrl is held; let go and clicks go to PowerPoint again |
 | **F9** or the **✏ button** | Drawing on / off |
 | **Pen or stylus** | Draws by itself when it comes near the screen; moving the mouse goes back to clicking |
-| **Finger (touch)** | Always clicks, never draws |
+| **Finger (touch)** | Never switches drawing on: with drawing off, a finger always clicks |
 | **Esc** | Stop drawing |
 
 While drawing, slide keys (→, Page Down, Space, a presenter clicker) still go to PowerPoint.
@@ -61,7 +61,7 @@ Any of these removes the last mark. Each one can be switched off under **⚙ Set
 
 In a PowerPoint slide show, each slide keeps its own marks. The next slide starts clean, and going back to a slide
 shows its marks again. Animations on a slide (clicks that don't change the slide) keep the marks. When the slide show
-ends, the marks drawn on its slides go away with it. Switch this off under ⚙ Settings to keep marks until you clear them.
+ends, the marks drawn on its slides go away with it, and starting the show again starts clean. Switch this off under ⚙ Settings to keep marks until you clear them.
 
 This needs the desktop PowerPoint app (Microsoft 365, 2016, 2019, 2021). In other apps (PowerPoint on the web, a PDF
 viewer, a DICOM viewer) marks stay until you clear them.
@@ -82,13 +82,13 @@ Contrast Ink reads the port and password from OBS's own settings, so there's not
 
 While recording, the toolbar shows the time, and a message under the buttons if:
 - OBS stops recording by itself (what was recorded is saved),
-- OBS closes,
+- OBS closes (the chapters are still saved, in OBS's recording folder),
 - less than 2 GB is left on the recording disk, or
 - the OBS scene has no Display Capture, so your marks wouldn't be in the video.
 
 Click a message to dismiss it.
 
-**Chapters:** in a PowerPoint slide show, every slide change becomes a chapter. When you stop, a file named
+**Chapters:** in a PowerPoint slide show, every slide change becomes a chapter, named by PowerPoint's own slide number. When you stop, a file named
 `<your video> chapters.txt` is saved next to the video, ready to paste into a YouTube description. With OBS 30.2 or newer
 and the **Hybrid MP4** recording format (Settings → Output → Recording Format), the chapters are also inside the video.
 

@@ -101,7 +101,7 @@ public static class Obs
     public static string Time(TimeSpan t, bool hours) =>
         hours ? $"{(int)t.TotalHours}:{t.Minutes:00}:{t.Seconds:00}" : $"{(int)t.TotalMinutes}:{t.Seconds:00}";
 
-    /// <summary>The slide number in a slide-watcher key ("C:\x.pptx#12" is 12); null outside a slide show.</summary>
+    /// <summary>The slide number in a slide-watcher key ("C:\x.pptx#5#12" is 12: position 5 in the show, slide 12); null outside a slide show.</summary>
     public static int? SlideNumber(string key)
     {
         int hash = key.LastIndexOf('#');

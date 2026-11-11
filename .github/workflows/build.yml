@@ -52,6 +52,7 @@ jobs:
           name: windows-check-screenshots
           path: shots/
       - name: Update the Latest release
+        if: github.ref == 'refs/heads/main'   # a branch build is checked, never published
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}

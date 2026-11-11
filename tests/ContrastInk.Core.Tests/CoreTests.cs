@@ -518,6 +518,7 @@ public class ObsTests
 
     [Theory]
     [InlineData(@"C:\a#b\Lecture.pptx#12", 12)]
+    [InlineData(@"C:\a#b\Lecture.pptx#5#6", 6)]   // position 5 in the show is slide 6 (slide 5 hidden): the chapter is "Slide 6"
     [InlineData("", null)]
     [InlineData(@"C:\x.pptx#0", null)]
     public void SlideNumberFromTheWatchersKey(string key, int? n) => Assert.Equal(n, Obs.SlideNumber(key));
