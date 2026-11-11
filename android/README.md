@@ -55,7 +55,7 @@ Press **⏺**. When Android asks, choose **Entire screen** (recording a single a
 
 - `core`: the rules (shapes, eraser hit test, fading, undo, settings), plain Kotlin: `./gradlew :core:test`.
 - `app`: the Android app (service with overlay windows, drawing view, toolbar, screen recording).
-- `app/src/androidTest`: runs the app on an emulator over Android's Settings: a tap goes through with drawing
+- `app/src/androidTest`: runs the app on an emulator over a stand-in app (Android's Settings hides other apps' overlays): a tap goes through with drawing
   off, every tool draws, undo / clear / eraser, with a screenshot of every step.
 - Every push that changes `android/` runs all of this on GitHub (`.github/workflows/android.yml`); on main the APK
   goes to the **android-latest** release.

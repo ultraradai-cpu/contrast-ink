@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The test package carries a stand-in "other app" for Contrast Ink to draw over. (Android's own Settings hides
+     every other app's overlay windows, to protect itself, so it can't be used for this.) -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity
+            android:name="ink.contrast.OtherAppActivity"
+            android:exported="true"
+            android:label="Other app"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+    </application>
+</manifest>

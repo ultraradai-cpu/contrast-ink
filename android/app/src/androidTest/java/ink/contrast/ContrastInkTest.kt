@@ -14,10 +14,9 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
-import java.util.regex.Pattern
 
 /**
- * The real app on an Android emulator, over another app (Android's Settings): a tap goes through while drawing is
+ * The real app on an Android emulator, over another app (a stand-in in the test package): a tap goes through while drawing is
  * off, every tool draws, undo / clear / eraser work. The number of marks is checked after every step, and a
  * screenshot of every step is kept for a person to look at (CI uploads them as "android-screenshots").
  */
@@ -40,10 +39,11 @@ class ContrastInkTest {
         assertNotNull("the setup screen opens", start)
         start.click()
         assertNotNull("the toolbar appears", device.wait(Until.findObject(By.desc("Draw on / off")), 8000))
-        // then another app in front: Contrast Ink must draw over it, and let its taps through
-        device.executeShellCommand("am start -W -a android.settings.SETTINGS")
-        device.wait(Until.hasObject(By.pkg("com.android.settings").depth(0)), 8000)
-        assertNotNull("the toolbar stays over Settings", device.wait(Until.findObject(By.desc("Draw on / off")), 4000))
+        // then another app in front (a stand-in in the test package): Contrast Ink must draw over it, and let its
+        // taps through
+        device.executeShellCommand("am start -W -n ${inst.context.packageName}/ink.contrast.OtherAppActivity")
+        assertNotNull("the other app opens", device.wait(Until.findObject(By.text("Not tapped")), 8000))
+        assertNotNull("the toolbar stays over the other app", device.wait(Until.findObject(By.desc("Draw on / off")), 4000))
     }
 
     @After fun tearDown() {
@@ -83,25 +83,15 @@ class ContrastInkTest {
     }
 
     @Test fun drawsOverAnotherAppAndLetsTapsThrough() {
-        shot("01 toolbar over Settings")
+        shot("01 toolbar over another app")
         assertEquals("starts with no marks", 0, marks())
         assertTrue("starts with drawing off", !drawing())
 
         // drawing off: a tap reaches the app below (Android 12+ blocks this for an overlay over 80% opaque)
-        val home = Pattern.compile("Network.*|Connected devices|Apps|Notifications|Battery|Storage|Sound.*|Display|" +
-            "Wallpaper.*|Accessibility|Security.*|Privacy|Location|Safety.*|Passwords.*|System|About.*")
-        device.wait(Until.hasObject(By.text(home)), 6000)
-        val items = device.findObjects(By.text(home))
-        // one below the toolbar (it starts near the top), and another to tell that Settings moved on
-        val target = items.firstOrNull { it.visibleCenter.y > device.displayHeight * 0.45 }
-        assertNotNull("Settings lists items: ${items.map { it.text }}", target)
-        val targetText = target!!.text
-        val other = items.first { it.text != targetText }.text
-        val c = target.visibleCenter
-        device.click(c.x, c.y)
-        val opened = device.wait(Until.gone(By.text(other)), 6000)
-        shot("02 tap went through to Settings")
-        assertTrue("with drawing off, a tap goes through to the app below (tapped \"$targetText\")", opened)
+        device.click(device.displayWidth / 2, (device.displayHeight * 0.75).toInt())
+        val tapped = device.wait(Until.hasObject(By.text("Tapped")), 4000)
+        shot("02 tap went through to the other app")
+        assertTrue("with drawing off, a tap goes through to the app below", tapped)
 
         press("Draw on / off")
         assertTrue("✎ switches drawing on", drawing())
