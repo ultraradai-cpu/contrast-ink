@@ -26,6 +26,8 @@ final class Lecture: ObservableObject {
     private var fading: [Date: (born: Date, color: UIColor)] = [:]
     private var faded: Set<Date> = []
     private var fadeLink: CADisplayLink?
+    /// When the slide showing now came up: a stroke older than this that the slide doesn't already have is not new.
+    private var shownSince = Date()
 
     private init() {
         settings = Settings.decode(UserDefaults.standard.data(forKey: "settings"))
@@ -42,6 +44,7 @@ final class Lecture: ObservableObject {
         fading = [:]; faded = []
         self.deck = deck
         page = 0
+        shownSince = Date()
         drawing = marks.drawing
         UIApplication.shared.isIdleTimerDisabled = true   // the screen must not dim mid-lecture
     }
@@ -74,6 +77,7 @@ final class Lecture: ObservableObject {
         let kept = PKDrawing(strokes: marks.drawing.strokes.filter { fading[$0.path.creationDate] == nil })
         if kept.strokes.count != marks.drawing.strokes.count { marks.replaceQuietly(kept) }
         marks.show(page: p)
+        shownSince = Date()
         page = p
         drawing = marks.drawing
         slideChanged?(p)
@@ -84,6 +88,11 @@ final class Lecture: ObservableObject {
     /// The presenter finished a stroke or erased one on the canvas.
     func canvasChanged(_ new: PKDrawing) {
         let known = Set(marks.drawing.strokes.map(\.path.creationDate))
+        // PencilKit can hand back the last slide's marks with the first stroke on a new slide: each slide keeps only
+        // its own (the canvas is then put right, as the drawing below differs from what it shows)
+        var new = new
+        let own = new.strokes.filter { known.contains($0.path.creationDate) || $0.path.creationDate >= shownSince }
+        if own.count != new.strokes.count { new = PKDrawing(strokes: own) }
         if settings.fadingInk && !Lecture.shiftHeld {
             for s in new.strokes where !known.contains(s.path.creationDate) {
                 fading[s.path.creationDate] = (Date(), s.ink.color)
