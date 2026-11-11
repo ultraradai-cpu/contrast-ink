@@ -100,6 +100,13 @@ struct PresenterView: View {
         }
         .background(Color.black)
         .background(KeyboardShortcuts())
+        .overlay(alignment: .bottomTrailing) {
+            // the app's UI test reads how many marks are on the slide (invisible, and only in a test run)
+            if ProcessInfo.processInfo.arguments.contains("-uitest") {
+                Text("\(lecture.drawing.strokes.count)").font(.caption2).opacity(0.02)
+                    .accessibilityIdentifier("markCount")
+            }
+        }
         .sheet(isPresented: $showSettings) { SettingsView() }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
@@ -163,54 +170,77 @@ struct ToolbarView: View {
     @Binding var showSettings: Bool
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
-                Button { Task { if recorder.active { await recorder.stop() }; lecture.close() } } label: { Image(systemName: "xmark") }
-                    .buttonStyle(BarButton(on: false)).accessibilityLabel("Close slides")
-                Divider().frame(height: 28).overlay(Color.offText.opacity(0.3))
-                tool(.pen, "pencil.tip", "Pen (P)")
-                tool(.highlighter, "highlighter", "Highlighter (H)")
-                tool(.arrow, "arrow.up.right", "Arrow (A)")
-                tool(.oval, "circle", "Circle (O)")
-                tool(.eraser, "eraser", "Eraser (E)")
-                ForEach(Settings.colors.indices, id: \.self) { i in
-                    Button { lecture.choose(color: i) } label: {
-                        Circle().fill(Color(uiColor: UIColor(hex: Settings.colors[i])))
-                            .overlay(Circle().stroke(Color.offText.opacity(0.6), lineWidth: Settings.colorNames[i] == "Black" ? 1 : 0))
-                            .frame(width: 22, height: 22)
-                    }
-                    .buttonStyle(BarButton(on: false))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.contrastBlue, lineWidth: lecture.settings.color == i ? 2.5 : 0))
-                    .accessibilityLabel("\(Settings.colorNames[i]) (\(i + 1))")
-                }
-                ForEach(Settings.widths.indices, id: \.self) { i in
-                    Button { lecture.settings.width = i } label: {
-                        Circle().frame(width: Settings.widths[i] + 3, height: Settings.widths[i] + 3)
-                    }
-                    .buttonStyle(BarButton(on: lecture.settings.width == i))
-                    .accessibilityLabel("\(Settings.widthNames[i]) line")
-                }
-                Button { lecture.settings.fadingInk.toggle() } label: { Image(systemName: "timer") }
-                    .buttonStyle(BarButton(on: lecture.settings.fadingInk)).accessibilityLabel("Fading ink (F)")
-                Button { lecture.undo() } label: { Image(systemName: "arrow.uturn.backward") }
-                    .buttonStyle(BarButton(on: false)).accessibilityLabel("Undo (Z)").accessibilityIdentifier("undo")
-                Button { lecture.clear() } label: { Image(systemName: "trash") }
-                    .buttonStyle(BarButton(on: false)).accessibilityLabel("Clear all marks (C)")
-                Divider().frame(height: 28).overlay(Color.offText.opacity(0.3))
-                Button { lecture.previous() } label: { Image(systemName: "chevron.left") }
-                    .buttonStyle(BarButton(on: false)).accessibilityLabel("Previous slide").accessibilityIdentifier("previous")
-                Text("\(lecture.page + 1) / \(lecture.pageCount)").font(.callout.monospacedDigit()).foregroundStyle(Color.offText)
-                    .accessibilityIdentifier("slideNumber")
-                Button { lecture.next() } label: { Image(systemName: "chevron.right") }
-                    .buttonStyle(BarButton(on: false)).accessibilityLabel("Next slide").accessibilityIdentifier("next")
-                Divider().frame(height: 28).overlay(Color.offText.opacity(0.3))
-                recordButtons
-                Button { showSettings = true } label: { Image(systemName: "gearshape") }
-                    .buttonStyle(BarButton(on: false)).accessibilityLabel("Settings")
+        // one row when it fits (iPad held sideways); two rows when it doesn't (upright, iPhone); scrolling as a last resort
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 4) { drawing; bar; slides }.padding(.horizontal, 8).padding(.vertical, 6)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 4) { drawing }
+                HStack(spacing: 4) { slides }
             }
-            .padding(.horizontal, 8).padding(.vertical, 6)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            ScrollView(.horizontal, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 4) { drawing }
+                    HStack(spacing: 4) { slides }
+                }
+                .padding(.horizontal, 8).padding(.vertical, 4)
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.inkBar)
+    }
+
+    private var bar: some View { Divider().frame(height: 28).overlay(Color.offText.opacity(0.3)) }
+
+    /// Close, the tools, colours and widths.
+    @ViewBuilder private var drawing: some View {
+        Button { Task { if recorder.active { await recorder.stop() }; lecture.close() } } label: { Image(systemName: "xmark") }
+            .buttonStyle(BarButton(on: false)).accessibilityLabel("Close slides")
+        bar
+        tool(.pen, "pencil.tip", "Pen (P)")
+        tool(.highlighter, "highlighter", "Highlighter (H)")
+        tool(.arrow, "arrow.up.right", "Arrow (A)")
+        tool(.oval, "circle", "Circle (O)")
+        tool(.eraser, "eraser", "Eraser (E)")
+        ForEach(Settings.colors.indices, id: \.self) { i in
+            Button { lecture.choose(color: i) } label: {
+                Circle().fill(Color(uiColor: UIColor(hex: Settings.colors[i])))
+                    .overlay(Circle().stroke(Color.offText.opacity(0.6), lineWidth: Settings.colorNames[i] == "Black" ? 1 : 0))
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(BarButton(on: false))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.contrastBlue, lineWidth: lecture.settings.color == i ? 2.5 : 0))
+            .accessibilityLabel("\(Settings.colorNames[i]) (\(i + 1))")
+        }
+        ForEach(Settings.widths.indices, id: \.self) { i in
+            Button { lecture.settings.width = i } label: {
+                Circle().frame(width: Settings.widths[i] + 3, height: Settings.widths[i] + 3)
+            }
+            .buttonStyle(BarButton(on: lecture.settings.width == i))
+            .accessibilityLabel("\(Settings.widthNames[i]) line")
+        }
+    }
+
+    /// Fading, undo, clear, the slide number, recording and settings.
+    @ViewBuilder private var slides: some View {
+        Button { lecture.settings.fadingInk.toggle() } label: { Image(systemName: "timer") }
+            .buttonStyle(BarButton(on: lecture.settings.fadingInk)).accessibilityLabel("Fading ink (F)")
+        Button { lecture.undo() } label: { Image(systemName: "arrow.uturn.backward") }
+            .buttonStyle(BarButton(on: false)).accessibilityLabel("Undo (Z)").accessibilityIdentifier("undo")
+        Button { lecture.clear() } label: { Image(systemName: "trash") }
+            .buttonStyle(BarButton(on: false)).accessibilityLabel("Clear all marks (C)")
+        bar
+        Button { lecture.previous() } label: { Image(systemName: "chevron.left") }
+            .buttonStyle(BarButton(on: false)).accessibilityLabel("Previous slide").accessibilityIdentifier("previous")
+        Text("\(lecture.page + 1) / \(lecture.pageCount)").font(.callout.monospacedDigit()).foregroundStyle(Color.offText)
+            .fixedSize()
+            .accessibilityIdentifier("slideNumber")
+        Button { lecture.next() } label: { Image(systemName: "chevron.right") }
+            .buttonStyle(BarButton(on: false)).accessibilityLabel("Next slide").accessibilityIdentifier("next")
+        bar
+        recordButtons
+        Button { showSettings = true } label: { Image(systemName: "gearshape") }
+            .buttonStyle(BarButton(on: false)).accessibilityLabel("Settings")
     }
 
     private func tool(_ t: Tool, _ symbol: String, _ name: String) -> some View {
