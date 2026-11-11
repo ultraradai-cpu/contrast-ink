@@ -1,0 +1,45 @@
+name: iOS
+
+# Every push that changes the iPad/iPhone app: test the shared rules, build the app, run it on a simulated iPad
+# (draw, change slides, undo, shapes) and keep the screenshots of every step as "ios-screenshots".
+on:
+  push:
+    paths: ["ios/**", ".github/workflows/ios.yml"]
+  workflow_dispatch:
+
+jobs:
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test the shared rules
+        run: swift test --package-path Core
+      - name: Make the Xcode project
+        run: |
+          brew install xcodegen
+          xcodegen
+      - name: Build, and run the app on a simulated iPad
+        run: |
+          set -o pipefail
+          sim=$(xcrun simctl list devices available | grep -E '^\s+iPad' | head -1 | sed -E 's/^ *(.*) \(([0-9A-F-]{36})\).*/\2/')
+          echo "simulator: $(xcrun simctl list devices available | grep "$sim")"
+          xcodebuild test -project ContrastInk.xcodeproj -scheme ContrastInk \
+            -destination "id=$sim" -resultBundlePath results.xcresult \
+            CODE_SIGNING_ALLOWED=NO | tail -200
+      - name: Save the screenshots
+        if: always()
+        run: |
+          mkdir -p shots
+          if [ -d results.xcresult ]; then
+            xcrun xcresulttool export attachments --path results.xcresult --output-path shots || true
+          fi
+          ls -la shots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-screenshots
+          path: ios/shots/
