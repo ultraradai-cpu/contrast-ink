@@ -133,3 +133,27 @@ against offline — so compare it, once per PC. A private network or the PC's ow
     first sealed PROOF  0000000000000000000000012DCC2D016D67988C73F5CD844EA2BE5AFB2499203A49A95C4546
                         (the PROOF payload: COMMAND "hello" sealed with the tablet->PC key, counter 1)
     PC check            6FC6-6A90
+
+## USB (phase 2): the cable takes over when plugged in
+
+Over USB the same version-2 messages travel through a local connection the cable carries; nothing else changes
+except who opens the connection and the code. The cable itself is the proof of being in the room, so **over USB
+the code is empty**: keys = HKDF(…, info = `"contrastink pad v2 "`) (the same text with nothing after it), and the
+tablet skips the first-time "It matches" confirmation (it still remembers the PC's key and still warns if it
+differs). A PC accepts an empty code **only** on its USB doors below, never on the Wi-Fi port.
+
+- **iPad**: in pad mode the iPad listens on its own loopback address, `127.0.0.1:47830` — reachable through the
+  cable, never over Wi-Fi. The PC (Windows) asks Apple's USB service (`usbmuxd`, the Apple Mobile Device Service
+  that iTunes installs; `127.0.0.1:27015`) for the connected iPhones and iPads every few seconds and, for each,
+  opens a connection to its port 47830 through the cable (usbmux protocol version 1, plist messages:
+  `ListDevices`, then `Connect` with `DeviceID` and `PortNumber` = the port with its two bytes swapped). On the
+  opened connection the iPad speaks first, as a tablet always does (HELLO), and the PC answers as on Wi-Fi.
+- **Android**: with USB debugging on, the PC runs `adb reverse tcp:47830 tcp:47830` for each connected device
+  every few seconds (when `adb` is found: on the PATH, in `%LOCALAPPDATA%\Android\Sdk\platform-tools`, or in
+  `C:\platform-tools`), which makes the tablet's `127.0.0.1:47830` reach the PC's `127.0.0.1:47830`. The PC listens
+  there (loopback only) as its USB door. In pad mode the tablet tries `127.0.0.1:47830` every 2 seconds.
+- **The switch**: when a USB session is open (WELCOME received), the tablet closes its Wi-Fi session and stops
+  trying Wi-Fi (the PC's new session replaces the old one, as for any right-code session). When the USB
+  connection drops (unplugged), the tablet goes back to Wi-Fi by itself if it still holds the code from earlier
+  in this session; otherwise it shows the connect screen. While a USB session is open, a Wi-Fi tablet with the
+  right code still replaces it (the presenter chose to).

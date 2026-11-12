@@ -48,7 +48,7 @@ sealed class PadServer : IDisposable
     public string PcCheck { get; }
     readonly PadGuard guard = new();
     readonly object gate = new();       // guards current, Code, guard
-    TcpListener? listener;
+    TcpListener? listener, usbListener;
     Connection? current;
     int pending;
     volatile bool running;
@@ -64,6 +64,7 @@ sealed class PadServer : IDisposable
         public volatile bool AckPending, Closed;
         public DateTime SentAt;
         public PadSeal? Out, In;   // once the code is proven: everything is sealed (version 2)
+        public bool Usb;           // came by the cable: the code is empty
         readonly object sealing = new();
         readonly System.Collections.Concurrent.BlockingCollection<byte[]> outbox = new(64);
 
@@ -123,8 +124,13 @@ sealed class PadServer : IDisposable
             catch (SocketException) { }
         }
         if (listener == null) throw new InvalidOperationException("no free network port (47820 to 47829 are all in use)");
-        Run("pad accept", AcceptLoop);
+        Run("pad accept", () => AcceptLoop(listener, usb: false));
+        // the USB door: reachable only from this PC (Android's USB link, adb reverse, arrives here)
+        try { usbListener = new TcpListener(IPAddress.Loopback, Pad.UsbPort); usbListener.Start(); Run("pad usb accept", () => AcceptLoop(usbListener, usb: true)); }
+        catch (SocketException e) { App.Log(e); usbListener = null; }
         Run("pad frames", FrameLoop);
+        Run("pad ipad usb", () => UsbMux.Watch(() => running, OpenedOverUsb));
+        Run("pad android usb", () => Adb.Watch(() => running));
         try { advert = DnsSd.Register(Environment.MachineName, Port); } catch (Exception e) { App.Log(e); }
     }
 
@@ -152,22 +158,32 @@ sealed class PadServer : IDisposable
     /// <summary>Ends the tablet's connection (the presenter switched the link off, or wants another tablet).</summary>
     public void Drop() { Connection? c; lock (gate) c = current; c?.Close(); }
 
-    void AcceptLoop()
+    void AcceptLoop(TcpListener l, bool usb)
     {
         while (running)
         {
             TcpClient c;
-            try { c = listener!.AcceptTcpClient(); }
+            try { c = l.AcceptTcpClient(); }
             catch (Exception) when (!running) { return; }
             catch (SocketException) { continue; }
             if (Interlocked.Increment(ref pending) > MaxPending) { Interlocked.Decrement(ref pending); try { c.Close(); } catch (Exception) { } continue; }
-            Run("pad tablet", () => Serve(c));
+            Run("pad tablet", () => Serve(c, usb));
         }
     }
 
-    void Serve(TcpClient tcp)
+    /// <summary>An iPad's USB connection, opened by this PC through Apple's USB service; ends when the session ends.</summary>
+    void OpenedOverUsb(TcpClient c)
     {
-        var conn = new Connection(tcp);
+        Interlocked.Increment(ref pending);
+        Serve(c, usb: true);
+    }
+
+    /// <summary>A tablet is connected by the cable (not over Wi-Fi).</summary>
+    public bool OverUsb => current?.Usb == true;
+
+    void Serve(TcpClient tcp, bool usb)
+    {
+        var conn = new Connection(tcp) { Usb = usb };
         var reader = new PadReader { MaxLength = Pad.HelloMax };   // a stranger's first messages are small
         var buf = new byte[64 * 1024];
         int step = 0;   // 0: waiting for HELLO, 1: CHALLENGE sent, waiting for PROOF, 2: in
@@ -202,7 +218,7 @@ sealed class PadServer : IDisposable
                         var hello = type == Pad.Hello ? Pad.ReadHelloV2(payload) : null;
                         tabletKey = hello == null ? null : PadCrypto.ReadPoint(hello.Value.key);
                         string? why = tabletKey == null ? Pad.UpdateTablet : null;
-                        lock (gate) if (why == null && guard.Locked(DateTime.UtcNow)) why = Pad.TooManyWrong;
+                        lock (gate) if (why == null && !usb && guard.Locked(DateTime.UtcNow)) why = Pad.TooManyWrong;
                         if (why != null) { Refuse(conn, why); return; }
                         device = hello!.Value.device;
                         salt = System.Security.Cryptography.RandomNumberGenerator.GetBytes(16);
@@ -258,7 +274,7 @@ sealed class PadServer : IDisposable
     bool Prove(Connection conn, byte type, byte[] payload, System.Security.Cryptography.ECDiffieHellmanPublicKey tabletKey, byte[] salt, string device)
     {
         string code;
-        lock (gate) code = Code;
+        lock (gate) code = conn.Usb ? "" : Code;   // over the cable the code is empty: being plugged in is the proof
         var (toPc, toTablet) = PadCrypto.Keys(pcKey, tabletKey, salt, code);
         var open = new PadSeal(toPc);
         var proof = type == PadCrypto.Proof ? open.Open(payload) : null;
@@ -269,11 +285,11 @@ sealed class PadServer : IDisposable
         string? why = null;
         lock (gate)
         {
-            if (guard.Locked(DateTime.UtcNow)) why = Pad.TooManyWrong;
+            if (!conn.Usb && guard.Locked(DateTime.UtcNow)) why = Pad.TooManyWrong;
             else if (!right)
             {
                 why = Pad.WrongCode;
-                if (guard.Wrong(DateTime.UtcNow)) { Code = Pad.NewCode(); newCode = true; }
+                if (!conn.Usb && guard.Wrong(DateTime.UtcNow)) { Code = Pad.NewCode(); newCode = true; }
             }
             else
             {
@@ -420,6 +436,7 @@ sealed class PadServer : IDisposable
         running = false;
         advert?.Dispose();
         try { listener?.Stop(); } catch (Exception) { }
+        try { usbListener?.Stop(); } catch (Exception) { }
         Drop();
     }
 }

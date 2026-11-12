@@ -345,7 +345,9 @@ static class Program
         public string Refused = "";
         public byte[]? PcKey;
 
-        public TestTablet(int port) { Tcp = new System.Net.Sockets.TcpClient("127.0.0.1", port); Net = Tcp.GetStream(); }
+        public TestTablet(int port) : this(new System.Net.Sockets.TcpClient("127.0.0.1", port)) { }
+        /// <summary>On a connection that is already open (the iPad's end of a USB connection the PC opened).</summary>
+        public TestTablet(System.Net.Sockets.TcpClient open) { Tcp = open; Net = Tcp.GetStream(); }
 
         /// <summary>The handshake with this code; true when the PC let it in (WELCOME opened).</summary>
         public bool Pair(string code)
@@ -483,6 +485,16 @@ static class Program
             }
             Thread.Sleep(500);
 
+            // by the cable: Android's USB link reaches the PC's loopback USB door, where the code is empty
+            using (var cable = new TestTablet(Pad.UsbPort))
+                Check(cable.Pair(""), "USB: on the cable door (Android's adb reverse), no code is needed", cable.Refused);
+            using (var noCode = new TestTablet(port))
+            {
+                noCode.Pair("");
+                Check(noCode.Refused == Pad.WrongCode, "USB: on the Wi-Fi port an empty code is still wrong", noCode.Refused);
+            }
+            IPadByCable();
+
             // strangers on the Wi-Fi, without the code: a broken first message once ended the whole app
             foreach (var junk in new[] { new byte[] { 0x01, 0, 0, 0, 1, (byte)'1' }, Pad.Message(Pad.Hello, "{\"version\":2,\"key\":\"\\uD800\"}"), new byte[] { 0x01, 0, 0x10, 0, 0 }, Pad.Message(PadCrypto.Proof, new byte[40]) })
                 using (var j = new System.Net.Sockets.TcpClient("127.0.0.1", port))
@@ -507,6 +519,84 @@ static class Program
         {
             Check(false, "tablet link: the stand-in tablet's conversation", e.Message);
         }
+    }
+
+    /// <summary>
+    /// An iPad on the cable, as the PC sees it through Apple's USB service: a stand-in service on 127.0.0.1:27015
+    /// lists one iPad; when the PC asks to connect to its port 47830, the stand-in answers "connected" and from then
+    /// on plays the iPad on that connection (HELLO with an empty code). A line drawn must appear on the screen.
+    /// </summary>
+    static void IPadByCable()
+    {
+        System.Net.Sockets.TcpListener service;
+        try { service = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 27015); service.Start(); }
+        catch (System.Net.Sockets.SocketException e) { Check(false, "USB: a stand-in Apple USB service could start", e.Message); return; }
+        try
+        {
+            System.Net.Sockets.TcpClient? tunnel = null;
+            int askedPort = -1;
+            var until = DateTime.UtcNow.AddSeconds(15);
+            while (tunnel == null && DateTime.UtcNow < until)
+            {
+                if (!service.Pending()) { Thread.Sleep(50); continue; }
+                var c = service.AcceptTcpClient();
+                var s = c.GetStream();
+                s.ReadTimeout = 3000;
+                var head = ReadN(s, 16);
+                var body = System.Text.Encoding.UTF8.GetString(ReadN(s, BitConverter.ToInt32(head, 0) - 16));
+                string reply;
+                if (body.Contains("<string>ListDevices</string>"))
+                    reply = "<plist version=\"1.0\"><dict><key>DeviceList</key><array><dict><key>DeviceID</key><integer>7</integer>"
+                          + "<key>MessageType</key><string>Attached</string><key>Properties</key><dict><key>ConnectionType</key><string>USB</string>"
+                          + "<key>DeviceID</key><integer>7</integer></dict></dict></array></dict></plist>";
+                else
+                {
+                    var m = System.Text.RegularExpressions.Regex.Match(body, "<key>PortNumber</key><integer>(\\d+)</integer>");
+                    int sw = m.Success ? int.Parse(m.Groups[1].Value) : -1;
+                    askedPort = ((sw & 0xFF) << 8) | ((sw >> 8) & 0xFF);
+                    reply = "<plist version=\"1.0\"><dict><key>MessageType</key><string>Result</string><key>Number</key><integer>0</integer></dict></plist>";
+                }
+                var rb = System.Text.Encoding.UTF8.GetBytes(reply);
+                var rh = new byte[16];
+                BitConverter.GetBytes(16 + rb.Length).CopyTo(rh, 0); BitConverter.GetBytes(1).CopyTo(rh, 4); BitConverter.GetBytes(8).CopyTo(rh, 8); BitConverter.GetBytes(1).CopyTo(rh, 12);
+                s.Write(rh); s.Write(rb);
+                if (body.Contains("<string>Connect</string>")) tunnel = c; else c.Dispose();
+            }
+            Check(tunnel != null && askedPort == Pad.UsbPort, "USB: the PC finds the plugged-in iPad and connects to its pad port through Apple's USB service",
+                  tunnel == null ? "never asked to connect" : "asked for port " + askedPort);
+            if (tunnel == null) return;
+            using var ipad = new TestTablet(tunnel);
+            bool inByCable = ipad.Pair("");
+            Check(inByCable, "USB: the iPad is let in by the cable with no code", ipad.Refused);
+            if (!inByCable) return;
+            ipad.Send(Pad.Command, "clear");
+            ipad.Send(Pad.Command, "tool:pen");
+            ipad.Send(Pad.Command, "color:0");
+            float fy = (float)(Row(6) - screen.Top) / screen.Height;
+            ipad.Send(Pad.StrokeBegin, PadPoint(0.2f, fy).Concat(new byte[] { 0 }).ToArray());
+            var pts = new List<byte> { 0, 10 };
+            for (int i = 1; i <= 10; i++) pts.AddRange(PadPoint(0.2f + 0.04f * i, fy));
+            ipad.Send(Pad.StrokePoints, pts.ToArray());
+            ipad.Send(Pad.StrokeEnd, Array.Empty<byte>());
+            Thread.Sleep(600);
+            var red = ColorTranslator.FromHtml(Settings.Colors[0]);
+            var drawn = Closest(Shot("42-ipad-by-cable"), screen.Left + (int)(screen.Width * 0.4), Row(6), red, 6);
+            Check(Diff(drawn, red) <= 40, "USB: a line drawn on the iPad by the cable appears on the screen", Hex(drawn));
+            ipad.Send(Pad.Command, "clear");
+            Thread.Sleep(300);
+        }
+        catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException or JsonException or KeyNotFoundException or FormatException)
+        {
+            Check(false, "USB: the stand-in iPad's conversation", e.Message);
+        }
+        finally { service.Stop(); }
+    }
+
+    static byte[] ReadN(System.Net.Sockets.NetworkStream s, int n)
+    {
+        var b = new byte[n];
+        for (int got = 0; got < n;) { int k = s.Read(b, got, n - got); if (k <= 0) throw new IOException("closed"); got += k; }
+        return b;
     }
 
     /// <summary>Reads (and drops) whatever is still coming until the PC closes the connection: true if it did in time.</summary>

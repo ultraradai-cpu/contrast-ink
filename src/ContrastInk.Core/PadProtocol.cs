@@ -11,6 +11,8 @@ namespace ContrastInk.Core;
 public static class Pad
 {
     public const int Port = 47820, Version = 2;
+    /// <summary>The USB door: the PC's loopback port Android's USB link reaches, and the iPad's own loopback port.</summary>
+    public const int UsbPort = 47830;
     public const string ServiceType = "_contrastink._tcp";
     public const int MaxLength = 16 * 1024 * 1024;
 
