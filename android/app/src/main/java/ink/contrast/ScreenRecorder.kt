@@ -235,6 +235,9 @@ class ScreenRecorder(private val service: InkService) {
                     val kind = ex.getTrackFormat(i).getString(MediaFormat.KEY_MIME)?.substringBefore('/') ?: continue
                     tracks[kind]?.let { map[i] = it; ex.selectTrack(i) }
                 }
+                // a part's times needn't start at 0 (Android can stamp them from when the screen was handed over):
+                // each part starts where the last one ended
+                val base = ex.sampleTime.coerceAtLeast(0)
                 var end = offset
                 while (true) {
                     val track = ex.sampleTrackIndex
@@ -242,7 +245,7 @@ class ScreenRecorder(private val service: InkService) {
                     info.size = ex.readSampleData(buffer, 0)
                     if (info.size < 0) break
                     info.offset = 0
-                    info.presentationTimeUs = offset + ex.sampleTime
+                    info.presentationTimeUs = offset + (ex.sampleTime - base).coerceAtLeast(0)
                     info.flags = if (ex.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
                     map[track]?.let { muxer.writeSampleData(it, buffer, info) }
                     end = maxOf(end, info.presentationTimeUs)
