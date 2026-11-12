@@ -13,7 +13,8 @@ import java.io.ByteArrayOutputStream
 object PadProtocol {
     const val SERVICE_TYPE = "_contrastink._tcp"
     const val DEFAULT_PORT = 47820
-    const val VERSION = 1
+    /** Version 2: the hello carries the tablet's key, not the code, and everything after it is sealed (PadCrypto). */
+    const val VERSION = 2
     /** A length over this closes the connection: no real message is that big, so the stream is broken. */
     const val MAX_LENGTH = 16 * 1024 * 1024
 
@@ -21,6 +22,8 @@ object PadProtocol {
     const val HELLO = 0x01
     const val PING = 0x02
     const val FRAME_ACK = 0x03
+    /** Version 2: a sealed COMMAND "hello", the tablet's proof that it knows the code. */
+    const val PROOF = 0x04
     const val STROKE_BEGIN = 0x10
     const val STROKE_POINTS = 0x11
     const val STROKE_END = 0x12
@@ -35,6 +38,11 @@ object PadProtocol {
     const val FRAME = 0x83
     const val STATE = 0x84
     const val PONG = 0x85
+    /** Version 2: the PC's long-lived key, a salt and its name (the answer to HELLO). */
+    const val CHALLENGE = 0x86
+
+    /** Version 2, both ways: one whole message, sealed (PadSeal). Everything after the hello travels in these. */
+    const val SEALED = 0x7F
 
     /** The most points one STROKE_POINTS can carry (its count is a u16); more are split over several messages. */
     const val MAX_POINTS = 0xFFFF
@@ -50,9 +58,31 @@ object PadProtocol {
         return out
     }
 
-    /** The first message, always: the code the PC shows, and what the tablet is (shown on the PC). */
-    fun hello(code: String, device: String): ByteArray = message(HELLO,
-        Json.obj("code" to code, "device" to device, "version" to VERSION).toByteArray(Charsets.UTF_8))
+    /**
+     * The first message, always: what the tablet is (shown on the PC) and its fresh public key (65 bytes). No code:
+     * the code only goes into the keys, so nobody on the Wi-Fi can read it.
+     */
+    fun hello(device: String, key: ByteArray): ByteArray = message(HELLO,
+        Json.obj("device" to device.take(64), "version" to VERSION, "key" to java.util.Base64.getEncoder().encodeToString(key))
+            .toByteArray(Charsets.UTF_8))
+
+    /**
+     * Joined messages (as [strokePoints] can give) taken apart again: each is sealed on its own, since a SEALED
+     * message holds exactly one.
+     */
+    fun split(bytes: ByteArray): List<ByteArray> {
+        val out = ArrayList<ByteArray>()
+        var i = 0
+        while (i < bytes.size) {
+            require(bytes.size - i >= 5) { "a broken message" }
+            val len = ((bytes[i + 1].toInt() and 0xFF) shl 24) or ((bytes[i + 2].toInt() and 0xFF) shl 16) or
+                ((bytes[i + 3].toInt() and 0xFF) shl 8) or (bytes[i + 4].toInt() and 0xFF)
+            require(len >= 0 && i + 5 + len <= bytes.size) { "a broken message" }
+            out += bytes.copyOfRange(i, i + 5 + len)
+            i += 5 + len
+        }
+        return out
+    }
 
     fun ping() = message(PING)
     fun frameAck() = message(FRAME_ACK)
@@ -171,9 +201,13 @@ sealed class PcMessage {
     data class State(val tool: Tool?, val color: Int, val width: Int, val opacity: Float, val fading: Boolean,
                      val canUndo: Boolean) : PcMessage()
     object Pong : PcMessage()
+    /** Version 2: the PC's public key (65 bytes; empty if unreadable), the salt and its name. */
+    class Challenge(val key: ByteArray, val salt: ByteArray, val name: String) : PcMessage()
+    /** Version 2: a sealed message, still to be opened (PadClient). */
+    class Sealed(val payload: ByteArray) : PcMessage()
 }
 
-class PadProtocolException(message: String) : Exception(message)
+open class PadProtocolException(message: String) : Exception(message)
 
 /**
  * Reads the PC's messages from a stream of bytes that arrive in pieces of any size (TCP gives no message
@@ -188,6 +222,9 @@ class PadDecoder {
     private var remaining = 0                // payload bytes still to come
     private var payloadHave = 0
     private var failed: String? = null
+
+    /** No message half-read: what a SEALED message holds must be whole messages. */
+    val atBoundary get() = headerHave == 0
 
     fun feed(bytes: ByteArray, offset: Int = 0, length: Int = bytes.size - offset): List<PcMessage> {
         failed?.let { throw PadProtocolException(it) }
@@ -224,7 +261,7 @@ class PadDecoder {
     }
 
     private fun known(t: Int) = t == PadProtocol.WELCOME || t == PadProtocol.REJECT || t == PadProtocol.FRAME ||
-        t == PadProtocol.STATE || t == PadProtocol.PONG
+        t == PadProtocol.STATE || t == PadProtocol.PONG || t == PadProtocol.CHALLENGE || t == PadProtocol.SEALED
 
     /** A known message, or null when its JSON can't be read (one bad message doesn't drop the connection). */
     private fun parse(t: Int, p: ByteArray): PcMessage? = when (t) {
@@ -240,9 +277,17 @@ class PadDecoder {
                 o["fading"] as? Boolean ?: false, o["canUndo"] as? Boolean ?: false)
         }
         PadProtocol.PONG -> PcMessage.Pong
+        PadProtocol.CHALLENGE -> Json.parseObject(p.toString(Charsets.UTF_8)).let { o ->
+            // a challenge that can't be read still arrives (with an empty key), so the tablet stops at once
+            PcMessage.Challenge(base64(o?.get("key")), base64(o?.get("salt")), o?.get("name") as? String ?: "")
+        }
+        PadProtocol.SEALED -> PcMessage.Sealed(p)
         else -> null
     }
 }
+
+private fun base64(v: Any?): ByteArray =
+    try { java.util.Base64.getDecoder().decode(v as? String ?: "") } catch (e: IllegalArgumentException) { ByteArray(0) }
 
 /**
  * Just enough JSON for the pad's small messages (core has no JSON library and needs none). Reads objects, arrays,

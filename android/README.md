@@ -58,12 +58,18 @@ Press **⏺**. When Android asks, choose **Entire screen** (recording a single a
 
 ## Pad mode: draw on a PC from the tablet
 
-On the setup screen, **Use this tablet as a pad for a PC**. The PC runs Contrast Ink and shows a 6-digit code; both
-must be on the same Wi-Fi. Pick the PC from the list (or type the address it shows under the code, like
-`192.168.1.20`), type the code, **Connect**. The tablet shows the PC's screen; what you draw on it, the PC draws on
-its own drawing layer (so OBS records it). The toolbar picks the PC's tool and colour, undoes, clears and turns
-slides. A second finger cancels a line; a stylus hovering shows the laser's dot. If the Wi-Fi drops, the pad says
-**Lost the PC** with **Reconnect**. The link is written down in `docs/pad-protocol.md`.
+On the setup screen, **Use as a pad for a PC**. The PC runs Contrast Ink (⚙ Settings → Let a Tablet Draw Here) and
+shows a 6-digit code; both must be on the same Wi-Fi. Pick the PC from the list (or type the address it shows under
+the code, like `192.168.1.20`), type the code, **Connect**. The tablet shows the PC's screen; what you draw on it, the
+PC draws on its own drawing layer (so OBS records it). The toolbar picks the PC's tool and colour, undoes, clears and
+turns slides. A second finger cancels a line; a stylus hovering shows the laser's dot. Back asks before
+disconnecting. If the Wi-Fi drops, the pad tries again by itself twice, then says **Lost the PC** with **Reconnect**.
+
+The link is encrypted (version 2 of `docs/pad-protocol.md`): the code never crosses the Wi-Fi, and the tablet
+remembers each PC's key by its name. The first time, it shows the PC's **PC check** (like `6FC6-6A90`): compare it
+with the one next to the code on the PC. If a PC by that name later shows another key, the tablet stops and warns
+(after reinstalling Contrast Ink on the PC, **Connect anyway**). The code is never saved; the pad screen is kept out of
+screenshots and the recent-apps view. For patient images a private network or the PC's own hotspot is still best.
 
 ## Not on Android (yet)
 
@@ -74,10 +80,12 @@ slides. A second finger cancels a line; a stylus hovering shows the laser's dot.
 
 - `core`: the rules (shapes, eraser hit test, fading, undo, settings), plain Kotlin: `./gradlew :core:test`.
 - `app`: the Android app (service with overlay windows, drawing view, toolbar, screen recording, pad mode).
-- `core/.../PadProtocol.kt`: the pad link's messages, checked byte for byte against the spec's test vectors.
+- `core/.../PadProtocol.kt`, `PadCrypto.kt`, `PadClient.kt`: the pad link's messages, its encryption (the platform's
+  own P-256, HKDF and AES-GCM) and the tablet's handshake, checked byte for byte against the spec's test vectors.
 - `app/src/androidTest`: runs the app on an emulator over a stand-in app (Android's Settings hides other apps' overlays): a tap goes through with drawing
   off, every tool draws, undo / clear / eraser, with a screenshot of every step. `PadTest` runs pad mode against a
-  stand-in PC inside the test (picture, strokes, commands, a lost connection, a wrong code).
+  stand-in PC inside the test that speaks version 2 (picture, strokes, commands, a reconnect, a lost connection, a
+  wrong code, a PC whose key changed).
 - Every push that changes `android/` runs all of this on GitHub (`.github/workflows/android.yml`); on main the APK
   goes to the **android-latest** release.
 - Signing: Android installs an update over the old app only when both carry the same key. Builds are signed with

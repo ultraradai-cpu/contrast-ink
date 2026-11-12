@@ -7,7 +7,9 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.Rect
 import android.graphics.RectF
+import android.os.Build
 import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
@@ -16,6 +18,7 @@ import ink.contrast.core.Pt
 import ink.contrast.core.Settings
 import ink.contrast.core.Shapes
 import ink.contrast.core.Tool
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * The PC's screen on the tablet, and the glass to draw on. The picture is fitted whole (letterboxed), and every
@@ -39,6 +42,13 @@ class PadView(context: Context, private val host: Host) : View(context) {
     private val density = resources.displayMetrics.density
     private var picture: Bitmap? = null
     private var pictureNew = false
+    /** The picture just replaced: once the new one is drawn, it can take the next picture's pixels (see [spare]). */
+    private var retired: Bitmap? = null
+    /**
+     * A bitmap no longer on screen, for the next picture to be decoded into (BitmapFactory's inBitmap): about ten
+     * pictures a second would otherwise each need a fresh few megabytes. Taken by the decoding thread.
+     */
+    val spare = AtomicReference<Bitmap?>()
     /** The PC's screen size from WELCOME: the picture's shape before the first picture arrives. */
     var screenW = 16; var screenH = 9
     /** Where the picture is in this view (the letterbox leaves the rest black). */
@@ -65,9 +75,34 @@ class PadView(context: Context, private val host: Host) : View(context) {
     }
 
     fun showPicture(b: Bitmap) {
+        val old = picture
+        if (old != null && old !== b) retired = old
         picture = b
         pictureNew = true
         invalidate()
+    }
+
+    /** Another PC: its picture isn't this one's (and may have shown a patient). */
+    fun clearPicture() {
+        picture = null
+        retired = null
+        spare.set(null)
+        strokes.clear()
+        live = null
+        invalidate()
+    }
+
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        super.onLayout(changed, left, top, right, bottom)
+        if (Build.VERSION.SDK_INT >= 29) {
+            // a pen that starts a line at the screen's left or right edge would otherwise be the Back gesture.
+            // Android honours at most 200 dp of such exclusions per edge, so: a strip that tall on each side,
+            // centred, where a line across the picture most often starts
+            val w = (EDGE_DP * density).toInt()
+            val h = minOf(bottom - top, (MAX_EXCLUDE_DP * density).toInt())
+            val y = (bottom - top - h) / 2
+            systemGestureExclusionRects = listOf(Rect(0, y, w, y + h), Rect(right - left - w, y, right - left, y + h))
+        }
     }
 
     private fun layoutPicture() {
@@ -89,6 +124,8 @@ class PadView(context: Context, private val host: Host) : View(context) {
         if (strokes.any { it.liftedAt != 0L }) postInvalidateDelayed(100)   // to let them go on time
         if (pictureNew) {
             pictureNew = false
+            retired?.let { spare.set(it) }   // no longer drawn from: the next picture may be decoded into it
+            retired = null
             // drawn: on screen with the next refresh. Only now may the PC send another (one picture at a time,
             // so a slow Wi-Fi gets fewer pictures rather than a growing queue)
             host.frameShown()
@@ -228,5 +265,9 @@ class PadView(context: Context, private val host: Host) : View(context) {
         const val BATCH_MS = 16L
         /** How long the tablet keeps its own copy of a lifted stroke (the PC's picture has it by then). */
         const val KEEP_MS = 600L
+        /** Each side's strip kept from the Back gesture: wider than the gesture's own edge (about 24-32 dp). */
+        const val EDGE_DP = 48
+        /** The most Android excludes per edge (View.setSystemGestureExclusionRects). */
+        const val MAX_EXCLUDE_DP = 200
     }
 }
