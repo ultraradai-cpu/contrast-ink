@@ -3,6 +3,14 @@
 Draw on your screen while you lecture: over PowerPoint, a DICOM viewer, a browser, anything.
 OBS records your drawings; the toolbar stays out of the recording.
 
+Also for iPad and Android, for personal use:
+
+- **iPad** (Apple Pencil, slides as PDF, built-in recording, projector): see [ios/README.md](ios/README.md).
+- **Android** phone or tablet (draws over any app, records the screen): see [android/README.md](android/README.md).
+  The APK is on **Releases → Android (latest)**.
+
+This page is about the Windows app.
+
 ## Get It
 
 1. Open **Releases → Latest** on this page and download **ContrastInk.exe**.
