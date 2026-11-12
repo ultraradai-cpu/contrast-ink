@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.InsetDrawable
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -17,10 +18,11 @@ import ink.contrast.core.Tool
  * The pad's toolbar, in the look of the drawing toolbar (dark bar, blue for what is chosen). Its buttons only ask
  * the PC (COMMAND): the PC keeps the tool, colour and width, and its STATE says what to mark as chosen, so the
  * tablet never shows a choice the PC didn't make. The buttons wrap onto a second row on a narrow screen.
- * Every button has a spoken name (TalkBack, and the app's test finds buttons by it).
+ * Every button has a spoken name (TalkBack, and the app's test finds buttons by it). Disconnect is not here: it
+ * sits on the title row, far from Next, so a slide change can't end the session.
  */
 @SuppressLint("ViewConstructor")
-class PadToolbar(context: Context, private val send: (String) -> Unit, private val disconnect: () -> Unit) : ViewGroup(context) {
+class PadToolbar(context: Context, private val send: (String) -> Unit) : ViewGroup(context) {
     private val dp = resources.displayMetrics.density
     private val blue = Color.rgb(0x25, 0x63, 0xEB)
     private val offText = Color.rgb(0xE3, 0xE8, 0xF0)
@@ -51,7 +53,6 @@ class PadToolbar(context: Context, private val send: (String) -> Unit, private v
         button("🗑", "Clear all marks") { send(PadProtocol.Commands.CLEAR) }
         button("◀", "Previous slide") { send(PadProtocol.Commands.PREVIOUS) }
         button("▶", "Next slide") { send(PadProtocol.Commands.NEXT) }
-        button("✕", "Disconnect") { disconnect() }
         show(state)
     }
 
@@ -61,11 +62,11 @@ class PadToolbar(context: Context, private val send: (String) -> Unit, private v
         textSize = 18f
         gravity = Gravity.CENTER
         setTextColor(offText)
-        minWidth = (44 * dp).toInt()
+        minWidth = (48 * dp).toInt()
         setPadding((4 * dp).toInt(), 0, (4 * dp).toInt(), 0)
         isClickable = true
         setOnClickListener { onClick() }
-        layoutParams = LayoutParams(LayoutParams.WRAP_CONTENT, (44 * dp).toInt())   // a finger-sized target
+        layoutParams = LayoutParams(LayoutParams.WRAP_CONTENT, (48 * dp).toInt())   // a finger-sized target (48 dp)
     }.also { addView(it) }
 
     private fun mark(v: TextView, on: Boolean) {
@@ -79,11 +80,12 @@ class PadToolbar(context: Context, private val send: (String) -> Unit, private v
         tools.forEach { (t, v) -> mark(v, t == s.tool) }
         tools[Tool.LASER]?.setTextColor(if (s.tool == Tool.LASER) Color.WHITE else Color.rgb(0xFF, 0x2D, 0x2D))
         colors.forEachIndexed { i, v ->
-            v.background = GradientDrawable().apply {
+            // a 30 dp dot inside the whole 48 dp button, so the finger's target is the full size
+            v.background = InsetDrawable(GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
                 setColor(v.tag as Int)
                 setStroke(((if (i == s.color) 3 else 1) * dp).toInt(), if (i == s.color) blue else Color.argb(0x99, 0xE3, 0xE8, 0xF0))
-            }
+            }, (9 * dp).toInt())
         }
         widths.forEachIndexed { i, v -> mark(v, i == s.width) }
         mark(fadeBtn, s.fading)
@@ -114,12 +116,7 @@ class PadToolbar(context: Context, private val send: (String) -> Unit, private v
             val w = itemWidth(c)
             if (x + w > (r - l) - paddingRight && x > paddingLeft) { x = paddingLeft; y += rowH; rowH = 0 }
             val m = margin()
-            if (c in colors) {
-                // a colour is a dot, not a full-height button: centred in its slot
-                val d = (30 * dp).toInt()
-                val top = y + m + (c.measuredHeight - d) / 2
-                c.layout(x + m + (w - 2 * m - d) / 2, top, x + m + (w - 2 * m - d) / 2 + d, top + d)
-            } else c.layout(x + m, y + m, x + m + c.measuredWidth, y + m + c.measuredHeight)
+            c.layout(x + m, y + m, x + m + c.measuredWidth, y + m + c.measuredHeight)
             x += w
             rowH = maxOf(rowH, c.measuredHeight + 2 * m)
         }
@@ -127,5 +124,5 @@ class PadToolbar(context: Context, private val send: (String) -> Unit, private v
 
     private fun child(i: Int): View? = getChildAt(i).takeIf { it.visibility != GONE }
     private fun margin() = (1 * dp).toInt()
-    private fun itemWidth(c: View) = (if (c in colors) (40 * dp).toInt() else c.measuredWidth) + 2 * margin()
+    private fun itemWidth(c: View) = c.measuredWidth + 2 * margin()
 }

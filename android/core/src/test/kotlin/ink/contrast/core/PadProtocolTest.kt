@@ -11,10 +11,14 @@ import org.junit.Test
 class PadProtocolTest {
     private fun hex(s: String) = s.split(' ').filter { it.isNotEmpty() }.map { it.toInt(16).toByte() }.toByteArray()
 
-    @Test fun helloTestVector() {
-        val json = """{"code":"123456","device":"t","version":1}"""
-        assertEquals(42, json.toByteArray().size)
-        assertArrayEquals(hex("01 00 00 00 2A") + json.toByteArray(), PadProtocol.hello("123456", "t"))
+    @Test fun helloVersion2() {
+        val key = ByteArray(65) { if (it == 0) 4 else it.toByte() }
+        val m = PadProtocol.hello("t", key)
+        assertEquals(PadProtocol.HELLO.toByte(), m[0])
+        val json = Json.parseObject(m.copyOfRange(5, m.size).toString(Charsets.UTF_8))!!
+        assertEquals(mapOf("device" to "t", "version" to 2.0, "key" to java.util.Base64.getEncoder().encodeToString(key)), json)
+        assertTrue("no code in the hello", !json.containsKey("code"))
+        assertTrue("at most 1 KB", PadProtocol.hello("x".repeat(5000), key).size <= 1024 + 5)
     }
 
     @Test fun strokeBeginTestVector() =
@@ -88,7 +92,7 @@ class PadProtocolTest {
 
     @Test fun skipsUnknownTypes() {
         val all = PadProtocol.message(0x99, ByteArray(70000) { 1 }) + PadProtocol.message(0x01, ByteArray(3)) +
-            PadProtocol.message(0x86) + PadProtocol.message(PadProtocol.PONG)
+            PadProtocol.message(0x87) + PadProtocol.message(PadProtocol.PONG)
         assertEquals(listOf<PcMessage>(PcMessage.Pong), PadDecoder().feed(all))
         // and in small pieces
         val d = PadDecoder()
