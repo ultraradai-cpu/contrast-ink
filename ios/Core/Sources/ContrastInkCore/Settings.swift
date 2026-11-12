@@ -1,6 +1,6 @@
 import Foundation
 
-public enum Tool: String, Codable, CaseIterable, Sendable { case pen, highlighter, arrow, oval, eraser }
+public enum Tool: String, Codable, CaseIterable, Sendable { case pen, highlighter, arrow, oval, eraser, laser }
 
 /// What the app remembers between lectures. The same colours, widths and tools as the Windows app.
 public struct Settings: Codable, Equatable, Sendable {
@@ -18,6 +18,9 @@ public struct Settings: Codable, Equatable, Sendable {
     public var color = 0
     public var width = 1
     public var fadingInk = false
+    /// How solid new pen, arrow and circle marks are: 1 = solid, down to 0.1 (the highlighter keeps its own look).
+    public var opacity: Double = 1
+    public static let minOpacity = 0.1
     /// Off: only Apple Pencil draws, a finger swipes slides (like the Windows app, where a finger always clicks).
     public var fingerDraws = false
     /// Double-tap on Apple Pencil (2nd generation, Pro) undoes the last mark.
@@ -34,6 +37,7 @@ public struct Settings: Codable, Equatable, Sendable {
         var s = self
         s.color = min(max(s.color, 0), Settings.colors.count - 1)
         s.width = min(max(s.width, 0), Settings.widths.count - 1)
+        s.opacity = s.opacity.isFinite ? min(max(s.opacity, Settings.minOpacity), 1) : 1
         return s
     }
 
@@ -54,6 +58,7 @@ enum JSONDecoderLenient {
         if let v = d["color"] as? Int { s.color = v }
         if let v = d["width"] as? Int { s.width = v }
         if let v = d["fadingInk"] as? Bool { s.fadingInk = v }
+        if let v = d["opacity"] as? Double { s.opacity = v }
         if let v = d["fingerDraws"] as? Bool { s.fingerDraws = v }
         if let v = d["pencilTapUndoes"] as? Bool { s.pencilTapUndoes = v }
         if let v = d["twoFingerTapUndoes"] as? Bool { s.twoFingerTapUndoes = v }
@@ -65,7 +70,7 @@ enum JSONDecoderLenient {
 /// What a key on a hardware keyboard or a presenter clicker does. One table, as in the Windows app's KeyPolicy:
 /// the slide keys work like PowerPoint's, the letters choose tools.
 public enum KeyAction: Equatable, Sendable {
-    case next, previous, pen, highlighter, arrow, oval, eraser, clear, fade, thinner, thicker, undo, color(Int)
+    case next, previous, pen, highlighter, arrow, oval, eraser, laser, clear, fade, thinner, thicker, undo, color(Int)
 }
 
 public enum Keys {
@@ -74,7 +79,7 @@ public enum Keys {
     public static let table: [(key: String, action: KeyAction)] = [
         ("right", .next), ("down", .next), ("space", .next), ("pageDown", .next), ("return", .next),
         ("left", .previous), ("up", .previous), ("pageUp", .previous),
-        ("p", .pen), ("h", .highlighter), ("a", .arrow), ("o", .oval), ("e", .eraser),
+        ("p", .pen), ("h", .highlighter), ("a", .arrow), ("o", .oval), ("e", .eraser), ("l", .laser),
         ("c", .clear), ("f", .fade), ("[", .thinner), ("]", .thicker), ("z", .undo),
     ] + (0..<Settings.colors.count).map { (String($0 + 1), KeyAction.color($0)) }
 

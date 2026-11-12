@@ -262,7 +262,7 @@ final class SettingsAndKeysTests: XCTestCase {
     func testDamagedOrOldSettingsAreSafe() {
         XCTAssertEqual(Settings.decode(nil), Settings())
         XCTAssertEqual(Settings.decode(Data("not json".utf8)), Settings())
-        let s = Settings.decode(Data(#"{"color": 99, "width": -4, "tool": "laser", "fadingInk": true}"#.utf8))
+        let s = Settings.decode(Data(#"{"color": 99, "width": -4, "tool": "spraycan", "fadingInk": true}"#.utf8))
         XCTAssertEqual(s.color, Settings.colors.count - 1)
         XCTAssertEqual(s.width, 0)
         XCTAssertEqual(s.tool, .pen)
@@ -288,5 +288,32 @@ final class SettingsAndKeysTests: XCTestCase {
         XCTAssertEqual(Keys.action(for: "6"), .color(5))
         XCTAssertNil(Keys.action(for: "7"))
         XCTAssertEqual(Settings.highlighterWidth(6), 30)
+    }
+}
+
+final class LaserAndOpacityTests: XCTestCase {
+    func testLaserLineStaysBrightThenFadesThenGoes() {
+        XCTAssertEqual(Laser.opacity(age: 0), 1)
+        XCTAssertEqual(Laser.opacity(age: 0.6), 1)
+        XCTAssertEqual(Laser.opacity(age: 0.9), 0.5, accuracy: 0.001)
+        XCTAssertEqual(Laser.opacity(age: 1.2), 0)
+        XCTAssertEqual(Laser.opacity(age: 10), 0)
+    }
+
+    func testLaserIsNeverThin() { XCTAssertEqual(Laser.width(3), 8); XCTAssertEqual(Laser.width(10), 16, accuracy: 0.001) }
+
+    func testLKeyPicksTheLaser() {
+        XCTAssertEqual(Keys.table.first { $0.key == "l" }?.action, .laser)
+    }
+
+    func testOpacityStaysInRangeAndIsRemembered() throws {
+        XCTAssertEqual(Settings().opacity, 1)
+        var s = Settings(); s.opacity = 0.01
+        XCTAssertEqual(s.cleaned().opacity, Settings.minOpacity)
+        s.opacity = .nan; XCTAssertEqual(s.cleaned().opacity, 1)
+        s.opacity = 0.4; s.tool = .laser
+        let back = Settings.decode(try JSONEncoder().encode(s))
+        XCTAssertEqual(back.opacity, 0.4, accuracy: 0.0001); XCTAssertEqual(back.tool, .laser)
+        XCTAssertEqual(Settings.decode(Data(#"{"color": 2}"#.utf8)).opacity, 1, "an older saved copy is solid")
     }
 }

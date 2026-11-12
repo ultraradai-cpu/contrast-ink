@@ -81,6 +81,12 @@ final class ContrastInkUITests: XCTestCase {
         expectMarks(3, "highlighter: one more mark")
         shot("09 highlighter")
 
+        app.buttons["Laser pointer (L)"].tap()
+        drag(CGVector(dx: 0.15, dy: 0.62), CGVector(dx: 0.85, dy: 0.62))
+        expectMarks(3, "laser: never a mark")
+        shot("09b laser")
+        app.buttons["Pen (P)"].tap()
+
         app.buttons["Clear all marks (C)"].tap()
         Thread.sleep(forTimeInterval: 0.4)
         expectMarks(0, "clear removes every mark")

@@ -26,6 +26,9 @@ final class Stage: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate, UI
     private let slide = UIImageView()
     private let preview = CAShapeLayer()       // the arrow or oval being dragged
     private let shapePan = UIPanGestureRecognizer()
+    private let laserView = LaserLayerView()
+    private let laserTouch = UILongPressGestureRecognizer()    // from the moment the Pencil touches (no wait, any move)
+    private let laserHover = UIHoverGestureRecognizer()        // Apple Pencil hovering (or a pointer): the dot follows it
     private var swipes: [UISwipeGestureRecognizer] = []
     private let twoFingerTap = UITapGestureRecognizer()
     private var shownPage = -1
@@ -66,6 +69,15 @@ final class Stage: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate, UI
         shapePan.maximumNumberOfTouches = 1
         canvas.addGestureRecognizer(shapePan)
 
+        addSubview(laserView)   // over the canvas: the laser is never a mark
+        laserView.penWidth = { [weak lecture] in Settings.widths[lecture?.settings.width ?? 1] }
+        laserTouch.minimumPressDuration = 0
+        laserTouch.allowableMovement = .greatestFiniteMagnitude
+        laserTouch.addTarget(self, action: #selector(laserTouched(_:)))
+        canvas.addGestureRecognizer(laserTouch)
+        laserHover.addTarget(self, action: #selector(laserHovered(_:)))
+        canvas.addGestureRecognizer(laserHover)
+
         for dir in [UISwipeGestureRecognizer.Direction.left, .right] {
             let s = UISwipeGestureRecognizer(target: self, action: #selector(swiped(_:)))
             s.direction = dir
@@ -96,6 +108,8 @@ final class Stage: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate, UI
         guard let deck = lecture.deck else { return }
         if lecture.page != shownPage {
             shownPage = lecture.page
+            LaserPointer.shared.clear()
+            laserView.kick()
             pageSize = deck.pageSize(shownPage)
             setNeedsLayout()
         }
@@ -119,6 +133,8 @@ final class Stage: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate, UI
         let frame = CGRect(x: fit.x, y: fit.y, width: fit.width, height: fit.height).integral
         let zoom = frame.width / pageSize.width
         canvas.frame = frame
+        laserView.frame = frame
+        laserView.zoom = zoom
         // the ink is kept in slide points (1024 wide) and shown zoomed to fit: sharp at any size, same place on any screen
         canvas.minimumZoomScale = zoom
         canvas.maximumZoomScale = zoom
@@ -140,8 +156,15 @@ final class Stage: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate, UI
         canvas.tool = lecture.pkTool
         canvas.drawingPolicy = s.fingerDraws ? .anyInput : .pencilOnly
         let shapes = s.tool == .arrow || s.tool == .oval
-        canvas.drawingGestureRecognizer.isEnabled = !shapes
+        let laser = s.tool == .laser
+        canvas.drawingGestureRecognizer.isEnabled = !shapes && !laser
         shapePan.isEnabled = shapes
+        laserTouch.isEnabled = laser
+        laserHover.isEnabled = laser
+        laserTouch.allowedTouchTypes = s.fingerDraws
+            ? [NSNumber(value: UITouch.TouchType.pencil.rawValue), NSNumber(value: UITouch.TouchType.direct.rawValue)]
+            : [NSNumber(value: UITouch.TouchType.pencil.rawValue)]
+        if !laser { LaserPointer.shared.hideDot(); laserView.kick() }
         shapePan.allowedTouchTypes = s.fingerDraws
             ? [NSNumber(value: UITouch.TouchType.pencil.rawValue), NSNumber(value: UITouch.TouchType.direct.rawValue)]
             : [NSNumber(value: UITouch.TouchType.pencil.rawValue)]
@@ -160,6 +183,26 @@ final class Stage: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate, UI
     func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
         inStroke = false
         show(lecture.drawing)
+    }
+
+    // MARK: laser pointer
+
+    @objc private func laserTouched(_ g: UILongPressGestureRecognizer) {
+        let p = slidePoint(g)
+        switch g.state {
+        case .began: LaserPointer.shared.down(p)
+        case .changed: LaserPointer.shared.move(p, touching: true)
+        default: LaserPointer.shared.hideDot()   // lifted: a hovering Pencil brings the dot back
+        }
+        laserView.kick()
+    }
+
+    @objc private func laserHovered(_ g: UIHoverGestureRecognizer) {
+        switch g.state {
+        case .began, .changed: LaserPointer.shared.move(slidePoint(g), touching: false)
+        default: LaserPointer.shared.hideDot()
+        }
+        laserView.kick()
     }
 
     // MARK: arrow and oval

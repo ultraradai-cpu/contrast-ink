@@ -156,6 +156,7 @@ struct KeyboardShortcuts: View {
         case .arrow: lecture.choose(.arrow)
         case .oval: lecture.choose(.oval)
         case .eraser: lecture.choose(.eraser)
+        case .laser: lecture.choose(.laser)
         case .clear: lecture.clear()
         case .fade: lecture.settings.fadingInk.toggle()
         case .thinner: lecture.thinner()
@@ -204,6 +205,11 @@ struct ToolbarView: View {
         tool(.arrow, "arrow.up.right", "Arrow (A)")
         tool(.oval, "circle", "Circle (O)")
         tool(.eraser, "eraser", "Eraser (E)")
+        Button { lecture.choose(.laser) } label: {
+            Image(systemName: "circle.fill").foregroundStyle(lecture.settings.tool == .laser ? Color.white : Color(uiColor: UIColor(hex: Laser.color)))
+        }
+        .buttonStyle(BarButton(on: lecture.settings.tool == .laser))
+        .named("Laser pointer (L)")
         ForEach(Settings.colors.indices, id: \.self) { i in
             Button { lecture.choose(color: i) } label: {
                 Circle().fill(Color(uiColor: UIColor(hex: Settings.colors[i])))
@@ -221,6 +227,13 @@ struct ToolbarView: View {
             .buttonStyle(BarButton(on: lecture.settings.width == i))
             .named("\(Settings.widthNames[i]) line")
         }
+        Slider(value: $lecture.settings.opacity, in: Settings.minOpacity...1)
+            .frame(width: 110)
+            .tint(Color.contrastBlue)
+            .named("Opacity of the pen, arrow and circle")
+        Text("\(Int((lecture.settings.opacity * 100).rounded()))%")
+            .font(.callout.monospacedDigit()).foregroundStyle(Color.offText)
+            .frame(width: 44, alignment: .leading)
     }
 
     /// Fading, undo, clear, the slide number, recording and settings.
@@ -352,6 +365,7 @@ struct ProjectorView: View {
                         Image(uiImage: deck.image(lecture.page, pixelWidth: fit.width * scale)).resizable()
                         // PencilKit draws the marks itself: only what changed is redrawn (fading ink changes 30 times a second)
                         ProjectorInk(drawing: lecture.drawing, slideSize: size, viewSize: CGSize(width: fit.width, height: fit.height))
+                        ProjectorLaser(scale: fit.width / size.width, penWidth: Settings.widths[lecture.settings.width])
                     }
                     .frame(width: fit.width, height: fit.height)
                     .position(x: fit.x + fit.width / 2, y: fit.y + fit.height / 2)
@@ -361,6 +375,22 @@ struct ProjectorView: View {
         .ignoresSafeArea()
     }
 
+}
+
+/// The laser on the projector, as on the iPad: redrawn every frame while there is something to show.
+struct ProjectorLaser: View {
+    let scale: CGFloat
+    let penWidth: Double
+    @ObservedObject private var laser = LaserPointer.shared
+
+    var body: some View {
+        TimelineView(.animation(paused: !laser.showing)) { timeline in
+            Canvas { ctx, _ in
+                ctx.withCGContext { cg in laser.draw(in: cg, scale: scale, penWidth: penWidth, now: timeline.date) }
+            }
+        }
+        .allowsHitTesting(false)
+    }
 }
 
 /// The marks on the projector: a canvas nobody draws on, zoomed like the iPad's, in light mode (PencilKit would

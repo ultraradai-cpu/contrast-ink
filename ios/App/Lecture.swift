@@ -119,7 +119,7 @@ final class Lecture: ObservableObject {
         guard points.count > 1 else { return }
         let tool = settings.tool
         let width = CGFloat(Settings.widths[settings.width])
-        let stroke = Lecture.stroke(points, color: inkColor, width: width, marker: tool == .highlighter)
+        let stroke = Lecture.stroke(points, color: tool == .highlighter ? inkColor : markColor, width: width, marker: tool == .highlighter)
         var d = marks.drawing
         d.strokes.append(stroke)
         canvasChanged(d)
@@ -152,11 +152,13 @@ final class Lecture: ObservableObject {
     // MARK: tools
 
     var inkColor: UIColor { UIColor(hex: Settings.colors[settings.color]) }
+    /// The pen's, arrow's and circle's colour at the chosen opacity (the highlighter keeps its own see-through look).
+    var markColor: UIColor { inkColor.withAlphaComponent(CGFloat(settings.opacity)) }
 
     var pkTool: PKTool {
         let w = CGFloat(Settings.widths[settings.width])
         switch settings.tool {
-        case .pen, .arrow, .oval: return PKInkingTool(.pen, color: inkColor, width: w)
+        case .pen, .arrow, .oval, .laser: return PKInkingTool(.pen, color: markColor, width: w)   // the laser never reaches the canvas
         case .highlighter: return PKInkingTool(.marker, color: inkColor, width: CGFloat(Settings.highlighterWidth(Double(w))))
         case .eraser: return PKEraserTool(.vector)   // touch a mark to remove it, as on Windows
         }
