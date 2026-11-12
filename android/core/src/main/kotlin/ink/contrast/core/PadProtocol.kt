@@ -13,6 +13,12 @@ import java.io.ByteArrayOutputStream
 object PadProtocol {
     const val SERVICE_TYPE = "_contrastink._tcp"
     const val DEFAULT_PORT = 47820
+    /**
+     * USB (phase 2): the PC runs `adb reverse tcp:47830 tcp:47830`, so this address on the tablet reaches the PC
+     * through the cable. The code over it is empty.
+     */
+    const val USB_HOST = "127.0.0.1"
+    const val USB_PORT = 47830
     /** Version 2: the hello carries the tablet's key, not the code, and everything after it is sealed (PadCrypto). */
     const val VERSION = 2
     /** A length over this closes the connection: no real message is that big, so the stream is broken. */
