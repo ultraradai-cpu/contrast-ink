@@ -14,6 +14,8 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import android.content.ContentUris
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.provider.MediaStore
 import java.io.File
@@ -190,8 +192,25 @@ class ContrastInkTest {
             val d = extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLong() ?: 0
             release(); d
         }
-        assertTrue("the video plays for a few seconds (it is ${ms} ms)", ms in 1500..60000)
+        // each track's length and first/last sample times, and a copy of the video, for a person to look at
+        val tracks = MediaExtractor().run {
+            setDataSource(ctx, uri, null)
+            val info = (0 until trackCount).joinToString("; ") { i ->
+                val f = getTrackFormat(i)
+                selectTrack(i)
+                seekTo(0, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                val first = sampleTime
+                var last = first; var n = 0
+                while (sampleTrackIndex >= 0) { if (sampleTrackIndex == i) { last = sampleTime; n++ }; advance() }
+                unselectTrack(i)
+                "${f.getString(MediaFormat.KEY_MIME)} ${if (f.containsKey(MediaFormat.KEY_DURATION)) f.getLong(MediaFormat.KEY_DURATION) / 1000 else -1} ms, " +
+                    "samples $n from ${first / 1000} to ${last / 1000} ms"
+            }
+            release(); info
+        }
+        ctx.contentResolver.openInputStream(uri)!!.use { input -> File(shots, "12 the recording.mp4").outputStream().use { input.copyTo(it) } }
         ctx.contentResolver.delete(uri, null, null)
+        assertTrue("the video plays for a few seconds (it is $ms ms: $tracks)", ms in 1500..60000)
     }
 
     private fun recorder(check: (ScreenRecorder) -> Boolean): Boolean {
