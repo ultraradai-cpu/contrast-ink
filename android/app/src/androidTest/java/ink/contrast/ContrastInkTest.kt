@@ -176,6 +176,8 @@ class ContrastInkTest {
         drag(0.15f, 0.75f, 0.85f, 0.7f)
         Thread.sleep(1500)
 
+        var timer = 0L
+        inst.runOnMainSync { timer = InkService.running?.recorder?.elapsed ?: 0 }   // the toolbar's clock, pause left out
         press("Stop recording")
         val saved = device.wait(Until.findObject(By.desc(Pattern.compile("Saved to the Gallery: .*"))), 30000)
         shot("11 saved")
@@ -210,7 +212,9 @@ class ContrastInkTest {
         }
         ctx.contentResolver.openInputStream(uri)!!.use { input -> File(shots, "12 the recording.mp4").outputStream().use { input.copyTo(it) } }
         ctx.contentResolver.delete(uri, null, null)
-        assertTrue("the video plays for a few seconds (it is $ms ms: $tracks)", ms in 1500..60000)
+        // as long as the toolbar's clock said (the pause is cut out), not the wall time
+        assertTrue("the video ($ms ms: $tracks) is as long as the toolbar's clock said ($timer ms)",
+            ms >= 1500 && Math.abs(ms - timer) <= 2500)
     }
 
     private fun recorder(check: (ScreenRecorder) -> Boolean): Boolean {
