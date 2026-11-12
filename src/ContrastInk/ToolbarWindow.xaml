@@ -115,6 +115,9 @@
           <Setter Property="GroupName" Value="Tablet"/>
         </Style>
       </StackPanel.Resources>
+      <!-- two columns: one would grow tall enough to cover a third of a 768-high slide -->
+      <StackPanel Orientation="Horizontal">
+      <StackPanel Margin="0,0,24,0">
       <TextBlock Text="Undo the Last Mark With" Foreground="#8A95A6" FontSize="12" Margin="0,0,0,2"/>
       <CheckBox x:Name="OptZ" Content="Z Key (Ctrl+Z Always Works)"/>
       <CheckBox x:Name="OptRightClick" Content="Right-Click or the Pen's Side Button"/>
@@ -122,13 +125,17 @@
       <TextBlock Text="Pen and Slides" Foreground="#8A95A6" FontSize="12" Margin="0,8,0,2"/>
       <CheckBox x:Name="OptEraserEnd" Content="Pen's Eraser End Erases"/>
       <CheckBox x:Name="OptSlides" Content="Each PowerPoint Slide Keeps Its Own Marks"/>
-      <TextBlock Text="Pen Tablet Beside the Keyboard (Wacom Intuos, XP-Pen, Huion, Gaomon...)" Foreground="#8A95A6" FontSize="12" Margin="0,8,0,2"/>
-      <RadioButton x:Name="TabletAuto" Content="Find It by Itself (Recommended)"/>
-      <RadioButton x:Name="TabletOn" Content="Yes: Its Pen Works Like the Mouse"/>
-      <RadioButton x:Name="TabletOff" Content="No: Pens Are Pens (Pen Screens: Cintiq, XP-Pen Artist, Huion Kamvas)"/>
-      <TextBlock x:Name="TabletText" Foreground="#8A95A6" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap" MaxWidth="520"/>
       <TextBlock Text="Toolbar" Foreground="#8A95A6" FontSize="12" Margin="0,8,0,2"/>
       <CheckBox x:Name="OptNames" Content="Show Button Names When the Mouse or Pen Rests on One"/>
+      </StackPanel>
+      <StackPanel>
+      <TextBlock Text="Pen Tablet Beside the Keyboard (Wacom Intuos, XP-Pen, Huion, Gaomon...)" Foreground="#8A95A6" FontSize="12" Margin="0,0,0,2"/>
+      <RadioButton x:Name="TabletAuto" Content="Find It by Itself (Recommended)"/>
+      <RadioButton x:Name="TabletOn" Content="Yes: Its Pen Works Like the Mouse"/>
+      <RadioButton x:Name="TabletOff" Content="No: Pens Are Pens (Pen Screens: Cintiq, Kamvas...)"/>
+      <TextBlock x:Name="TabletText" Foreground="#8A95A6" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap" MaxWidth="400"/>
+      </StackPanel>
+      </StackPanel>
     </StackPanel>
     <!-- hover help is shown here, inside the toolbar, so OBS never records it (real tooltips are separate windows) -->
     <TextBlock x:Name="Hint" Cursor="Hand" Visibility="Collapsed" Foreground="{StaticResource Ink}" FontSize="12" Margin="8,2,8,4" TextWrapping="Wrap" MaxWidth="640"/>
