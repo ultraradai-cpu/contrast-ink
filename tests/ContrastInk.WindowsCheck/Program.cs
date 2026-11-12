@@ -260,6 +260,16 @@ static class Program
         Check(Diff(early, red) <= 40 && IsWhite(late), "fading ink: visible at 0.5 s, gone by 3.8 s", $"{Hex(early)} then {Hex(late)}");
         Key('F'); Thread.Sleep(150);
 
+        // laser pointer: a glowing line while drawing, gone a second later, and never a mark
+        Key('L'); Thread.Sleep(150);
+        var laser = ColorTranslator.FromHtml(Laser.Color);
+        Drag(new Point(x1, Row(3)), new Point(x2, Row(3)));
+        var lit = Closest(Shot("11b-laser-now"), xm, Row(3), laser, 6);
+        Thread.Sleep(1800);
+        var gone = Closest(Shot("11c-laser-1.8s"), xm, Row(3), laser, 6);
+        Check(Diff(lit, laser) <= 60 && IsWhite(gone), "laser: a glowing line while drawing, gone within 2 s", $"{Hex(lit)} then {Hex(gone)}");
+        Key('P'); Thread.Sleep(150);
+
         // keys: slide keys reach the window underneath while drawing; tool letters don't; Esc stops drawing
         int k0 = slide.Keys.Count;
         Key(VK.Next); Thread.Sleep(300);

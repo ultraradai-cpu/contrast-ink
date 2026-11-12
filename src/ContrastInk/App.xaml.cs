@@ -142,6 +142,7 @@ public partial class App : Application
         toolbar.ToolClicked += t => { settings.Tool = t; ApplySettings(); if (!mode.Drawing) mode.SetManual(true); };
         toolbar.ColorClicked += c => { settings.Color = c; if (settings.Tool == Tool.Eraser) settings.Tool = Tool.Pen; ApplySettings(); };
         toolbar.WidthClicked += w => { settings.Width = w; ApplySettings(); };
+        toolbar.OpacityChanged += o => { settings.Opacity = Math.Clamp(o, Settings.MinOpacity, 1); ApplySettings(); };
         toolbar.FadeClicked += () => { settings.FadingInk = !settings.FadingInk; ApplySettings(); };
         toolbar.UndoClicked += Undo;
         toolbar.ClearClicked += () => overlay.ClearAll();
@@ -181,6 +182,7 @@ public partial class App : Application
         overlay.SetTool(settings.Tool);
         overlay.SetColor((Color)ColorConverter.ConvertFromString(Settings.Colors[settings.Color]));
         overlay.SetWidth(Settings.Widths[settings.Width]);
+        overlay.SetOpacity(settings.Opacity);
         overlay.FadingInk = settings.FadingInk;
         overlay.SetPenEraserEnd(settings.PenEraserEnd);
         settings.Save(SettingsPath);
@@ -295,6 +297,7 @@ public partial class App : Application
             KeyAction.Arrow => () => Later(() => SetTool(Tool.Arrow)),
             KeyAction.Oval => () => Later(() => SetTool(Tool.Oval)),
             KeyAction.Eraser => () => Later(() => SetTool(Tool.Eraser)),
+            KeyAction.Laser => () => Later(() => SetTool(Tool.Laser)),
             KeyAction.Clear => () => Later(overlay.ClearAll),
             KeyAction.Fade => () => Later(() => { settings.FadingInk = !settings.FadingInk; ApplySettings(); }),
             KeyAction.Thinner => () => Later(() => { settings.Width = Math.Max(0, settings.Width - 1); ApplySettings(); }),

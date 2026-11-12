@@ -71,10 +71,18 @@
         <Button x:Name="ArrowBtn" Style="{StaticResource Tb}" Content="➚" ToolTip="Arrow (A): drag from the tail to the tip"/>
         <Button x:Name="OvalBtn" Style="{StaticResource Tb}" Content="◯" ToolTip="Circle a finding (O). Hold Shift for a perfect circle."/>
         <Button x:Name="EraseBtn" Style="{StaticResource Tb}" Content="⌫" ToolTip="Eraser (E): touch a mark to remove it"/>
+        <Button x:Name="LaserBtn" Style="{StaticResource Tb}" ToolTip="Laser pointer (L): a red dot follows the pen or mouse; touching draws a glowing line that fades in a second. Never a mark.">
+          <TextBlock Text="●" Foreground="#FF2D2D" FontSize="15"/>
+        </Button>
         <Border Style="{StaticResource Sep}"/>
         <StackPanel x:Name="ColorPanel" Orientation="Horizontal"/>
         <Border Style="{StaticResource Sep}"/>
         <StackPanel x:Name="WidthPanel" Orientation="Horizontal"/>
+        <!-- opacity of new pen, arrow and circle marks: 10% to 100% -->
+        <Slider x:Name="OpacitySlider" Width="70" Minimum="0.1" Maximum="1" SmallChange="0.1" LargeChange="0.1"
+                VerticalAlignment="Center" Margin="4,0" Focusable="False" IsMoveToPointEnabled="True"
+                ToolTip="Opacity of the pen, arrow and circle (new marks). The highlighter keeps its own see-through look."/>
+        <TextBlock x:Name="OpacityText" Text="100%" Width="34" Foreground="{StaticResource Ink}" FontSize="12" VerticalAlignment="Center"/>
         <Border Style="{StaticResource Sep}"/>
         <Button x:Name="FadeBtn" Style="{StaticResource Tb}" Content="⏳" ToolTip="Fading ink (F): marks disappear after 3 seconds. Hold Shift while drawing to keep one."/>
         <Button x:Name="UndoBtn" Style="{StaticResource Tb}" Content="↶" ToolTip="Undo (Ctrl+Z)"/>

@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace ContrastInk.Core;
 
-public enum Tool { Pen, Highlighter, Arrow, Oval, Eraser }
+public enum Tool { Pen, Highlighter, Arrow, Oval, Eraser, Laser }
 
 /// <summary>What the app remembers between lectures (saved in %AppData%\ContrastInk\settings.json).</summary>
 public sealed class Settings
@@ -21,6 +21,9 @@ public sealed class Settings
     public int Color { get; set; }
     public int Width { get; set; } = 1;
     public bool FadingInk { get; set; }
+    /// <summary>How solid new marks of the pen, arrow and circle are: 1 = solid, down to 0.1 (the highlighter keeps its own look).</summary>
+    public double Opacity { get; set; } = 1;
+    public const double MinOpacity = 0.1;
     public int Screen { get; set; }
     /// <summary>Where the toolbar was left; empty until it is first dragged (never NaN: JSON cannot store it).</summary>
     public double? ToolbarX { get; set; }
@@ -48,6 +51,7 @@ public sealed class Settings
         Color = Math.Clamp(Color, 0, Colors.Length - 1);
         Width = Math.Clamp(Width, 0, Widths.Length - 1);
         Screen = screens <= 0 ? 0 : Math.Clamp(Screen, 0, screens - 1);
+        Opacity = double.IsFinite(Opacity) ? Math.Clamp(Opacity, MinOpacity, 1) : 1;
         if (ToolbarX is { } x && !double.IsFinite(x)) ToolbarX = null;
         if (ToolbarY is { } y && !double.IsFinite(y)) ToolbarY = null;
         return this;

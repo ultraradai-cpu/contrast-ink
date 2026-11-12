@@ -31,6 +31,7 @@ public partial class ToolbarWindow : Window
     public event Action? DrawClicked, UndoClicked, ClearClicked, FadeClicked, ScreenClicked, FoldClicked, CloseClicked, Moved;
     public event Action<Tool>? ToolClicked;
     public event Action<int>? ColorClicked, WidthClicked;
+    public event Action<double>? OpacityChanged;
 
     public ToolbarWindow()
     {
@@ -62,6 +63,12 @@ public partial class ToolbarWindow : Window
         ArrowBtn.Click += (_, _) => ToolClicked?.Invoke(Tool.Arrow);
         OvalBtn.Click += (_, _) => ToolClicked?.Invoke(Tool.Oval);
         EraseBtn.Click += (_, _) => ToolClicked?.Invoke(Tool.Eraser);
+        LaserBtn.Click += (_, _) => ToolClicked?.Invoke(Tool.Laser);
+        OpacitySlider.ValueChanged += (_, e) =>
+        {
+            OpacityText.Text = $"{Math.Round(e.NewValue * 100)}%";
+            if (!refreshing) OpacityChanged?.Invoke(Math.Round(e.NewValue, 2));
+        };
         UndoBtn.Click += (_, _) => UndoClicked?.Invoke();
         ClearBtn.Click += (_, _) => ClearClicked?.Invoke();
         FadeBtn.Click += (_, _) => FadeClicked?.Invoke();
@@ -222,6 +229,7 @@ public partial class ToolbarWindow : Window
         Mark(ArrowBtn, s.Tool == Tool.Arrow);
         Mark(OvalBtn, s.Tool == Tool.Oval);
         Mark(EraseBtn, s.Tool == Tool.Eraser);
+        Mark(LaserBtn, s.Tool == Tool.Laser);
         Mark(FadeBtn, s.FadingInk);
         for (int i = 0; i < colorButtons.Count; i++) colorButtons[i].BorderThickness = new Thickness(i == s.Color ? 2 : 0);
         for (int i = 0; i < widthButtons.Count; i++) Mark(widthButtons[i], i == s.Width);
@@ -235,6 +243,8 @@ public partial class ToolbarWindow : Window
             OptZ.IsChecked = s.UndoWithZ; OptRightClick.IsChecked = s.UndoWithRightClick; OptButton.IsChecked = s.UndoButtonByPen;
             OptEraserEnd.IsChecked = s.PenEraserEnd; OptSlides.IsChecked = s.MarksPerSlide;
             OptNames.IsChecked = s.ShowButtonNames;
+            if (Math.Abs(OpacitySlider.Value - s.Opacity) > 0.001) OpacitySlider.Value = s.Opacity;
+            OpacityText.Text = $"{Math.Round(s.Opacity * 100)}%";
         }
         finally { refreshing = false; }
         FoldBtn.Content = folded ? "›" : "‹";

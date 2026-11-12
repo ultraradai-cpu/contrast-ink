@@ -22,6 +22,8 @@ public partial class OverlayWindow : Window
     Tool tool = Tool.Pen;
     Color color = Colors.Red;
     double width = 5;
+    double opacity = 1;     // of new pen, arrow and circle marks
+    bool laserDown;         // the laser's line is being drawn
 
     // undo history: what was added or removed, newest last (each slide has its own)
     List<(bool added, StrokeCollection strokes)> history = new();
@@ -63,8 +65,8 @@ public partial class OverlayWindow : Window
             if (e.Removed.Count > 0) Remember(false, e.Removed);
         };
         Ink.StrokeCollected += (_, e) => { StartFading(e.Stroke); Done(e.Stroke); };
-        Ink.PreviewMouseLeftButtonDown += (_, _) => { if (drawing) MarkStarting?.Invoke(); };
-        Ink.PreviewStylusDown += (_, _) => { if (drawing) MarkStarting?.Invoke(); };
+        Ink.PreviewMouseLeftButtonDown += (_, _) => { if (drawing && tool != Tool.Laser) MarkStarting?.Invoke(); };
+        Ink.PreviewStylusDown += (_, _) => { if (drawing && tool != Tool.Laser) MarkStarting?.Invoke(); };
         // right-click, and the pen's side button (Windows turns side button + touch into a right-click as well:
         // one press must be one undo, so a second within 0.4 s is the same press)
         Ink.PreviewMouseRightButtonDown += (_, e) => { if (drawing) { Gesture(); e.Handled = true; } };
@@ -76,6 +78,10 @@ public partial class OverlayWindow : Window
         Ink.PreviewMouseLeftButtonDown += ShapeDown;
         Ink.PreviewMouseMove += ShapeMove;
         Ink.PreviewMouseLeftButtonUp += ShapeUp;
+        Ink.PreviewMouseLeftButtonDown += LaserDown;
+        Ink.PreviewMouseMove += LaserMove;   // a pen hovering moves the mouse too: the dot follows it
+        Ink.PreviewMouseLeftButtonUp += LaserUp;
+        Ink.MouseLeave += (_, _) => { if (!laserDown) LaserLayer.HideDot(); };
         fadeTimer.Tick += (_, _) => FadeTick();
         SourceInitialized += (_, _) =>
         {
@@ -110,7 +116,7 @@ public partial class OverlayWindow : Window
     {
         if (drawing == on) return;
         drawing = on;
-        if (!on) FinishShape();
+        if (!on) { FinishShape(); EndLaser(); }
         // read back: a layer stuck in the wrong mode either blocks PowerPoint or never draws, and says nothing
         if (hwnd != IntPtr.Zero && !Native.SetExStyle(hwnd, on ? 0 : Native.WS_EX_TRANSPARENT, on ? Native.WS_EX_TRANSPARENT : 0))
             App.Log(new InvalidOperationException("overlay: could not switch drawing " + (on ? "on" : "off")));
@@ -165,26 +171,59 @@ public partial class OverlayWindow : Window
     public bool CanUndo => history.Any(h => !h.added || h.strokes.Any(Ink.Strokes.Contains));
     public void SetColor(Color c) { color = c; ApplyTool(); }
     public void SetWidth(double w) { width = w; ApplyTool(); }
+    public void SetOpacity(double o) { opacity = Math.Clamp(o, Settings.MinOpacity, 1); ApplyTool(); }
 
     void ApplyTool()
     {
         FinishShape();
+        if (tool != Tool.Laser) EndLaser();
+        LaserLayer.SetWidth(width);
         Ink.EditingMode = tool switch
         {
             Tool.Pen or Tool.Highlighter => InkCanvasEditingMode.Ink,
             Tool.Eraser => InkCanvasEditingMode.EraseByStroke,
-            _ => InkCanvasEditingMode.None,   // arrow and oval are drawn by ShapeDown/Move/Up
+            _ => InkCanvasEditingMode.None,   // arrow and oval: ShapeDown/Move/Up; the laser: LaserDown/Move/Up
         };
         Ink.DefaultDrawingAttributes = Attributes();
         // the eraser end of a pen erases whatever tool is chosen (or, switched off, does what the tip does)
         Ink.EditingModeInverted = PenEraserEnd ? InkCanvasEditingMode.EraseByStroke : Ink.EditingMode;
-        Ink.Cursor = tool == Tool.Eraser ? null : Cursors.Pen;
+        Ink.Cursor = tool == Tool.Eraser ? null : tool == Tool.Laser ? Cursors.None : Cursors.Pen;   // the laser's dot is the cursor
         Ink.UseCustomCursor = tool != Tool.Eraser;
     }
 
     DrawingAttributes Attributes() => tool == Tool.Highlighter
         ? new DrawingAttributes { Color = color, Width = Settings.HighlighterWidth(width), Height = Settings.HighlighterWidth(width), IsHighlighter = true, IgnorePressure = true, FitToCurve = true }
-        : new DrawingAttributes { Color = color, Width = width, Height = width, FitToCurve = tool == Tool.Pen, IgnorePressure = tool != Tool.Pen, StylusTip = StylusTip.Ellipse };
+        : new DrawingAttributes { Color = Color.FromArgb((byte)Math.Round(color.A * opacity), color.R, color.G, color.B), Width = width, Height = width, FitToCurve = tool == Tool.Pen, IgnorePressure = tool != Tool.Pen, StylusTip = StylusTip.Ellipse };
+
+    // ---------- laser pointer ----------
+    void LaserDown(object sender, MouseButtonEventArgs e)
+    {
+        if (!drawing || tool != Tool.Laser) return;
+        laserDown = true;
+        LaserLayer.Down(e.GetPosition(Ink));
+        Ink.CaptureMouse();
+        e.Handled = true;
+    }
+
+    void LaserMove(object sender, MouseEventArgs e)
+    {
+        if (!drawing || tool != Tool.Laser) return;
+        LaserLayer.Move(e.GetPosition(Ink), laserDown);
+    }
+
+    void LaserUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!laserDown) return;
+        laserDown = false;
+        Ink.ReleaseMouseCapture();
+        e.Handled = true;
+    }
+
+    void EndLaser()
+    {
+        if (laserDown) { laserDown = false; Ink.ReleaseMouseCapture(); }
+        LaserLayer.HideDot();   // a line still fading finishes fading
+    }
 
     // ---------- arrow and oval ----------
     static StylusPointCollection Points(IEnumerable<Pt> pts) => new(pts.Select(p => new StylusPoint(p.X, p.Y)));

@@ -1,11 +1,16 @@
 <Window x:Class="ContrastInk.OverlayWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:ContrastInk"
         Title="Contrast Ink drawing layer"
         WindowStyle="None" AllowsTransparency="True" Background="Transparent"
         Topmost="True" ShowInTaskbar="False" ShowActivated="False" ResizeMode="NoResize"
         Left="0" Top="0" Width="800" Height="600">
   <!-- The drawing layer covers one whole screen. It lets clicks through to PowerPoint
        except while you are drawing. OBS records what is drawn here. -->
-  <InkCanvas x:Name="Ink" Background="Transparent" />
+  <Grid>
+    <InkCanvas x:Name="Ink" Background="Transparent" />
+    <!-- the laser pointer: over the marks, never one of them, and never in the way of the pen -->
+    <local:LaserView x:Name="LaserLayer" />
+  </Grid>
 </Window>

@@ -523,3 +523,47 @@ public class ObsTests
     [InlineData(@"C:\x.pptx#0", null)]
     public void SlideNumberFromTheWatchersKey(string key, int? n) => Assert.Equal(n, Obs.SlideNumber(key));
 }
+
+public class LaserAndOpacityTests
+{
+    [Fact]
+    public void LaserLineStaysBrightThenFadesThenGoes()
+    {
+        Assert.Equal(1, Laser.Opacity(TimeSpan.Zero));
+        Assert.Equal(1, Laser.Opacity(TimeSpan.FromMilliseconds(600)));
+        Assert.Equal(0.5, Laser.Opacity(TimeSpan.FromMilliseconds(900)), 3);
+        Assert.Equal(0, Laser.Opacity(TimeSpan.FromMilliseconds(1200)));
+        Assert.Equal(0, Laser.Opacity(TimeSpan.FromSeconds(10)));
+    }
+
+    [Fact]
+    public void LaserIsNeverThin() { Assert.Equal(8, Laser.Width(3)); Assert.Equal(16, Laser.Width(10)); }
+
+    [Fact]
+    public void LKeyPicksTheLaserOnlyWhileDrawing()
+    {
+        Assert.Equal(KeyAction.Laser, KeyPolicy.Decide(0x4C, drawing: true, ctrl: false, altOrWin: false).action);
+        Assert.Equal(KeyAction.Pass, KeyPolicy.Decide(0x4C, drawing: false, ctrl: false, altOrWin: false).action);
+    }
+
+    [Theory]
+    [InlineData(1.0, 1.0)] [InlineData(0.5, 0.5)] [InlineData(0.01, Settings.MinOpacity)] [InlineData(7, 1.0)]
+    [InlineData(double.NaN, 1.0)] [InlineData(double.NegativeInfinity, 1.0)]
+    public void OpacityStaysInRange(double saved, double used) =>
+        Assert.Equal(used, new Settings { Opacity = saved }.Clean(1).Opacity);
+
+    [Fact]
+    public void OpacityAndLaserAreRemembered()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"ci-{Guid.NewGuid():N}.json");
+        try
+        {
+            new Settings { Opacity = 0.4, Tool = Tool.Laser }.Save(path);
+            var s = Settings.Load(path, 1);
+            Assert.Equal((0.4, Tool.Laser), (s.Opacity, s.Tool));
+            File.WriteAllText(path, "{\"Color\": 2}");   // saved by an older version
+            Assert.Equal(1.0, Settings.Load(path, 1).Opacity);
+        }
+        finally { File.Delete(path); }
+    }
+}

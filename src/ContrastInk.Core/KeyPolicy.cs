@@ -1,6 +1,6 @@
 namespace ContrastInk.Core;
 
-public enum KeyAction { Pass, ToggleDrawing, Undo, StopDrawing, Pen, Highlighter, Arrow, Oval, Eraser, Clear, Fade, Thinner, Thicker, Color }
+public enum KeyAction { Pass, ToggleDrawing, Undo, StopDrawing, Pen, Highlighter, Arrow, Oval, Eraser, Clear, Fade, Thinner, Thicker, Color, Laser }
 
 /// <summary>
 /// Which keys Contrast Ink takes and which reach PowerPoint. The most important rule in the app:
@@ -30,6 +30,7 @@ public static class KeyPolicy
             case 0x41: return (KeyAction.Arrow, 0);         // A
             case 0x4F: return (KeyAction.Oval, 0);          // O
             case 0x45: return (KeyAction.Eraser, 0);        // E
+            case 0x4C: return (KeyAction.Laser, 0);         // L
             case 0x43: return (KeyAction.Clear, 0);         // C
             case VK_Z when zUndoes: return (KeyAction.Undo, 0);   // Z alone, one finger
             case 0x46: return (KeyAction.Fade, 0);          // F
