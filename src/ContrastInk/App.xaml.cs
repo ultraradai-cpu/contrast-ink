@@ -241,6 +241,10 @@ public partial class App : Application
         var r = Native.WindowRect(toolbar);
         if (r.Right <= r.Left) return;
         var areas = Native.Monitors().Select(m => new Box(m.Work.Left, m.Work.Top, m.Work.Right, m.Work.Bottom)).ToList();
+        // too wide for its screen: the tools go onto two rows (this runs again when the size changes)
+        int cx = (r.Left + r.Right) / 2, cy = (r.Top + r.Bottom) / 2;
+        var screen = areas.FirstOrDefault(a => a.Contains(cx, cy));
+        if (screen != default) toolbar.FitWidth(screen.Width);
         var (x, y) = Placement.KeepInside(new Box(r.Left, r.Top, r.Right, r.Bottom), areas);
         if (x != r.Left || y != r.Top) Native.MoveTo(toolbar, x, y);
     }

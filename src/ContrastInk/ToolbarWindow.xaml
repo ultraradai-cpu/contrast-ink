@@ -65,7 +65,8 @@
       </Button>
       <Button x:Name="PauseBtn" Style="{StaticResource Tb}" Content="⏸" Visibility="Hidden" ToolTip="Pause recording"/>
       <TextBlock x:Name="RecTime" Visibility="Hidden" Width="52" Foreground="{StaticResource Ink}" FontSize="12" VerticalAlignment="Center" Margin="2,0,6,0" FontFamily="Consolas, Segoe UI"/>
-      <StackPanel x:Name="Full" Orientation="Horizontal">
+      <!-- the tools: one row, or two when the screen is too narrow for one (the app sets MaxWidth to what fits) -->
+      <WrapPanel x:Name="Full" Orientation="Horizontal" VerticalAlignment="Center">
         <Border Style="{StaticResource Sep}"/>
         <Button x:Name="PenBtn" Style="{StaticResource Tb}" Content="🖊" ToolTip="Pen (P)"/>
         <Button x:Name="HighBtn" Style="{StaticResource Tb}" Content="🖍" ToolTip="Highlighter (H)"/>
@@ -93,7 +94,7 @@
           <StackPanel Orientation="Horizontal"><TextBlock Text="🖥"/><TextBlock x:Name="ScreenText" Text="1" FontSize="12" VerticalAlignment="Center"/></StackPanel>
         </Button>
         <Button x:Name="SettingsBtn" Style="{StaticResource Tb}" Content="⚙" ToolTip="Settings: ways to undo, and marks for each slide"/>
-      </StackPanel>
+      </WrapPanel>
       <Button x:Name="FoldBtn" Style="{StaticResource Tb}" Width="26" Content="‹" ToolTip="Make the toolbar small / big"/>
       <Button x:Name="CloseBtn" Style="{StaticResource Tb}" Width="28" Content="✕" FontSize="13" ToolTip="Quit Contrast Ink"/>
     </StackPanel>

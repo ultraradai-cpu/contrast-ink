@@ -257,5 +257,26 @@ public partial class ToolbarWindow : Window
         if (OpacitySlider.IsMouseOver && showNames) Hint.Text = (string)OpacitySlider.ToolTip;   // dragging: the % follows
     }
 
+    /// <summary>
+    /// The toolbar fits a screen <paramref name="screenWidth"/> device pixels wide: the tools wrap onto a second row
+    /// when one row would run past its edge (a 1024-wide projector, a laptop at 150%).
+    /// </summary>
+    public void FitWidth(int screenWidth)
+    {
+        var source = PresentationSource.FromVisual(this);
+        if (source?.CompositionTarget == null || Full.Visibility != Visibility.Visible) return;
+        double dip = screenWidth / source.CompositionTarget.TransformToDevice.M11;
+        // handle, ✏, recording, ‹, ✕: they always stay in the row (measured one by one: a window wider than its
+        // screen is cut short by Windows, so the window's own width can't be trusted here)
+        double others = 24;   // the row's own margins and the window's edge, with room to spare
+        if (Full.Parent is Panel row)
+            foreach (UIElement c in row.Children)
+                if (c != Full && c is FrameworkElement f && f.Visibility != Visibility.Collapsed)
+                    others += f.ActualWidth + f.Margin.Left + f.Margin.Right;
+        double room = Math.Max(200, dip - others);
+        if (double.IsInfinity(Full.MaxWidth) ? room < Full.ActualWidth + 1 : Math.Abs(Full.MaxWidth - room) > 1)
+            Full.MaxWidth = room;
+    }
+
     bool showNames = true;   // ⚙ → Toolbar: names of buttons on hover (warnings and notices show either way)
 }
