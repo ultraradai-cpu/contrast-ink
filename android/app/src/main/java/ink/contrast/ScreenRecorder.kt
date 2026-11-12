@@ -52,6 +52,9 @@ class ScreenRecorder(private val service: InkService) {
     /** A finished recording is being joined and copied to the Gallery (a long lecture takes a while). */
     @Volatile var saving = false
         private set
+    /** How many parts the last recording was joined from (1 + the number of pauses that recorded after them). */
+    @Volatile var lastParts = 0
+        private set
     var paused = false
         private set
 
@@ -190,6 +193,7 @@ class ScreenRecorder(private val service: InkService) {
         out = null
         val pieces = parts.toList()
         parts.clear()
+        lastParts = pieces.size
         if (pieces.isEmpty()) { service.recordingEnded("Nothing was recorded (stopped too soon)."); return }
         saving = true
         service.refreshBar()
