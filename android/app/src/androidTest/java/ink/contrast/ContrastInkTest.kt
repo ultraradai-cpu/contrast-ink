@@ -18,7 +18,6 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.provider.MediaStore
-import android.os.SystemClock
 import java.io.File
 import java.util.regex.Pattern
 
@@ -164,26 +163,20 @@ class ContrastInkTest {
         press("Record the screen")
         answerRecordingQuestion()
         assertNotNull("recording: ⏹ replaces ⏺", device.wait(Until.findObject(By.desc("Stop recording")), 8000))
-        val t0 = SystemClock.elapsedRealtime()
         assertTrue("recording", recorder { it.active })
         press("Draw on / off")
         drag(0.15f, 0.55f, 0.85f, 0.65f)
         Thread.sleep(1500)
         shot("10 recording")
 
-        val tPause = SystemClock.elapsedRealtime()
         press("Pause recording")
         assertTrue("paused", recorder { it.paused })
         Thread.sleep(1000)
-        val tResume = SystemClock.elapsedRealtime()
         press("Resume recording")
         assertTrue("resumed", recorder { it.active && !it.paused })
         drag(0.15f, 0.75f, 0.85f, 0.7f)
         Thread.sleep(1500)
 
-        var timer = 0L
-        inst.runOnMainSync { timer = InkService.running?.recorder?.elapsed ?: 0 }   // the toolbar's clock, pause left out
-        val tStop = SystemClock.elapsedRealtime()
         press("Stop recording")
         val saved = device.wait(Until.findObject(By.desc(Pattern.compile("Saved to the Gallery: .*"))), 30000)
         shot("11 saved")
@@ -219,12 +212,11 @@ class ContrastInkTest {
         ctx.contentResolver.openInputStream(uri)!!.use { input -> File(shots, "12 the recording.mp4").outputStream().use { input.copyTo(it) } }
         ctx.contentResolver.delete(uri, null, null)
         // as long as the toolbar's clock said (the pause is cut out), not the wall time
-        var parts = 0
-        var ends = ""
-        inst.runOnMainSync { parts = InkService.running?.recorder?.lastParts ?: -1; ends = InkService.running?.recorder?.endTimes.toString() }
-        val wall = "test clock: recording seen ${t0}, pause pressed +${tPause - t0}, resume pressed +${tResume - t0}, " +
-            "stop pressed +${tStop - t0} ms; parts joined: $parts, ending each took $ends ms"
-        assertTrue("the video ($ms ms: $tracks) is as long as the toolbar's clock said ($timer ms). $wall",
+        // the toolbar's clock when it stopped (paused time left out). Not read by the test before pressing ⏹: each
+        // step of the test waits for the screen to settle, and the ticking clock keeps it from settling for ~10 s.
+        var timer = 0L
+        inst.runOnMainSync { timer = InkService.running?.recorder?.lastLength ?: 0 }
+        assertTrue("the video ($ms ms: $tracks) is as long as the toolbar's clock said ($timer ms)",
             ms >= 1500 && Math.abs(ms - timer) <= 2500)
     }
 
