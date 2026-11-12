@@ -105,6 +105,8 @@
       <TextBlock Text="Pen and Slides" Foreground="#8A95A6" FontSize="12" Margin="0,8,0,2"/>
       <CheckBox x:Name="OptEraserEnd" Content="Pen's Eraser End Erases"/>
       <CheckBox x:Name="OptSlides" Content="Each PowerPoint Slide Keeps Its Own Marks"/>
+      <TextBlock Text="Toolbar" Foreground="#8A95A6" FontSize="12" Margin="0,8,0,2"/>
+      <CheckBox x:Name="OptNames" Content="Show Button Names When the Mouse or Pen Rests on One"/>
     </StackPanel>
     <!-- hover help is shown here, inside the toolbar, so OBS never records it (real tooltips are separate windows) -->
     <TextBlock x:Name="Hint" Cursor="Hand" Visibility="Collapsed" Foreground="{StaticResource Ink}" FontSize="12" Margin="8,2,8,4" TextWrapping="Wrap" MaxWidth="640"/>

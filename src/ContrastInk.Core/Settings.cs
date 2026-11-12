@@ -38,6 +38,8 @@ public sealed class Settings
     public bool UndoButtonByPen { get; set; } = true;
     /// <summary>In a PowerPoint slide show, each slide keeps its own marks: the next slide starts clean, going back shows them again.</summary>
     public bool MarksPerSlide { get; set; } = true;
+    /// <summary>Resting the mouse or pen on a toolbar button shows its name ("Pen (P)") under the buttons.</summary>
+    public bool ShowButtonNames { get; set; } = true;
 
     /// <summary>Keeps every value in range, so a hand-edited or old file can't break the app.</summary>
     public Settings Clean(int screens)

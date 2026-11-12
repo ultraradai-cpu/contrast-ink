@@ -140,6 +140,8 @@ data class Settings(
     val stylusButtonUndoes: Boolean = true,
     /** The stylus's eraser end removes the marks it touches, whatever tool is chosen. */
     val stylusEraserEnd: Boolean = true,
+    /** The toolbar's buttons carry their names ("Pen", "Highlighter"), which a hovering stylus (S Pen) shows. */
+    val showButtonNames: Boolean = true,
 ) {
     /** Keeps every value in range, so an old or damaged saved copy can't break the app. */
     fun cleaned() = copy(color = color.coerceIn(0, COLORS.size - 1), width = width.coerceIn(0, WIDTHS.size - 1))
@@ -168,13 +170,14 @@ data class Settings(
                 fingerDraws = v["fingerDraws"]?.toBooleanStrictOrNull() ?: d.fingerDraws,
                 stylusButtonUndoes = v["stylusButtonUndoes"]?.toBooleanStrictOrNull() ?: d.stylusButtonUndoes,
                 stylusEraserEnd = v["stylusEraserEnd"]?.toBooleanStrictOrNull() ?: d.stylusEraserEnd,
+                showButtonNames = v["showButtonNames"]?.toBooleanStrictOrNull() ?: d.showButtonNames,
             ).cleaned()
         }
     }
 
     fun encode(): String = listOf(
         "tool=${tool.name}", "color=$color", "width=$width", "fadingInk=$fadingInk", "fingerDraws=$fingerDraws",
-        "stylusButtonUndoes=$stylusButtonUndoes", "stylusEraserEnd=$stylusEraserEnd",
+        "stylusButtonUndoes=$stylusButtonUndoes", "stylusEraserEnd=$stylusEraserEnd", "showButtonNames=$showButtonNames",
     ).joinToString("\n")
 }
 

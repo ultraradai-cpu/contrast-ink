@@ -252,6 +252,13 @@ final class GeometryTests: XCTestCase {
 }
 
 final class SettingsAndKeysTests: XCTestCase {
+    func testButtonNamesAreOnUnlessSwitchedOff() throws {
+        XCTAssertTrue(Settings().showButtonNames)
+        XCTAssertTrue(Settings.decode(Data(#"{"color": 2}"#.utf8)).showButtonNames, "an older saved copy keeps the names")
+        var s = Settings(); s.showButtonNames = false
+        XCTAssertFalse(Settings.decode(try JSONEncoder().encode(s)).showButtonNames)
+    }
+
     func testDamagedOrOldSettingsAreSafe() {
         XCTAssertEqual(Settings.decode(nil), Settings())
         XCTAssertEqual(Settings.decode(Data("not json".utf8)), Settings())

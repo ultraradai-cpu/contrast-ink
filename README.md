@@ -59,6 +59,9 @@ The 🖥 button moves the drawing layer to your other screen.
 
 Any of these removes the last mark. Each one can be switched off under **⚙ Settings** on the toolbar.
 
+Resting the mouse or pen on a button shows its name ("Pen (P)", "Highlighter (H)") under the buttons. To stop
+that: **⚙ Settings → Toolbar → Show Button Names**, off. Warnings still show.
+
 - **Z** on its own, or **Ctrl+Z**, while drawing.
 - **Right-click**, or the **side button on your pen**, while drawing.
 - The small blue **↶ button** that appears beside your last mark. Like the toolbar, OBS doesn't record it. On a

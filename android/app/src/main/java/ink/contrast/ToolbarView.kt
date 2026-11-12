@@ -39,6 +39,7 @@ class ToolbarView(context: Context, private val app: InkService) : LinearLayout(
     private val foldBtn: TextView
     private val noticeText: TextView
     private var folded = false
+    private val names = HashMap<View, String>()   // every button's name, shown or not as the settings say
 
     init {
         orientation = VERTICAL
@@ -108,7 +109,7 @@ class ToolbarView(context: Context, private val app: InkService) : LinearLayout(
     private fun grip(): View {
         val v = ImageView(context).apply {
             setImageResource(R.mipmap.ic_launcher)
-            contentDescription = "Move the toolbar"
+            names[this] = "Move the toolbar"
             setPadding((4 * dp).toInt(), (4 * dp).toInt(), (4 * dp).toInt(), (4 * dp).toInt())
         }
         var lastX = 0f
@@ -130,7 +131,7 @@ class ToolbarView(context: Context, private val app: InkService) : LinearLayout(
 
     private fun button(text: String, name: String, onClick: () -> Unit) = TextView(context).apply {
         this.text = text
-        contentDescription = name
+        names[this] = name
         textSize = 18f
         gravity = Gravity.CENTER
         setTextColor(offText)
@@ -175,15 +176,17 @@ class ToolbarView(context: Context, private val app: InkService) : LinearLayout(
         undoBtn.alpha = if (app.ink.canUndo) 1f else 0.4f
         val rec = app.recorder
         recBtn.text = if (rec.active) "⏹" else "⏺"
-        recBtn.contentDescription = if (rec.active) "Stop recording" else "Record the screen"
+        names[recBtn] = if (rec.active) "Stop recording" else "Record the screen"
         recBtn.setTextColor(if (rec.paused) Color.rgb(0xFF, 0xB0, 0x20) else Color.rgb(0xFF, 0x3B, 0x30))
         pauseBtn.visibility = if (rec.active) VISIBLE else GONE
         pauseBtn.text = if (rec.paused) "▶" else "⏸"
-        pauseBtn.contentDescription = if (rec.paused) "Resume recording" else "Pause recording"
+        names[pauseBtn] = if (rec.paused) "Resume recording" else "Pause recording"
         timeText.visibility = if (rec.active) VISIBLE else GONE
         timeText.text = clock(rec.elapsed)
         full.visibility = if (folded) GONE else VISIBLE
         foldBtn.text = if (folded) "›" else "‹"
-        foldBtn.contentDescription = if (folded) "Make the toolbar big" else "Make the toolbar small"
+        names[foldBtn] = if (folded) "Make the toolbar big" else "Make the toolbar small"
+        // a stylus hovering over a button (S Pen and others) shows its name: off in the settings, no names
+        names.forEach { (v, n) -> v.contentDescription = if (s.showButtonNames) n else null }
     }
 }

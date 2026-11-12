@@ -31,6 +31,9 @@ open inside Contrast Ink: **in PowerPoint, File → Export → PDF**, then open 
 
 Each one can be switched off under ⚙.
 
+Hovering Apple Pencil (or a mouse / trackpad) over a toolbar button shows its name, like "Pen (P)". To stop it:
+**⚙ → Toolbar → Show button names**, off.
+
 ## Keyboard and presenter clicker
 
 | Key | What it does |

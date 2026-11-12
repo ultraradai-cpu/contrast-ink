@@ -24,6 +24,8 @@ public struct Settings: Codable, Equatable, Sendable {
     public var pencilTapUndoes = true
     /// A two-finger tap on the slide undoes the last mark.
     public var twoFingerTapUndoes = true
+    /// Hovering Apple Pencil (or a mouse / trackpad pointer) over a toolbar button shows its name ("Pen (P)").
+    public var showButtonNames = true
 
     public init() {}
 
@@ -55,6 +57,7 @@ enum JSONDecoderLenient {
         if let v = d["fingerDraws"] as? Bool { s.fingerDraws = v }
         if let v = d["pencilTapUndoes"] as? Bool { s.pencilTapUndoes = v }
         if let v = d["twoFingerTapUndoes"] as? Bool { s.twoFingerTapUndoes = v }
+        if let v = d["showButtonNames"] as? Bool { s.showButtonNames = v }
         return s
     }
 }

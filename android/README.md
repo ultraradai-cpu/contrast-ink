@@ -33,6 +33,8 @@ Drag the toolbar by the blue Contrast mark.
 **Stylus** (Samsung S Pen and others): the side button held as the pen touches undoes; the eraser end, on
 styluses that have one, erases. Under **Settings** on the Contrast Ink screen you can make only the stylus draw:
 a finger touching the drawing layer then switches drawing off, so your next tap reaches the app.
+A stylus hovering over the toolbar (S Pen) shows button names like "Pen"; switch **Show button names** off there
+to stop it.
 
 While drawing is off, marks look slightly lighter: Android lets taps through a layer from another app only when
 it is at most 80% opaque.

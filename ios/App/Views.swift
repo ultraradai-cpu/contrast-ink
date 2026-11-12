@@ -197,7 +197,7 @@ struct ToolbarView: View {
     /// Close, the tools, colours and widths.
     @ViewBuilder private var drawing: some View {
         Button { Task { if recorder.active { await recorder.stop() }; lecture.close() } } label: { Image(systemName: "xmark") }
-            .buttonStyle(BarButton(on: false)).accessibilityLabel("Close slides")
+            .buttonStyle(BarButton(on: false)).named("Close slides")
         bar
         tool(.pen, "pencil.tip", "Pen (P)")
         tool(.highlighter, "highlighter", "Highlighter (H)")
@@ -212,43 +212,43 @@ struct ToolbarView: View {
             }
             .buttonStyle(BarButton(on: false))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.contrastBlue, lineWidth: lecture.settings.color == i ? 2.5 : 0))
-            .accessibilityLabel("\(Settings.colorNames[i]) (\(i + 1))")
+            .named("\(Settings.colorNames[i]) (\(i + 1))")
         }
         ForEach(Settings.widths.indices, id: \.self) { i in
             Button { lecture.settings.width = i } label: {
                 Circle().frame(width: Settings.widths[i] + 3, height: Settings.widths[i] + 3)
             }
             .buttonStyle(BarButton(on: lecture.settings.width == i))
-            .accessibilityLabel("\(Settings.widthNames[i]) line")
+            .named("\(Settings.widthNames[i]) line")
         }
     }
 
     /// Fading, undo, clear, the slide number, recording and settings.
     @ViewBuilder private var slides: some View {
         Button { lecture.settings.fadingInk.toggle() } label: { Image(systemName: "timer") }
-            .buttonStyle(BarButton(on: lecture.settings.fadingInk)).accessibilityLabel("Fading ink (F)")
+            .buttonStyle(BarButton(on: lecture.settings.fadingInk)).named("Fading ink (F)")
         Button { lecture.undo() } label: { Image(systemName: "arrow.uturn.backward") }
-            .buttonStyle(BarButton(on: false)).accessibilityLabel("Undo (Z)").accessibilityIdentifier("undo")
+            .buttonStyle(BarButton(on: false)).named("Undo (Z)").accessibilityIdentifier("undo")
         Button { lecture.clear() } label: { Image(systemName: "trash") }
-            .buttonStyle(BarButton(on: false)).accessibilityLabel("Clear all marks (C)")
+            .buttonStyle(BarButton(on: false)).named("Clear all marks (C)")
         bar
         Button { lecture.previous() } label: { Image(systemName: "chevron.left") }
-            .buttonStyle(BarButton(on: false)).accessibilityLabel("Previous slide").accessibilityIdentifier("previous")
+            .buttonStyle(BarButton(on: false)).named("Previous slide").accessibilityIdentifier("previous")
         Text("\(lecture.page + 1) / \(lecture.pageCount)").font(.callout.monospacedDigit()).foregroundStyle(Color.offText)
             .fixedSize()
             .accessibilityIdentifier("slideNumber")
         Button { lecture.next() } label: { Image(systemName: "chevron.right") }
-            .buttonStyle(BarButton(on: false)).accessibilityLabel("Next slide").accessibilityIdentifier("next")
+            .buttonStyle(BarButton(on: false)).named("Next slide").accessibilityIdentifier("next")
         bar
         recordButtons
         Button { showSettings = true } label: { Image(systemName: "gearshape") }
-            .buttonStyle(BarButton(on: false)).accessibilityLabel("Settings")
+            .buttonStyle(BarButton(on: false)).named("Settings")
     }
 
     private func tool(_ t: Tool, _ symbol: String, _ name: String) -> some View {
         Button { lecture.choose(t) } label: { Image(systemName: symbol) }
             .buttonStyle(BarButton(on: lecture.settings.tool == t))
-            .accessibilityLabel(name)
+            .named(name)
     }
 
     @ViewBuilder private var recordButtons: some View {
@@ -259,14 +259,29 @@ struct ToolbarView: View {
         }
         .buttonStyle(BarButton(on: false))
         .disabled(recorder.state == .starting || recorder.state == .stopping)
-        .accessibilityLabel(on ? "Stop recording" : "Record")
+        .named(on ? "Stop recording" : "Record")
         if on {
             Button { recorder.pauseTapped() } label: { Image(systemName: recorder.state == .paused ? "play.fill" : "pause.fill") }
                 .buttonStyle(BarButton(on: false))
-                .accessibilityLabel(recorder.state == .paused ? "Resume recording" : "Pause recording")
+                .named(recorder.state == .paused ? "Resume recording" : "Pause recording")
             Text(Chapters.time(recorder.elapsed, hours: recorder.elapsed >= 3600))
                 .font(.callout.monospacedDigit()).foregroundStyle(Color.offText)
         }
+    }
+}
+
+extension View {
+    /// A toolbar button's name: for screen readers always, and shown on Pencil or pointer hover unless switched off
+    /// (Settings → Toolbar → Show button names).
+    func named(_ name: String) -> some View { modifier(ButtonName(name: name)) }
+}
+
+private struct ButtonName: ViewModifier {
+    let name: String
+    @EnvironmentObject var lecture: Lecture
+    func body(content: Content) -> some View {
+        if lecture.settings.showButtonNames { content.accessibilityLabel(name).help(name) }
+        else { content.accessibilityLabel(name) }
     }
 }
 
@@ -293,6 +308,11 @@ struct SettingsView: View {
                 Section {
                     Toggle("Finger draws too", isOn: $lecture.settings.fingerDraws)
                 } footer: { Text("Off: only Apple Pencil draws, and a finger swipes to the next or previous slide.") }
+                Section {
+                    Toggle("Show button names", isOn: $lecture.settings.showButtonNames)
+                } header: { Text("Toolbar") } footer: {
+                    Text("Hovering Apple Pencil or a pointer over a button shows its name, like \"Pen (P)\". Off: no names.")
+                }
                 Section("Undo") {
                     Toggle("Double-tap on Apple Pencil", isOn: $lecture.settings.pencilTapUndoes)
                     Toggle("Two-finger tap on the slide", isOn: $lecture.settings.twoFingerTapUndoes)

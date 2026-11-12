@@ -70,6 +70,7 @@ class MainActivity : Activity() {
         col.addView(toggle("A finger draws too", "Off: only a stylus draws, and touching the drawing layer with a finger switches drawing off.") { s, on -> s.copy(fingerDraws = on) })
         col.addView(toggle("The stylus side button undoes", "Hold the button as the pen touches the screen.") { s, on -> s.copy(stylusButtonUndoes = on) })
         col.addView(toggle("The stylus eraser end erases", "On styluses that have one.") { s, on -> s.copy(stylusEraserEnd = on) })
+        col.addView(toggle("Show button names", "Off: hovering the stylus over the toolbar (S Pen and others) shows no names like \"Pen\" or \"Highlighter\". Screen readers then can't name the buttons either.") { s, on -> s.copy(showButtonNames = on) })
         col.addView(space(20))
         col.addView(text("How to use", 20f, bold = true))
         col.addView(text(
@@ -105,7 +106,7 @@ class MainActivity : Activity() {
         val s = InkService.running?.settings ?: Settings.decode(getSharedPreferences("contrast-ink", MODE_PRIVATE).getString("settings", null))
         switches.forEachIndexed { i, (sw, _) ->
             sw.setOnCheckedChangeListener(null)
-            sw.isChecked = when (i) { 0 -> s.fingerDraws; 1 -> s.stylusButtonUndoes; else -> s.stylusEraserEnd }
+            sw.isChecked = when (i) { 0 -> s.fingerDraws; 1 -> s.stylusButtonUndoes; 2 -> s.stylusEraserEnd; else -> s.showButtonNames }
             sw.setOnCheckedChangeListener { _, on -> change(switches[i].second, on) }
         }
     }

@@ -150,3 +150,11 @@ class RecordingTest {
         assertEquals("Lecture 2026-11-12 093016.mp4", Recording.fileName("2026-11-12 093016") { it in taken })
     }
 }
+
+class ButtonNamesSettingTest {
+    @Test fun onUnlessSwitchedOffAndRemembered() {
+        assertTrue(Settings().showButtonNames)
+        assertTrue("an older saved copy keeps the names", Settings.decode("tool=PEN\ncolor=2").showButtonNames)
+        assertFalse(Settings.decode(Settings(showButtonNames = false).encode()).showButtonNames)
+    }
+}

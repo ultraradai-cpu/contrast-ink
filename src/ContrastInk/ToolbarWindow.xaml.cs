@@ -183,7 +183,11 @@ public partial class ToolbarWindow : Window
                 ToolTipService.SetIsEnabled(fe, false);
                 // screen readers name the button by its hint (the visible label is only a symbol)
                 System.Windows.Automation.AutomationProperties.SetName(fe, text);
-                fe.MouseEnter += (_, _) => { Hint.Text = fe.ToolTip as string ?? text; Hint.Foreground = OffText; Hint.Visibility = Visibility.Visible; };
+                fe.MouseEnter += (_, _) =>
+                {
+                    if (!showNames) return;
+                    Hint.Text = fe.ToolTip as string ?? text; Hint.Foreground = OffText; Hint.Visibility = Visibility.Visible;
+                };
                 fe.MouseLeave += (_, _) => Standing();   // a standing warning or notice comes back; an ordinary hint goes
             }
             HintsInside(fe);
@@ -199,6 +203,7 @@ public partial class ToolbarWindow : Window
     {
         (OptZ, nameof(Settings.UndoWithZ)), (OptRightClick, nameof(Settings.UndoWithRightClick)), (OptButton, nameof(Settings.UndoButtonByPen)),
         (OptEraserEnd, nameof(Settings.PenEraserEnd)), (OptSlides, nameof(Settings.MarksPerSlide)),
+        (OptNames, nameof(Settings.ShowButtonNames)),
     };
 
     static void Mark(Button b, bool on)
@@ -229,8 +234,12 @@ public partial class ToolbarWindow : Window
         {
             OptZ.IsChecked = s.UndoWithZ; OptRightClick.IsChecked = s.UndoWithRightClick; OptButton.IsChecked = s.UndoButtonByPen;
             OptEraserEnd.IsChecked = s.PenEraserEnd; OptSlides.IsChecked = s.MarksPerSlide;
+            OptNames.IsChecked = s.ShowButtonNames;
         }
         finally { refreshing = false; }
         FoldBtn.Content = folded ? "›" : "‹";
+        if (showNames != s.ShowButtonNames) { showNames = s.ShowButtonNames; if (!showNames) Standing(); }
     }
+
+    bool showNames = true;   // ⚙ → Toolbar: names of buttons on hover (warnings and notices show either way)
 }
