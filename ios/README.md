@@ -66,6 +66,21 @@ Press **⏺** on the toolbar. The first time, iPad asks to allow screen recordin
 Connect a projector or TV with an HDMI adapter or AirPlay. It shows **the slide and your marks only**, filling the
 screen, while the toolbar stays on your iPad. A mark appears on the projector when the Pencil lifts.
 
+## Pad for a PC
+
+**Use this iPad as a pad for a PC** (on the home screen) turns the iPad into a wireless drawing pad for Contrast Ink
+on a Windows PC on the same Wi-Fi. The iPad shows the PC's screen; what you draw on the iPad is drawn by the PC, so
+OBS on the PC records it.
+
+1. Pick the PC under **PCs on this Wi-Fi** (or type the address the PC shows, like `192.168.1.20` or
+   `192.168.1.20:47820`, if it isn't listed).
+2. Type the 6-digit code the PC shows and press **Connect**. The first time, iPad asks to allow the local network.
+3. Draw with Apple Pencil or a finger. A second finger cancels the stroke. Pencil hover (M2 iPads and later) moves
+   the laser's dot. The toolbar's tools, colours, undo, clear and slide buttons work the PC's Contrast Ink.
+
+If the Wi-Fi drops or the PC stops answering for 6 seconds, the iPad says **Lost the PC**, with **Reconnect**.
+The link is written down in `docs/pad-protocol.md`.
+
 ## Install
 
 It isn't on the App Store. Install it yourself (sideload) from a Windows PC, no Mac needed:
