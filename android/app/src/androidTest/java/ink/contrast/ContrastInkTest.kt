@@ -13,7 +13,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import android.content.ContentUris
+import android.media.MediaMetadataRetriever
+import android.provider.MediaStore
 import java.io.File
+import java.util.regex.Pattern
 
 /**
  * The real app on an Android emulator, over another app (a stand-in in the test package): a tap goes through while drawing is
@@ -31,6 +35,7 @@ class ContrastInkTest {
     @Before fun setUp() {
         device.executeShellCommand("appops set $pkg SYSTEM_ALERT_WINDOW allow")
         device.executeShellCommand("pm grant $pkg android.permission.POST_NOTIFICATIONS")
+        device.executeShellCommand("pm grant $pkg android.permission.RECORD_AUDIO")
         shots.mkdirs()
         // started as a person starts it: "Start Contrast Ink" on the setup screen (Android 14 lets an app start its
         // drawing layer only while the app is on screen)
@@ -132,5 +137,66 @@ class ContrastInkTest {
         shot("08 small toolbar, drawing off, marks stay")
         assertNotNull("small toolbar keeps the record button", device.findObject(By.desc("Record the screen")))
         press("Make the toolbar big")
+    }
+
+    /** Android's "start recording?" question: the whole screen, then start (its wording differs between versions). */
+    private fun answerRecordingQuestion() {
+        val single = device.wait(Until.findObject(By.text(Pattern.compile("(?i)a single app|one app"))), 3000)
+        if (single != null) {
+            single.click()
+            device.wait(Until.findObject(By.text(Pattern.compile("(?i)entire screen|full screen"))), 3000)?.click()
+        }
+        val start = device.wait(Until.findObject(By.text(Pattern.compile("(?i)start( now| recording)?|next"))), 8000)
+        assertNotNull("Android asks before recording, with a Start button", start)
+        start.click()
+        // some versions ask in two steps
+        device.wait(Until.findObject(By.text(Pattern.compile("(?i)start( now| recording)?"))), 1500)?.click()
+    }
+
+    @Test fun recordsPausesResumesAndSavesToTheGallery() {
+        device.executeShellCommand("am start -W -n ${inst.context.packageName}/ink.contrast.OtherAppActivity")
+        device.wait(Until.findObject(By.text("Not tapped")), 8000)
+
+        press("Record the screen")
+        answerRecordingQuestion()
+        assertNotNull("recording: ⏹ replaces ⏺", device.wait(Until.findObject(By.desc("Stop recording")), 8000))
+        assertTrue("recording", recorder { it.active })
+        press("Draw on / off")
+        drag(0.15f, 0.55f, 0.85f, 0.65f)
+        Thread.sleep(1500)
+        shot("10 recording")
+
+        press("Pause recording")
+        assertTrue("paused", recorder { it.paused })
+        Thread.sleep(1000)
+        press("Resume recording")
+        assertTrue("resumed", recorder { it.active && !it.paused })
+        drag(0.15f, 0.75f, 0.85f, 0.7f)
+        Thread.sleep(1500)
+
+        press("Stop recording")
+        val saved = device.wait(Until.findObject(By.desc(Pattern.compile("Saved to the Gallery: .*"))), 30000)
+        shot("11 saved")
+        assertNotNull("the video is saved to the Gallery (the toolbar says where)", saved)
+        val name = saved!!.contentDescription.toString().substringAfterLast('/')
+        // it is really there, complete, and plays for a few seconds
+        val uri = ctx.contentResolver.query(MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+            arrayOf(MediaStore.Video.Media._ID), "${MediaStore.Video.Media.DISPLAY_NAME} = ?", arrayOf(name), null)!!.use {
+            assertTrue("\"$name\" is in the Gallery", it.moveToFirst())
+            ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, it.getLong(0))
+        }
+        val ms = MediaMetadataRetriever().run {
+            setDataSource(ctx, uri)
+            val d = extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLong() ?: 0
+            release(); d
+        }
+        assertTrue("the video plays for a few seconds (it is ${ms} ms)", ms in 1500..60000)
+        ctx.contentResolver.delete(uri, null, null)
+    }
+
+    private fun recorder(check: (ScreenRecorder) -> Boolean): Boolean {
+        var ok = false
+        inst.runOnMainSync { ok = InkService.running?.recorder?.let(check) == true }
+        return ok
     }
 }
