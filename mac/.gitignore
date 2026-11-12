@@ -3,3 +3,4 @@
 build/
 ContrastInk-Mac.zip
 *.xcresult/
+App/Info.plist

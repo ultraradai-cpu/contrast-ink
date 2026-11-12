@@ -178,6 +178,7 @@ public final class PadServer {
         var sentAt = Date.distantPast
         var outbox: [Date] = []   // when each unfinished write began
         var name = ""
+        var ended: (() -> Void)?
         init(pipe: PadPipe, usb: Bool, accept: PadAccept) {
             self.pipe = pipe; self.usb = usb; self.accept = accept
             deadline = Date().addingTimeInterval(PadPC.helloWithin)
@@ -230,10 +231,11 @@ public final class PadServer {
     public func send(_ message: Data) { q.async { [self] in if let c = current { send(c, message) } } }
 
     /// An iPad's connection opened through usbmuxd (a socket that is now a pipe to the iPad's port 47830).
-    public func attachUsb(fd: Int32) {
+    /// `ended` is called (on any queue) once that connection is over.
+    public func attachUsb(fd: Int32, ended: @escaping () -> Void = {}) {
         q.async { [self] in
-            guard running, pending < PadPC.maxPending else { Darwin.close(fd); return }
-            accept(FDPipe(fd: fd), usb: true)
+            guard running, pending < PadPC.maxPending else { Darwin.close(fd); ended(); return }
+            accept(FDPipe(fd: fd), usb: true, ended: ended)
         }
     }
 
@@ -322,9 +324,10 @@ public final class PadServer {
         }
     }
 
-    private func accept(_ pipe: PadPipe, usb: Bool) {
+    private func accept(_ pipe: PadPipe, usb: Bool, ended: (() -> Void)? = nil) {
         pending += 1
         let p = Peer(pipe: pipe, usb: usb, accept: PadAccept(pcKey: pcKey, name: config.name))
+        p.ended = ended
         peers[ObjectIdentifier(p)] = p
         pipe.start(queue: q) { [weak self, weak p] data in
             guard let self, let p else { return }
@@ -445,6 +448,8 @@ public final class PadServer {
         guard !p.closed else { return }
         p.closed = true
         p.pipe.cancel()
+        p.ended?()
+        p.ended = nil
         if p.counted { p.counted = false; pending -= 1 }
         peers[ObjectIdentifier(p)] = nil
         if current === p {
