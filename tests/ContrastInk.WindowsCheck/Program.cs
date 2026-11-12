@@ -478,7 +478,7 @@ static class Program
             {
                 bool took = again.Pair(PadCode);
                 Thread.Sleep(300);
-                bool firstClosed = t.Read(g => false, 800).Count == 0 && !IsOpen(t.Tcp);
+                bool firstClosed = ClosedByPc(t.Net, 3000);   // pictures already on their way may still arrive first
                 Check(took && firstClosed, "tablet link: the right code again takes over (a tablet back after a Wi-Fi drop)", $"let in {took}, the old connection closed {firstClosed}");
             }
             Thread.Sleep(500);
@@ -509,10 +509,19 @@ static class Program
         }
     }
 
-    static bool IsOpen(System.Net.Sockets.TcpClient c)
+    /// <summary>Reads (and drops) whatever is still coming until the PC closes the connection: true if it did in time.</summary>
+    static bool ClosedByPc(System.Net.Sockets.NetworkStream s, int ms)
     {
-        try { return !(c.Client.Poll(0, System.Net.Sockets.SelectMode.SelectRead) && c.Client.Available == 0); }
-        catch (Exception) { return false; }
+        var buf = new byte[1 << 16];
+        var until = DateTime.UtcNow.AddMilliseconds(ms);
+        s.ReadTimeout = 250;
+        while (DateTime.UtcNow < until)
+        {
+            try { if (s.Read(buf, 0, buf.Length) <= 0) return true; }
+            catch (IOException e) when (e.InnerException is System.Net.Sockets.SocketException { SocketErrorCode: System.Net.Sockets.SocketError.TimedOut }) { }
+            catch (Exception) { return true; }   // reset by the PC: closed too
+        }
+        return false;
     }
 
     // ---------------------------------------------------------------- undo, every way, and marks for each slide
