@@ -1,0 +1,54 @@
+# The Xcode project is made from this file (XcodeGen): `brew install xcodegen && xcodegen` in this folder,
+# then open ContrastInk.xcodeproj. The made project is not kept in git.
+name: ContrastInk
+options:
+  bundleIdPrefix: com.contrast
+  deploymentTarget:
+    macOS: "13.0"
+packages:
+  ContrastInkCore:
+    path: ../ios/Core
+  ContrastInkPC:
+    path: PCCore
+targets:
+  ContrastInk:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+    dependencies:
+      - package: ContrastInkCore
+      - package: ContrastInkPC
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Contrast Ink
+        CFBundleName: Contrast Ink
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        LSMinimumSystemVersion: "13.0"
+        # no Dock icon and no menu bar: PowerPoint keeps both, and the keyboard
+        LSUIElement: true
+        NSHumanReadableCopyright: Contrast
+        NSPrincipalClass: NSApplication
+        # the tablet link: advertised on the Wi-Fi with Bonjour (macOS 15 asks about the local network)
+        NSLocalNetworkUsageDescription: Contrast Ink lets your Android tablet or iPad find this Mac on the Wi-Fi and draw on its screen.
+        NSBonjourServices: [_contrastink._tcp]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.contrast.ink.mac
+        PRODUCT_NAME: ContrastInk
+        SWIFT_VERSION: "5.0"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        MACOSX_DEPLOYMENT_TARGET: "13.0"
+        # unsigned on GitHub (ad-hoc); not sandboxed: it reads OBS's settings, runs adb, talks to usbmuxd
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: NO
+        COMBINE_HIDPI_IMAGES: YES
+schemes:
+  ContrastInk:
+    build:
+      targets:
+        ContrastInk: all
