@@ -14,7 +14,8 @@
       <Setter Property="Foreground" Value="{StaticResource Ink}"/>
       <Setter Property="Background" Value="Transparent"/>
       <Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="Width" Value="34"/>
+      <!-- 32 wide: the whole toolbar (with the laser and the opacity slider) must fit a 1024-wide screen -->
+      <Setter Property="Width" Value="32"/>
       <Setter Property="Height" Value="38"/>
       <Setter Property="Margin" Value="1"/>
       <Setter Property="FontSize" Value="17"/>
