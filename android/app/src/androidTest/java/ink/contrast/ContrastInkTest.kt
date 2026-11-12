@@ -220,9 +220,10 @@ class ContrastInkTest {
         ctx.contentResolver.delete(uri, null, null)
         // as long as the toolbar's clock said (the pause is cut out), not the wall time
         var parts = 0
-        inst.runOnMainSync { parts = InkService.running?.recorder?.lastParts ?: -1 }
+        var ends = ""
+        inst.runOnMainSync { parts = InkService.running?.recorder?.lastParts ?: -1; ends = InkService.running?.recorder?.endTimes.toString() }
         val wall = "test clock: recording seen ${t0}, pause pressed +${tPause - t0}, resume pressed +${tResume - t0}, " +
-            "stop pressed +${tStop - t0} ms; parts joined: $parts"
+            "stop pressed +${tStop - t0} ms; parts joined: $parts, ending each took $ends ms"
         assertTrue("the video ($ms ms: $tracks) is as long as the toolbar's clock said ($timer ms). $wall",
             ms >= 1500 && Math.abs(ms - timer) <= 2500)
     }

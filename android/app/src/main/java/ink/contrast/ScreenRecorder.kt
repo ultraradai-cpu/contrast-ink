@@ -55,6 +55,8 @@ class ScreenRecorder(private val service: InkService) {
     /** How many parts the last recording was joined from (1 + the number of pauses that recorded after them). */
     @Volatile var lastParts = 0
         private set
+    /** How long ending each part took, in ms (for the emulator check: a part that won't end keeps recording). */
+    val endTimes = ArrayList<Long>()
     var paused = false
         private set
 
@@ -91,6 +93,7 @@ class ScreenRecorder(private val service: InkService) {
         val video = File(folder, Recording.fileName(stamp) { File(folder, it).exists() })
         withSound = service.micAllowed()
         parts.clear()
+        endTimes.clear()
         try {
             val r = newPart(File(folder, video.name.removeSuffix(".mp4") + " part 1.mp4"))
             display = p.createVirtualDisplay("Contrast Ink recording", size.first, size.second, dpi,
@@ -138,7 +141,9 @@ class ScreenRecorder(private val service: InkService) {
         val r = media ?: return
         val f = part
         media = null; part = null
+        val t = SystemClock.elapsedRealtime()
         val ok = runCatching { r.stop() }.isSuccess   // fails when nothing was recorded in it
+        endTimes += SystemClock.elapsedRealtime() - t
         r.release()
         if (f != null) { if (ok) parts += f else f.delete() }
     }
@@ -164,8 +169,10 @@ class ScreenRecorder(private val service: InkService) {
                 r.start()
             }.exceptionOrNull()?.let { dropPart(); "Couldn't resume the recording: ${it.message ?: it.javaClass.simpleName}" }
         } else {
-            display?.surface = null   // nothing goes to the encoder while paused
+            // the part is ended while the screen still feeds it (ended without pictures coming, it can hang on,
+            // recording sound), then nothing goes to an encoder while paused
             endPart()
+            display?.surface = null
             null
         }
         if (problem == null) {
@@ -184,8 +191,8 @@ class ScreenRecorder(private val service: InkService) {
         if (!active) return
         recording = false
         main.removeCallbacks(ticker)
-        display?.surface = null
         endPart()
+        display?.surface = null
         display?.release(); display = null
         projection?.let { p -> projection = null; runCatching { p.stop() } }
         paused = false
