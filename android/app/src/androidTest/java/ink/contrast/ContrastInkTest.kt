@@ -152,7 +152,8 @@ class ContrastInkTest {
         assertNotNull("Android asks before recording, with a Start button", start)
         start.click()
         // some versions ask in two steps
-        device.wait(Until.findObject(By.text(Pattern.compile("(?i)start( now| recording)?"))), 1500)?.click()
+        // (the question may close as it is found: then there was no second step)
+        runCatching { device.wait(Until.findObject(By.text(Pattern.compile("(?i)start( now| recording)?"))), 1500)?.click() }
     }
 
     @Test fun recordsPausesResumesAndSavesToTheGallery() {
