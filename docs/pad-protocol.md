@@ -6,16 +6,17 @@ drawing layer, so OBS records it. Version 1.
 
 ## Finding the PC (same Wi-Fi)
 
-- The tablet sends a UDP broadcast to port **47821** (to 255.255.255.255 and to each network's own broadcast
-  address), payload UTF-8 `CONTRASTINK-PAD?` (exactly these 16 bytes).
-- Each PC running Contrast Ink answers the sender, UDP, payload UTF-8 lines:
-  `CONTRASTINK-PC\n<computer name>\n<tcp port>\n<protocol version>`.
+- The PC advertises itself on the network with DNS-SD (Bonjour / mDNS), service type **`_contrastink._tcp`**,
+  instance name = the computer's name, port = its TCP port, TXT record `v=1`. (Not a UDP broadcast: an iPad app
+  may only send broadcasts with a permission Apple must grant, which a sideloaded app can't have. iPad browses
+  with NWBrowser, Android with NsdManager, Windows registers with DnsServiceRegister.)
 - The tablet lists the PCs by name; the presenter picks one and types the **6-digit code** the PC shows.
-- A tablet may also be given an address by hand (`192.168.1.20` or `192.168.1.20:47820`).
+- A tablet may also be given an address by hand (`192.168.1.20` or `192.168.1.20:47820`): it shows the PC's
+  address under the code, for networks that block mDNS.
 
 ## The connection
 
-TCP, the PC listening on port **47820** (or the next free one, as the discovery answer says). Every message:
+TCP, the PC listening on port **47820** (or the next free one, as it advertises). Every message:
 
     [type: 1 byte][length: 4 bytes, big-endian, unsigned][payload: length bytes]
 
