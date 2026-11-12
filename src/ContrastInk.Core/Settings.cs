@@ -44,16 +44,16 @@ public sealed class Settings
     /// <summary>Resting the mouse or pen on a toolbar button shows its name ("Pen (P)") under the buttons.</summary>
     public bool ShowButtonNames { get; set; } = true;
     /// <summary>
-    /// A pen tablet beside the keyboard (XP-Pen, Wacom Intuos, Huion...): its pen is used like a mouse. Its marks and
-    /// clicks land where the cursor is (as a pen, Windows can place them as if the tablet covered every screen), and
-    /// hovering it doesn't switch drawing on (use ✏, F9 or Ctrl). Takes effect when Contrast Ink starts.
+    /// A pen tablet beside the keyboard (Wacom Intuos/One, XP-Pen, Huion, Gaomon, Veikk...): whether its pen is used like
+    /// a mouse. Auto: yes when Windows reports such a tablet and no pen screen. Takes effect when Contrast Ink starts.
     /// </summary>
-    public bool PenTablet { get; set; }
+    public TabletMode PenTabletMode { get; set; } = TabletMode.Auto;
 
     /// <summary>Keeps every value in range, so a hand-edited or old file can't break the app.</summary>
     public Settings Clean(int screens)
     {
         if (!Enum.IsDefined(Tool)) Tool = Tool.Pen;
+        if (!Enum.IsDefined(PenTabletMode)) PenTabletMode = TabletMode.Auto;
         Color = Math.Clamp(Color, 0, Colors.Length - 1);
         Width = Math.Clamp(Width, 0, Widths.Length - 1);
         Screen = screens <= 0 ? 0 : Math.Clamp(Screen, 0, screens - 1);

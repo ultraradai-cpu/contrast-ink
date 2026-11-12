@@ -32,6 +32,7 @@ public partial class ToolbarWindow : Window
     public event Action<Tool>? ToolClicked;
     public event Action<int>? ColorClicked, WidthClicked;
     public event Action<double>? OpacityChanged;
+    public event Action<TabletMode>? TabletModeChanged;
 
     public ToolbarWindow()
     {
@@ -64,6 +65,8 @@ public partial class ToolbarWindow : Window
         OvalBtn.Click += (_, _) => ToolClicked?.Invoke(Tool.Oval);
         EraseBtn.Click += (_, _) => ToolClicked?.Invoke(Tool.Eraser);
         LaserBtn.Click += (_, _) => ToolClicked?.Invoke(Tool.Laser);
+        foreach (var (radio, m) in new[] { (TabletAuto, TabletMode.Auto), (TabletOn, TabletMode.On), (TabletOff, TabletMode.Off) })
+            radio.Checked += (_, _) => { if (!refreshing) TabletModeChanged?.Invoke(m); };
         OpacitySlider.ValueChanged += (_, e) =>
         {
             ShowOpacity(e.NewValue);
@@ -210,7 +213,7 @@ public partial class ToolbarWindow : Window
     {
         (OptZ, nameof(Settings.UndoWithZ)), (OptRightClick, nameof(Settings.UndoWithRightClick)), (OptButton, nameof(Settings.UndoButtonByPen)),
         (OptEraserEnd, nameof(Settings.PenEraserEnd)), (OptSlides, nameof(Settings.MarksPerSlide)),
-        (OptNames, nameof(Settings.ShowButtonNames)), (OptTablet, nameof(Settings.PenTablet)),
+        (OptNames, nameof(Settings.ShowButtonNames)),
     };
 
     static void Mark(Button b, bool on)
@@ -243,7 +246,9 @@ public partial class ToolbarWindow : Window
             OptZ.IsChecked = s.UndoWithZ; OptRightClick.IsChecked = s.UndoWithRightClick; OptButton.IsChecked = s.UndoButtonByPen;
             OptEraserEnd.IsChecked = s.PenEraserEnd; OptSlides.IsChecked = s.MarksPerSlide;
             OptNames.IsChecked = s.ShowButtonNames;
-            OptTablet.IsChecked = s.PenTablet;
+            TabletAuto.IsChecked = s.PenTabletMode == TabletMode.Auto;
+            TabletOn.IsChecked = s.PenTabletMode == TabletMode.On;
+            TabletOff.IsChecked = s.PenTabletMode == TabletMode.Off;
             if (Math.Abs(OpacitySlider.Value - s.Opacity) > 0.001) OpacitySlider.Value = s.Opacity;
             ShowOpacity(s.Opacity);
         }
@@ -278,6 +283,11 @@ public partial class ToolbarWindow : Window
         if (double.IsInfinity(Full.MaxWidth) ? room < Full.ActualWidth + 1 : Math.Abs(Full.MaxWidth - room) > 1)
             Full.MaxWidth = room;
     }
+
+    /// <summary>Says under the choice what was found at start, and how its pen is used now.</summary>
+    public void ShowTablet(string? found, bool asMouse) =>
+        TabletText.Text = (found != null ? $"Found: {found}. " : "No pen tablet found (with Windows Ink off in its own settings, it is a mouse already). ")
+            + (asMouse ? "Its pen works like the mouse: switch drawing on with ✏, F9 or Ctrl." : "Pens work as pens.");
 
     bool showNames = true;   // ⚙ → Toolbar: names of buttons on hover (warnings and notices show either way)
 }

@@ -27,7 +27,9 @@ public partial class App : Application
     UndoButtonWindow undoButton = null!;
     SlideWatcher? slides;
     Recorder? recorder;
-    bool penTabletAtStart;   // the pen tablet setting as it was when the app started (it takes effect only then)
+    bool tabletAsMouse;               // a pen tablet's pen is used like the mouse (decided at start)
+    TabletMode tabletModeAtStart;     // the setting as it was then (a change takes effect on the next start)
+    string? tabletFound;              // the tablets Windows reported, by name
     DateTime quitWarned;   // ✕ pressed while recording: a second press within 15 s quits
     InputHooks? hooks;
     List<Native.Monitor> monitors = new();
@@ -46,10 +48,14 @@ public partial class App : Application
         monitors = Native.Monitors();
         CarryOverOldSettings();
         settings = Settings.Load(SettingsPath, monitors.Count);
-        // a pen tablet: WPF's own pen handling is left out, so its pen reaches every window as the mouse it moves.
-        // (Must happen before the first window: WPF reads it once.)
-        if (settings.PenTablet) AppContext.SetSwitch("Switch.System.Windows.Input.Stylus.DisableStylusAndTouchSupport", true);
-        penTabletAtStart = settings.PenTablet;
+        // a pen tablet beside the keyboard (Wacom Intuos, XP-Pen Deco, Huion...): WPF's own pen handling is left out,
+        // so its pen reaches every window as the mouse it moves (Core's PenTablet explains why). Decided once, before
+        // the first window: WPF reads it only then.
+        var (tablets, penScreens) = Native.PenDevices();
+        tabletAsMouse = PenTablet.UseAsMouse(settings.PenTabletMode, tablets.Count, penScreens.Count);
+        if (tabletAsMouse) AppContext.SetSwitch("Switch.System.Windows.Input.Stylus.DisableStylusAndTouchSupport", true);
+        tabletModeAtStart = settings.PenTabletMode;
+        tabletFound = tablets.Count > 0 ? string.Join(", ", tablets.Distinct()) : null;
 
         overlay = new OverlayWindow { ShiftHeld = () => shift };
         overlay.Show();
@@ -147,6 +153,14 @@ public partial class App : Application
         toolbar.ToolClicked += t => { settings.Tool = t; ApplySettings(); if (!mode.Drawing) mode.SetManual(true); };
         toolbar.ColorClicked += c => { settings.Color = c; if (settings.Tool == Tool.Eraser) settings.Tool = Tool.Pen; ApplySettings(); };
         toolbar.WidthClicked += w => { settings.Width = w; ApplySettings(); };
+        toolbar.TabletModeChanged += m =>
+        {
+            settings.PenTabletMode = m;
+            ApplySettings();
+            toolbar.Notice(m == tabletModeAtStart ? null
+                : "Close Contrast Ink (✕) and open it again: the pen tablet setting takes effect when it starts.");
+        };
+        toolbar.ShowTablet(tabletFound, tabletAsMouse);
         toolbar.OpacityChanged += o => { settings.Opacity = Math.Clamp(o, Settings.MinOpacity, 1); ApplySettings(); };
         toolbar.FadeClicked += () => { settings.FadingInk = !settings.FadingInk; ApplySettings(); };
         toolbar.UndoClicked += Undo;
@@ -156,9 +170,7 @@ public partial class App : Application
             typeof(Settings).GetProperty(name)!.SetValue(settings, on);
             if (name == nameof(Settings.UndoButtonByPen) && !on) undoButton.Park();
             if (name == nameof(Settings.MarksPerSlide) && on && slides != null) overlay.ShowPage(slides.Current);
-            if (name == nameof(Settings.PenTablet))
-                toolbar.Notice(on == penTabletAtStart ? null
-                    : "Close Contrast Ink (✕) and open it again: the pen tablet setting takes effect when it starts.");
+
             ApplySettings();
         };
         undoButton.Clicked += Undo;
@@ -328,7 +340,7 @@ public partial class App : Application
     // ---------- pen and mouse ----------
     void OnPointer(InputKind kind, int dx, int dy)
     {
-        if (kind == InputKind.Pen && settings.PenTablet) kind = InputKind.Mouse;   // a pen tablet's pen is the mouse
+        if (kind == InputKind.Pen && tabletAsMouse) kind = InputKind.Mouse;   // a pen tablet's pen is the mouse
         if (kind == InputKind.Pen) mode.PenSeen(DateTime.UtcNow);
         else if (kind == InputKind.Mouse && (dx != 0 || dy != 0)) mode.MouseMoved(dx, dy);
         // a finger (touch) clicks, it never switches drawing on

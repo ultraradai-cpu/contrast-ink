@@ -105,4 +105,47 @@ static class Native
 
     [StructLayout(LayoutKind.Sequential)] public struct KBDLLHOOKSTRUCT { public uint vkCode, scanCode, flags, time; public UIntPtr dwExtraInfo; }
     [StructLayout(LayoutKind.Sequential)] public struct MSLLHOOKSTRUCT { public int x, y; public uint mouseData, flags, time; public UIntPtr dwExtraInfo; }
+
+    // ---------- pens Windows knows about (Windows 8 and later) ----------
+    const int POINTER_DEVICE_TYPE_INTEGRATED_PEN = 1, POINTER_DEVICE_TYPE_EXTERNAL_PEN = 2;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct POINTER_DEVICE_INFO
+    {
+        public uint displayOrientation;
+        public IntPtr device;
+        public int pointerDeviceType;
+        public IntPtr monitor;
+        public uint startingCursorId;
+        public ushort maxActiveContacts;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 520)] public string productString;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern bool GetPointerDevices(ref uint count, [Out] POINTER_DEVICE_INFO[]? devices);
+
+    /// <summary>
+    /// The pens Windows reports: tablets beside the keyboard ("external") and pen screens ("integrated", tied to a
+    /// display), with their names. Empty when Windows can't say (then nothing is assumed).
+    /// </summary>
+    public static (List<string> tablets, List<string> penScreens) PenDevices()
+    {
+        var tablets = new List<string>();
+        var screens = new List<string>();
+        try
+        {
+            uint n = 0;
+            if (!GetPointerDevices(ref n, null) || n == 0) return (tablets, screens);
+            var all = new POINTER_DEVICE_INFO[n];
+            if (!GetPointerDevices(ref n, all)) return (tablets, screens);
+            foreach (var d in all.Take((int)n))
+            {
+                var name = string.IsNullOrWhiteSpace(d.productString) ? "a pen" : d.productString.Trim();
+                if (d.pointerDeviceType == POINTER_DEVICE_TYPE_EXTERNAL_PEN) tablets.Add(name);
+                else if (d.pointerDeviceType == POINTER_DEVICE_TYPE_INTEGRATED_PEN) screens.Add(name);
+            }
+        }
+        catch (Exception e) when (e is EntryPointNotFoundException or DllNotFoundException) { }
+        return (tablets, screens);
+    }
 }

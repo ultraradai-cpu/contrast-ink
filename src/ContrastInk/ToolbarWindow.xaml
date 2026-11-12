@@ -107,6 +107,13 @@
           <Setter Property="Margin" Value="0,3"/>
           <Setter Property="Cursor" Value="Hand"/>
         </Style>
+        <Style TargetType="RadioButton">
+          <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+          <Setter Property="Focusable" Value="False"/>
+          <Setter Property="Margin" Value="0,3"/>
+          <Setter Property="Cursor" Value="Hand"/>
+          <Setter Property="GroupName" Value="Tablet"/>
+        </Style>
       </StackPanel.Resources>
       <TextBlock Text="Undo the Last Mark With" Foreground="#8A95A6" FontSize="12" Margin="0,0,0,2"/>
       <CheckBox x:Name="OptZ" Content="Z Key (Ctrl+Z Always Works)"/>
@@ -115,7 +122,11 @@
       <TextBlock Text="Pen and Slides" Foreground="#8A95A6" FontSize="12" Margin="0,8,0,2"/>
       <CheckBox x:Name="OptEraserEnd" Content="Pen's Eraser End Erases"/>
       <CheckBox x:Name="OptSlides" Content="Each PowerPoint Slide Keeps Its Own Marks"/>
-      <CheckBox x:Name="OptTablet" Content="Pen Tablet Beside the Keyboard (XP-Pen, Wacom Intuos, Huion): Its Pen Works Like a Mouse"/>
+      <TextBlock Text="Pen Tablet Beside the Keyboard (Wacom Intuos, XP-Pen, Huion, Gaomon...)" Foreground="#8A95A6" FontSize="12" Margin="0,8,0,2"/>
+      <RadioButton x:Name="TabletAuto" Content="Find It by Itself (Recommended)"/>
+      <RadioButton x:Name="TabletOn" Content="Yes: Its Pen Works Like the Mouse"/>
+      <RadioButton x:Name="TabletOff" Content="No: Pens Are Pens (Pen Screens: Cintiq, XP-Pen Artist, Huion Kamvas)"/>
+      <TextBlock x:Name="TabletText" Foreground="#8A95A6" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap" MaxWidth="520"/>
       <TextBlock Text="Toolbar" Foreground="#8A95A6" FontSize="12" Margin="0,8,0,2"/>
       <CheckBox x:Name="OptNames" Content="Show Button Names When the Mouse or Pen Rests on One"/>
     </StackPanel>

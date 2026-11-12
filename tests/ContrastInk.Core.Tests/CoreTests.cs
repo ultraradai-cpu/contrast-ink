@@ -568,19 +568,31 @@ public class LaserAndOpacityTests
     }
 }
 
-public class PenTabletSettingTests
+public class PenTabletTests
 {
+    [Theory]
+    [InlineData(TabletMode.Auto, 1, 0, true)]    // a Wacom Intuos or XP-Pen Deco alone: its pen is the mouse
+    [InlineData(TabletMode.Auto, 0, 1, false)]   // a Cintiq, an XP-Pen Artist, a Surface: the pen stays a pen
+    [InlineData(TabletMode.Auto, 1, 1, false)]   // both: the pen screen must keep working as before
+    [InlineData(TabletMode.Auto, 0, 0, false)]   // none (or a tablet with Windows Ink off: it is the mouse already)
+    [InlineData(TabletMode.On, 0, 1, true)]
+    [InlineData(TabletMode.Off, 1, 0, false)]
+    public void TabletPenIsTheMouseUnlessAPenScreenIsThere(TabletMode mode, int external, int integrated, bool mouse) =>
+        Assert.Equal(mouse, PenTablet.UseAsMouse(mode, external, integrated));
+
     [Fact]
-    public void OffUnlessChosenAndRemembered()
+    public void ModeIsAutoUnlessChosenAndRemembered()
     {
-        Assert.False(new Settings().PenTablet);
+        Assert.Equal(TabletMode.Auto, new Settings().PenTabletMode);
+        Assert.Equal(TabletMode.Auto, new Settings { PenTabletMode = (TabletMode)9 }.Clean(1).PenTabletMode);
         var path = Path.Combine(Path.GetTempPath(), $"ci-{Guid.NewGuid():N}.json");
         try
         {
-            new Settings { PenTablet = true }.Save(path);
-            Assert.True(Settings.Load(path, 1).PenTablet);
-            File.WriteAllText(path, "{\"Color\": 2}");   // saved by an older version
-            Assert.False(Settings.Load(path, 1).PenTablet);
+            new Settings { PenTabletMode = TabletMode.Off }.Save(path);
+            Assert.Equal(TabletMode.Off, Settings.Load(path, 1).PenTabletMode);
+            File.WriteAllText(path, "{\"Color\": 2, \"PenTablet\": true}");   // older versions (the first had a yes/no)
+            var old = Settings.Load(path, 1);
+            Assert.Equal((2, TabletMode.Auto), (old.Color, old.PenTabletMode));
         }
         finally { File.Delete(path); }
     }
