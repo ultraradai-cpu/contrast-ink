@@ -195,6 +195,79 @@ public partial class OverlayWindow : Window
         ? new DrawingAttributes { Color = color, Width = Settings.HighlighterWidth(width), Height = Settings.HighlighterWidth(width), IsHighlighter = true, IgnorePressure = true, FitToCurve = true }
         : new DrawingAttributes { Color = Color.FromArgb((byte)Math.Round(color.A * opacity), color.R, color.G, color.B), Width = width, Height = width, FitToCurve = tool == Tool.Pen, IgnorePressure = tool != Tool.Pen, StylusTip = StylusTip.Ellipse };
 
+    // ---------- a tablet used as a pad (PadServer): its strokes, drawn here so OBS records them ----------
+    Stroke? remote;            // the pen or highlighter line, or the arrow or oval, being drawn on the tablet
+    Pt remoteStart;
+    bool remoteErasing, remoteLaser;
+
+    Point FromPad(float fx, float fy) => new(fx * Ink.ActualWidth, fy * Ink.ActualHeight);
+
+    /// <summary>The tablet's pen touched, at fractions of this screen; <paramref name="eraserEnd"/>: its eraser end.</summary>
+    public void RemoteBegin(float fx, float fy, bool eraserEnd)
+    {
+        RemoteCancel();
+        var p = FromPad(fx, fy);
+        remoteErasing = eraserEnd || tool == Tool.Eraser;
+        remoteLaser = !remoteErasing && tool == Tool.Laser;
+        if (remoteErasing) { RemoteErase(p); return; }
+        if (remoteLaser) { LaserLayer.Down(p); return; }
+        remoteStart = new Pt(p.X, p.Y);
+        remote = new Stroke(Points(new[] { remoteStart, remoteStart })) { DrawingAttributes = Attributes() };
+        quiet = true;   // remembered for undo once, when it ends
+        try { Ink.Strokes.Add(remote); } finally { quiet = false; }
+    }
+
+    public void RemoteMove(IEnumerable<(float x, float y)> points)
+    {
+        foreach (var (fx, fy) in points)
+        {
+            var p = FromPad(fx, fy);
+            if (remoteErasing) RemoteErase(p);
+            else if (remoteLaser) LaserLayer.Move(p, touching: true);
+            else if (remote != null && tool is Tool.Arrow or Tool.Oval)
+            {
+                var end = new Pt(p.X, p.Y);
+                remote.StylusPoints = Points(tool == Tool.Arrow ? Shapes.Arrow(remoteStart, end, width) : Shapes.Oval(remoteStart, end));
+            }
+            else remote?.StylusPoints.Add(new StylusPoint(p.X, p.Y));
+        }
+    }
+
+    public void RemoteEnd()
+    {
+        if (remoteLaser) { LaserLayer.HideDot(); remoteLaser = false; }
+        remoteErasing = false;
+        if (remote == null) return;
+        var done = remote;
+        remote = null;
+        var b = done.GetBounds();
+        if (tool is Tool.Arrow or Tool.Oval && b.Width < 4 && b.Height < 4) { quiet = true; Ink.Strokes.Remove(done); quiet = false; return; }
+        Remember(true, new StrokeCollection { done });
+        StartFading(done);
+        Done(done);
+    }
+
+    /// <summary>A palm or a second finger on the tablet, or the tablet went: the stroke being drawn goes.</summary>
+    public void RemoteCancel()
+    {
+        if (remoteLaser) { LaserLayer.HideDot(); remoteLaser = false; }
+        remoteErasing = false;
+        if (remote == null) return;
+        quiet = true;
+        try { Ink.Strokes.Remove(remote); } finally { quiet = false; }
+        remote = null;
+    }
+
+    /// <summary>The tablet's pen above the glass: with the laser chosen, its dot follows.</summary>
+    public void RemoteHover(float fx, float fy) { if (tool == Tool.Laser) LaserLayer.Move(FromPad(fx, fy), touching: false); }
+    public void RemoteHoverEnd() { if (tool == Tool.Laser && !remoteLaser) LaserLayer.HideDot(); }
+
+    void RemoteErase(Point p)
+    {
+        var hit = Ink.Strokes.HitTest(p, 16);
+        if (hit.Count > 0) Ink.Strokes.Remove(hit);   // remembered for undo, like the eraser
+    }
+
     // ---------- laser pointer ----------
     void LaserDown(object sender, MouseButtonEventArgs e)
     {

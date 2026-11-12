@@ -75,6 +75,7 @@ static class Program
         var psi = new ProcessStartInfo(exe) { UseShellExecute = false };
         psi.Environment["CONTRASTINK_TEST"] = "1";
         psi.Environment["CONTRASTINK_STATUS"] = status;
+        psi.Environment["CONTRASTINK_TEST_PADCODE"] = PadCode;   // the tablet link, with a code this check knows
         if (runMode == "control") psi.Environment["CONTRASTINK_TEST_NOHIDE"] = "1";
         app = Process.Start(psi)!;
         startInfo = psi; statusPath = status;
@@ -296,11 +297,106 @@ static class Program
         SlidesAndUndo();
         RecordingWithObs();
         ToolbarAndPromises();
+        TabletPad(st);
 
         // still hidden at the end, after all of that
         dark = ToolbarDarkShare(Shot("13-end"), toolbar);
         Check(dark < 0.05, "at the end, a screen capture still does NOT show the toolbar", $"{dark:P1} toolbar colour");
         Log($"{(failures == 0 ? "ALL PASSED" : failures + " FAILED")}");
+    }
+
+    // ---------------------------------------------------------------- a tablet used as a pad
+    const string PadCode = "246810";
+
+    static byte[] PadPoint(float x, float y)
+    {
+        var b = new byte[8];
+        System.Buffers.Binary.BinaryPrimitives.WriteSingleBigEndian(b, x);
+        System.Buffers.Binary.BinaryPrimitives.WriteSingleBigEndian(b.AsSpan(4), y);
+        return b;
+    }
+
+    /// <summary>What the PC sends, until <paramref name="enough"/> says so or the time is up.</summary>
+    static List<(byte type, byte[] payload)> PadRead(System.Net.Sockets.NetworkStream s, PadReader r, Func<List<(byte type, byte[] payload)>, bool> enough, int ms)
+    {
+        var got = new List<(byte, byte[])>();
+        var buf = new byte[1 << 16];
+        var until = DateTime.UtcNow.AddMilliseconds(ms);
+        while (DateTime.UtcNow < until && !enough(got))
+        {
+            if (!s.DataAvailable) { Thread.Sleep(20); continue; }
+            int n = s.Read(buf, 0, buf.Length);
+            if (n <= 0) break;
+            got.AddRange(r.Add(buf.AsSpan(0, n)));
+        }
+        return got;
+    }
+
+    /// <summary>
+    /// A stand-in tablet, over the network as a real one would be: a wrong code is refused; the right one gets the
+    /// screen's picture, one after another as each is acknowledged; a line drawn on it appears on the screen; undo
+    /// and clear from it work; "next" turns the slide.
+    /// </summary>
+    static void TabletPad(JsonElement st)
+    {
+        int port = st.TryGetProperty("padPort", out var pp) ? pp.GetInt32() : 0;
+        Check(port > 0, "tablet link: the PC listens for a tablet", "port " + port);
+        if (port == 0) return;
+        try
+        {
+            using (var bad = new System.Net.Sockets.TcpClient("127.0.0.1", port))
+            {
+                var bs = bad.GetStream();
+                bs.Write(Pad.Message(Pad.Hello, "{\"code\":\"000000\",\"device\":\"check\",\"version\":1}"));
+                var m = PadRead(bs, new PadReader(), g => g.Count > 0, 5000);
+                Check(m.Any(x => x.type == Pad.Reject), "tablet link: a wrong code is refused", m.Count == 0 ? "no answer" : System.Text.Encoding.UTF8.GetString(m[0].payload));
+            }
+            using var c = new System.Net.Sockets.TcpClient("127.0.0.1", port);
+            var ns = c.GetStream();
+            var r = new PadReader();
+            ns.Write(Pad.Message(Pad.Hello, $"{{\"code\":\"{PadCode}\",\"device\":\"check\",\"version\":1}}"));
+            var got = PadRead(ns, r, g => g.Any(x => x.type == Pad.Frame) && g.Any(x => x.type == Pad.State), 8000);
+            var welcome = got.FirstOrDefault(x => x.type == Pad.Welcome);
+            Check(welcome.payload != null && JsonDocument.Parse(welcome.payload).RootElement.GetProperty("screenW").GetInt32() == screen.Width,
+                  "tablet link: the right code is welcomed, with the screen's size", welcome.payload == null ? "no WELCOME" : System.Text.Encoding.UTF8.GetString(welcome.payload));
+            var frame = got.FirstOrDefault(x => x.type == Pad.Frame);
+            Size size = default;
+            if (frame.payload != null) using (var img = Image.FromStream(new MemoryStream(frame.payload))) size = img.Size;
+            Check(size.Width > 100 && Math.Abs((double)size.Width / size.Height - (double)screen.Width / screen.Height) < 0.02,
+                  "tablet link: the tablet gets a picture of the screen", $"{(frame.payload?.Length ?? 0) / 1024} KB, {size.Width} x {size.Height}");
+            ns.Write(Pad.Message(Pad.FrameAck, ReadOnlySpan<byte>.Empty));
+            var next = PadRead(ns, r, g => g.Any(x => x.type == Pad.Frame), 3000);
+            Check(next.Any(x => x.type == Pad.Frame), "tablet link: the next picture comes once the last is acknowledged", $"{next.Count} messages");
+
+            // a red line drawn on the tablet, across the middle of the screen
+            ns.Write(Pad.Message(Pad.Command, "clear"));
+            ns.Write(Pad.Message(Pad.Command, "tool:pen"));
+            ns.Write(Pad.Message(Pad.Command, "color:0"));
+            float fy = (float)(Row(5) - screen.Top) / screen.Height;
+            ns.Write(Pad.Message(Pad.StrokeBegin, PadPoint(0.2f, fy).Concat(new byte[] { 0 }).ToArray()));
+            var pts = new List<byte> { 0, 10 };
+            for (int i = 1; i <= 10; i++) pts.AddRange(PadPoint(0.2f + 0.04f * i, fy));
+            ns.Write(Pad.Message(Pad.StrokePoints, pts.ToArray()));
+            ns.Write(Pad.Message(Pad.StrokeEnd, ReadOnlySpan<byte>.Empty));
+            Thread.Sleep(600);
+            var red = ColorTranslator.FromHtml(Settings.Colors[0]);
+            int mx = screen.Left + (int)(screen.Width * 0.4);
+            var drawn = Closest(Shot("40-tablet-line"), mx, Row(5), red, 6);
+            Check(Diff(drawn, red) <= 40, "tablet link: a line drawn on the tablet appears on the screen", Hex(drawn));
+            ns.Write(Pad.Message(Pad.Command, "undo"));
+            Thread.Sleep(500);
+            var undone = Closest(Shot("41-tablet-undo"), mx, Row(5), red, 6);
+            Check(IsWhite(undone), "tablet link: undo on the tablet takes it away", Hex(undone));
+
+            int k0 = slide.Keys.Count;
+            ns.Write(Pad.Message(Pad.Command, "next"));
+            Thread.Sleep(500);
+            Check(slide.Keys.Skip(k0).Contains(Keys.Right), "tablet link: next on the tablet turns the slide", "keys seen: " + string.Join(",", slide.Keys.Skip(k0)));
+        }
+        catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException or JsonException or ArgumentException)
+        {
+            Check(false, "tablet link: the stand-in tablet's conversation", e.Message);
+        }
     }
 
     // ---------------------------------------------------------------- undo, every way, and marks for each slide

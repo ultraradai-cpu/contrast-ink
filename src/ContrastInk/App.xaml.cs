@@ -32,6 +32,7 @@ public partial class App : Application
     string? tabletFound;              // the tablets Windows reported, by name
     DateTime quitWarned;   // ✕ pressed while recording: a second press within 15 s quits
     InputHooks? hooks;
+    PadServer? pad;   // a tablet used as a pad, when switched on (⚙ Settings)
     List<Native.Monitor> monitors = new();
     bool ctrl, shift, alt, win;
     readonly HashSet<int> swallowed = new();   // keys we kept from PowerPoint: their key-up is kept too
@@ -98,6 +99,10 @@ public partial class App : Application
                 if (ev.Mode == Microsoft.Win32.PowerModes.Resume) Dispatcher.BeginInvoke(() => { hooks?.Reinstall(); mode.Escape(); });
             };
 
+            // the tablet link: switched on in ⚙ Settings; the Windows check starts it with a code it knows
+            if (Environment.GetEnvironmentVariable("CONTRASTINK_TEST_PADCODE") is { Length: 6 } testCode) StartPad(testCode);
+            else if (settings.TabletPad) StartPad();
+
             // PowerPoint's slide show likes to come to the front: stay above it
             // test runs: say what Windows answered, for the Windows check to read (never written in normal use)
             if (Environment.GetEnvironmentVariable("CONTRASTINK_STATUS") is { Length: > 0 } statusPath)
@@ -111,7 +116,8 @@ public partial class App : Application
                          + ",\"windowsBuild\":" + Environment.OSVersion.Version.Build
                          + ",\"dpi\":" + Native.Dpi(overlay)
                          + ",\"overlay\":[" + o.Left + "," + o.Top + "," + o.Right + "," + o.Bottom + "]"
-                         + ",\"toolbar\":[" + t.Left + "," + t.Top + "," + t.Right + "," + t.Bottom + "]}";
+                         + ",\"toolbar\":[" + t.Left + "," + t.Top + "," + t.Right + "," + t.Bottom + "]"
+                         + ",\"padPort\":" + (pad?.Port ?? 0) + "}";
                 }
                 catch (Exception ex) { json = "{\"error\":" + System.Text.Json.JsonSerializer.Serialize(ex.ToString()) + "}"; }
                 try { File.WriteAllText(statusPath, json); } catch (Exception ex) { Log(ex); }
@@ -141,6 +147,7 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         hooks?.Dispose();
+        pad?.Dispose();
         settings.Save(SettingsPath);
         single?.Dispose();
         base.OnExit(e);
@@ -170,6 +177,7 @@ public partial class App : Application
             typeof(Settings).GetProperty(name)!.SetValue(settings, on);
             if (name == nameof(Settings.UndoButtonByPen) && !on) undoButton.Park();
             if (name == nameof(Settings.MarksPerSlide) && on && slides != null) overlay.ShowPage(slides.Current);
+            if (name == nameof(Settings.TabletPad)) { if (on) StartPad(); else StopPad(); }
 
             ApplySettings();
         };
@@ -207,6 +215,65 @@ public partial class App : Application
         overlay.SetPenEraserEnd(settings.PenEraserEnd);
         settings.Save(SettingsPath);
         Refresh();
+        pad?.SendState(settings, overlay.CanUndo);
+    }
+
+    // ---------- a tablet used as a pad ----------
+
+    /// <summary>Listens for a tablet (switched on in ⚙ Settings, or by the Windows check with its own code).</summary>
+    void StartPad(string? code = null)
+    {
+        if (pad != null) return;
+        pad = new PadServer(Dispatcher, () => monitors.Count == 0 ? default : monitors[Math.Clamp(settings.Screen, 0, monitors.Count - 1)].Bounds, code);
+        pad.Received += OnPad;
+        pad.ConnectionChanged += name =>
+        {
+            overlay.RemoteCancel();
+            if (name != null) pad?.SendState(settings, overlay.CanUndo);
+            toolbar.Notice(name != null ? $"Tablet connected ({name}): what you draw on it appears here." : "The tablet disconnected.");
+            ShowPad();
+        };
+        try { pad.Start(); }
+        catch (Exception e) { Log(e); pad.Dispose(); pad = null; toolbar.Notice("The tablet link couldn't start: " + e.Message); }
+        ShowPad();
+    }
+
+    void StopPad() { pad?.Dispose(); pad = null; overlay.RemoteCancel(); ShowPad(); }
+
+    void ShowPad() => toolbar.ShowPad(pad == null ? null
+        : pad.Connected != null ? $"Connected: {pad.Connected}."
+        : $"On the tablet: Contrast Ink → Use as a pad → {Environment.MachineName}, code {pad.Code}."
+          + (PadServer.Addresses() is { Count: > 0 } a ? $" Or type the address {a[0]}" + (pad.Port != Pad.Port ? $":{pad.Port}" : "") + "." : "")
+          + " (Windows may ask to let Contrast Ink use the network: allow it on private networks.)");
+
+    void OnPad(byte type, byte[] payload)
+    {
+        switch (type)
+        {
+            case Pad.StrokeBegin when Pad.ReadBegin(payload) is { } b: overlay.RemoteBegin(b.x, b.y, b.eraserEnd); break;
+            case Pad.StrokePoints: overlay.RemoteMove(Pad.ReadPoints(payload)); break;
+            case Pad.StrokeEnd: overlay.RemoteEnd(); pad?.SendState(settings, overlay.CanUndo); break;
+            case Pad.StrokeCancel: overlay.RemoteCancel(); break;
+            case Pad.Hover when Pad.ReadHover(payload) is { } h: overlay.RemoteHover(h.x, h.y); break;
+            case Pad.HoverEnd: overlay.RemoteHoverEnd(); break;
+            case Pad.Command when Pad.ReadCommand(payload) is { } c: PadCommand(c); break;
+        }
+    }
+
+    void PadCommand(PadCommand c)
+    {
+        switch (c.Action)
+        {
+            case PadAction.Undo: Undo(); pad?.SendState(settings, overlay.CanUndo); break;
+            case PadAction.Clear: overlay.ClearAll(); pad?.SendState(settings, overlay.CanUndo); break;
+            case PadAction.Next: Native.PressKey(Native.VK_RIGHT); break;      // the app in front turns the page
+            case PadAction.Previous: Native.PressKey(Native.VK_LEFT); break;
+            case PadAction.Fade: settings.FadingInk = c.Value == 1; ApplySettings(); break;
+            case PadAction.Tool: SetTool((Tool)c.Value); break;
+            case PadAction.Color: SetColor(c.Value); break;
+            case PadAction.Width: settings.Width = c.Value; ApplySettings(); break;
+            case PadAction.Opacity: settings.Opacity = c.Amount; ApplySettings(); break;
+        }
     }
 
     void Undo()
