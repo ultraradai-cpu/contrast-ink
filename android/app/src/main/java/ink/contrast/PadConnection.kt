@@ -41,6 +41,12 @@ class PadConnection(
     /** The key the presenter chose "Connect anyway" for, after the warning that the PC's key changed; or null. */
     private val acceptAnyway: ByteArray?,
     private val listener: Listener,
+    /**
+     * Over the USB cable (docs/pad-protocol.md, "USB (phase 2)"): to 127.0.0.1:47830, which `adb reverse` on the PC
+     * carries to it; the code is empty and a PC met the first time isn't asked about. Tried every 2 s, so a try
+     * that finds nothing (refused at once when the cable or the PC isn't there) leaves nothing in the log.
+     */
+    val overCable: Boolean = false,
 ) {
     interface Listener {
         /**
@@ -83,7 +89,7 @@ class PadConnection(
     private val main = Handler(Looper.getMainLooper())
     private val writer = Executors.newSingleThreadExecutor { Thread(it, "pad-writer") }
     private val timer: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { Thread(it, "pad-timer") }
-    private val client = PadClient(code, device)
+    private val client = PadClient(code, device, overCable = overCable)
     private val closed = AtomicBoolean(false)
     @Volatile private var socket: Socket? = null
     @Volatile private var out: OutputStream? = null
@@ -144,7 +150,7 @@ class PadConnection(
             val s = Socket()
             socket = s
             s.tcpNoDelay = true   // strokes are small messages that must leave at once, not wait to be batched
-            s.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
+            s.connect(InetSocketAddress(host, port), if (overCable) CABLE_CONNECT_TIMEOUT_MS else CONNECT_TIMEOUT_MS)
             connected = true
             if (closed.get()) { s.close(); return }
             out = s.getOutputStream()
@@ -244,7 +250,8 @@ class PadConnection(
     private fun fail(end: End, e: Exception?) {
         if (!closed.compareAndSet(false, true)) return
         // the detail is for the log (adb logcat); the presenter gets a plain sentence (PadActivity)
-        Log.w(TAG, "pad link to $host:$port ended: ${end.why}", e)
+        // a try over the cable that found no PC (every 2 s while unplugged) is not worth a line
+        if (!overCable || welcomed || end.why == Why.KEY_CHANGED) Log.w(TAG, "pad link to $host:$port ended: ${end.why}", e)
         shutdown()
         main.post { listener.onClosed(this, end) }
     }
@@ -262,6 +269,8 @@ class PadConnection(
     companion object {
         const val TAG = "ContrastInkPad"
         const val CONNECT_TIMEOUT_MS = 5000
+        /** 127.0.0.1 answers at once (or refuses at once): a longer wait would only hold up the next try. */
+        const val CABLE_CONNECT_TIMEOUT_MS = 1500
         const val PING_MS = 2000L
         const val SILENCE_MS = 6000L
         /** How long the first-time PC check waits for the presenter (the PC waits 30 s for the PROOF). */

@@ -33,7 +33,9 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import ink.contrast.core.PadCrypto
+import ink.contrast.core.PadLinks
 import ink.contrast.core.PadProtocol
 import ink.contrast.core.PcMessage
 import ink.contrast.core.Tool
@@ -49,6 +51,11 @@ import java.util.concurrent.RejectedExecutionException
  * Two screens: finding the PC (the PCs found on the network, or an address typed by hand, and the 6-digit code
  * the PC shows), then the pad itself (the picture, the glass to draw on, and a toolbar). The link is version 2:
  * encrypted, the code never sent, and each PC recognised by its key (PadConnection).
+ *
+ * The USB cable (docs/pad-protocol.md, "USB (phase 2)"): with USB debugging on and the PC's `adb reverse`, the
+ * tablet's 127.0.0.1:47830 reaches the PC. It is tried every 2 s on both screens; once open, it takes over from
+ * Wi-Fi, and when it drops the pad goes back to Wi-Fi by itself (with the code typed earlier) or to the connect
+ * screen. Which link to use is decided by PadLinks (core, tested on the JVM).
  */
 @SuppressLint("SetTextI18n")
 class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
@@ -105,9 +112,24 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
     private lateinit var lostText: TextView
     private lateinit var lostDetail: TextView
 
+    /** The Wi-Fi connection (open or being opened). */
     private var connection: PadConnection? = null
+    /** The connection over the USB cable (a try, or open). */
+    private var usbConnection: PadConnection? = null
+    /** Which link is used, and the code held for this session (in memory only). */
+    private val links = PadLinks()
+    /** The PC's name over the cable, from its CHALLENGE (shown once it is open). */
+    private var usbPcName = ""
+    /** The key the presenter said to connect to anyway over the cable. */
+    private var usbAcceptAnyway: ByteArray? = null
+    /** The "not the PC you paired with" warning is about the PC on the cable (Connect anyway tries the cable). */
+    private var changedOnCable = false
+    private val usbTry = object : Runnable {
+        override fun run() { tryUsb(); main.postDelayed(this, PadLinks.USB_TRY_MS) }
+    }
+    /** The connection the pad draws through: the cable's while it is open, else Wi-Fi's. */
+    private val active get() = if (links.usb == PadLinks.Usb.OPEN) usbConnection else connection
     private var target: Pair<String, Int>? = null
-    private var code = ""
     /** The key the presenter said to connect to anyway (after the "not the PC you paired with" warning). */
     private var acceptAnyway: ByteArray? = null
     private var changedKey: ByteArray? = null
@@ -171,6 +193,7 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
         addressField.setText(intent.getStringExtra(EXTRA_ADDRESS) ?: prefs.getString("pad.address", ""))
         codeField.setText(intent.getStringExtra(EXTRA_CODE) ?: "")
         if (intent.hasExtra(EXTRA_ADDRESS) && intent.hasExtra(EXTRA_CODE)) connect() else showConnect(null)
+        main.post(usbTry)   // the cable, from now until the pad closes
     }
 
     override fun onResume() {
@@ -188,8 +211,11 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
     override fun onDestroy() {
         super.onDestroy()
         main.removeCallbacks(retry)
+        main.removeCallbacks(usbTry)
         connection?.close()
         connection = null
+        usbConnection?.close()
+        usbConnection = null
         decoder.shutdownNow()
     }
 
@@ -213,12 +239,25 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
         }
         col.addView(text("Use this tablet as a pad", 26f, bold = true))
         col.addView(text("On the PC, open Contrast Ink and tick ⚙ Settings → Let a Tablet Draw Here: it shows a 6-digit code. Both must be on the same Wi-Fi.", 15f))
+        col.addView(text("Or plug the tablet into the PC with a USB cable (USB debugging on): the pad opens by itself, no code needed.", 15f).apply {
+            setTextColor(grey)
+        })
         statusText = text("", 15f).apply { setTextColor(warn); visibility = View.GONE }
         col.addView(statusText)
         anywayButton = button("Connect anyway") {
             // the presenter knows the PC was reinstalled: this key, and only this one, is let through
-            acceptAnyway = changedKey
-            connect()
+            if (changedOnCable) {
+                changedOnCable = false
+                usbAcceptAnyway = changedKey
+                links.connectAnywayOverUsb()
+                statusText.text = "Connecting over the USB cable…"
+                statusText.setTextColor(light)
+                anywayButton.visibility = View.GONE
+                tryUsb()
+            } else {
+                acceptAnyway = changedKey
+                connect()
+            }
         }.apply { visibility = View.GONE }
         col.addView(anywayButton)
         col.addView(space(8))
@@ -265,6 +304,7 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
             hideCheck()
             connection?.decline()
             connection = null
+            links.wifiEnded()
             showConnect("Don't connect: this may not be your PC.")
         }
         return LinearLayout(this).apply {
@@ -302,6 +342,7 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
 
     /** From the connect screen: a PC chosen afresh. Its picture starts empty (not the last PC's). */
     private fun connect() {
+        links.resumeUsb()   // a cable paused by Disconnect is tried again too
         val address = addressField.text.toString().trim()
         val c = codeField.text.toString().trim()
         val t = PadProtocol.parseAddress(address)
@@ -311,7 +352,7 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
         }
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString("pad.address", address).apply()
         target = t
-        code = c
+        links.chooseWifi(c)
         // a PC tapped in the list (and its address left as it was) is remembered under its network name
         chosenName = picked?.takeIf { it.first == address }?.second
         retries = 0
@@ -321,10 +362,15 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
         open()
     }
 
+    /** Opens the Wi-Fi connection with the code held (never while the cable is open). */
     private fun open() {
         val (host, port) = target ?: return
         main.removeCallbacks(retry)
         connection?.close()
+        connection = null
+        links.wifiEnded()
+        val code = links.code ?: return
+        if (!links.startWifi()) return
         if (connectScreen.visibility == View.VISIBLE) {
             statusText.text = "Connecting to $host:$port…"
             statusText.setTextColor(light)
@@ -332,15 +378,51 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
             anywayButton.visibility = View.GONE
             connectButton.isEnabled = false
         }
-        val name = Build.MODEL?.takeIf { it.isNotBlank() } ?: "Android tablet"
-        connection = PadConnection(host, port, code, name, pins, chosenName, acceptAnyway, this).also { it.start() }
+        connection = PadConnection(host, port, code, deviceName(), pins, chosenName, acceptAnyway, this).also { it.start() }
+    }
+
+    private fun deviceName() = Build.MODEL?.takeIf { it.isNotBlank() } ?: "Android tablet"
+
+    /** A quiet try over the USB cable, when nothing is open or under way over it. */
+    private fun tryUsb() {
+        if (isFinishing || !links.tryUsb()) return
+        usbConnection = PadConnection(PadProtocol.USB_HOST, PadProtocol.USB_PORT, "", deviceName(), pins, null,
+            usbAcceptAnyway, this, overCable = true).also { it.start() }
+    }
+
+    /** The cable's connection ended: a try that found nothing is quiet; an open session hands back to Wi-Fi or the connect screen. */
+    private fun usbEnded(end: PadConnection.End) {
+        if (isFinishing) return
+        when (links.usbEnded(keyChanged = end.why == PadConnection.Why.KEY_CHANGED)) {
+            PadLinks.Then.BACK_TO_WIFI -> {
+                // as after a Wi-Fi blip: quietly, with the code typed earlier, the pad and its picture staying
+                retries = 0
+                reconnecting = true
+                updateTitle()
+                open()
+            }
+            PadLinks.Then.CONNECT_SCREEN -> showConnect("The USB connection to the PC ended. Plug the cable back in, or type the code to connect over Wi-Fi.")
+            PadLinks.Then.WARN_KEY_CHANGED -> {
+                changedKey = end.pcKey
+                val check = end.pcKey?.let { PadCrypto.pcCheck(it) } ?: "?"
+                val warning = "The PC on the USB cable is not the PC you paired with as “${end.pcName}”: its PC check is now $check. " +
+                    "If you didn't reinstall Contrast Ink on it, don't connect."
+                if (padScreen.visibility == View.VISIBLE || connection != null) {
+                    Toast.makeText(this, warning, Toast.LENGTH_LONG).show()   // the Wi-Fi session goes on
+                } else {
+                    changedOnCable = true
+                    showConnect(warning, keyChanged = true)
+                }
+            }
+            else -> {}
+        }
     }
 
     // ---- the pad ----
 
     private fun buildPadScreen(): LinearLayout {
         pad = PadView(this, this)
-        toolbar = PadToolbar(this) { connection?.send(PadProtocol.command(it)) }
+        toolbar = PadToolbar(this) { active?.send(PadProtocol.command(it)) }
         // the title row: Disconnect on the left, far from the toolbar's Next slide, and the PC's name
         titleText = text("", 15f).apply {
             setPadding((12 * dp).toInt(), 0, (12 * dp).toInt(), 0)
@@ -365,7 +447,7 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
             addView(lostText)
             addView(lostDetail)
             addView(button("Reconnect") { lostText.text = "Reconnecting…"; lostDetail.text = ""; retries = 0; open() })
-            addView(button("Choose another PC") { connection?.close(); connection = null; showConnect(null) })
+            addView(button("Choose another PC") { disconnect() })
             visibility = View.GONE
             isClickable = true   // the glass under it takes no strokes while the PC is gone
         }
@@ -387,6 +469,7 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
         val name = pcName.ifEmpty { "the PC" }
         titleText.text = when {
             reconnecting -> "Reconnecting to $name…"
+            links.usb == PadLinks.Usb.OPEN -> "$name · By the USB cable"
             else -> name
         }
         titleText.contentDescription = titleText.text
@@ -394,16 +477,23 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
     }
 
     private fun disconnect() {
+        // the code is forgotten; a USB session closed here isn't tried again until Connect (it would just reopen)
+        if (links.disconnect()) { usbConnection?.close(); usbConnection = null }
         connection?.close()
         connection = null
         showConnect(null)
     }
 
-    override fun send(bytes: ByteArray) { connection?.send(bytes) }
+    override fun send(bytes: ByteArray) { active?.send(bytes) }
 
-    override fun frameShown() { connection?.send(PadProtocol.frameAck()) }
+    override fun frameShown() { active?.send(PadProtocol.frameAck()) }
 
     override fun onPc(c: PadConnection, name: String, pcCheck: String, needsCheck: Boolean) {
+        if (c === usbConnection) {
+            usbPcName = name
+            usbAcceptAnyway = null   // used once: from now on the new key is the one remembered
+            return
+        }
         if (c !== connection) return
         pcName = name
         acceptAnyway = null   // used once: from now on the new key is the one remembered
@@ -418,7 +508,18 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
     }
 
     override fun onMessage(c: PadConnection, m: PcMessage) {
-        if (c !== connection) return
+        if (c === usbConnection && m is PcMessage.Welcome) {
+            // the cable takes over: the Wi-Fi session closes and Wi-Fi isn't tried while the cable lasts
+            if (connectScreen.visibility == View.VISIBLE) pad.clearPicture()
+            links.usbOpened()
+            main.removeCallbacks(retry)
+            connection?.close()
+            connection = null
+            hideCheck()
+            stopDiscovery()
+            pcName = usbPcName
+        }
+        if (c !== active) return
         when (m) {
             is PcMessage.Welcome -> {
                 if (m.screenW > 0 && m.screenH > 0) { pad.screenW = m.screenW; pad.screenH = m.screenH }
@@ -452,7 +553,7 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
                 val b = try { decode(jpeg) } catch (t: Throwable) { Log.w(PadConnection.TAG, "picture not shown", t); null }
                 runOnUiThread {
                     decoding = false
-                    if (connection !== from) return@runOnUiThread
+                    if (active !== from) return@runOnUiThread
                     if (b != null) pad.showPicture(b) else frameShown()   // a picture we can't show: ask for the next
                 }
             }
@@ -483,8 +584,10 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
     }
 
     override fun onClosed(c: PadConnection, end: PadConnection.End) {
+        if (c === usbConnection) { usbConnection = null; usbEnded(end); return }
         if (c !== connection) return   // an old connection's end: a newer one is already running
         connection = null
+        links.wifiEnded()
         if (isFinishing) return
         hideCheck()
         val inSession = padScreen.visibility == View.VISIBLE
@@ -492,6 +595,7 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
             end.why == PadConnection.Why.CHECK_TIMEOUT -> showConnect(sentence(end))
             end.why == PadConnection.Why.KEY_CHANGED -> {
                 changedKey = end.pcKey
+                changedOnCable = false
                 val check = end.pcKey?.let { PadCrypto.pcCheck(it) } ?: "?"
                 showConnect("This is not the PC you paired with as “${end.pcName}”: its PC check is now $check. " +
                     "If you didn't reinstall Contrast Ink on it, don't connect.", keyChanged = true)
@@ -510,7 +614,10 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
                 lostDetail.text = sentence(end)
                 lostPanel.visibility = View.VISIBLE
             }
-            else -> showConnect(sentence(end))
+            else -> {
+                if (end.why == PadConnection.Why.REJECTED) links.codeRefused()   // not worth going back to after the cable
+                showConnect(sentence(end))
+            }
         }
     }
 
@@ -531,7 +638,7 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
     // ---- finding PCs (DNS-SD, "_contrastink._tcp") ----
 
     private fun startDiscovery() {
-        if (discovering != null || connection != null) return
+        if (discovering != null || connection != null || links.usb == PadLinks.Usb.OPEN) return
         val manager = getSystemService(Context.NSD_SERVICE) as? NsdManager ?: return
         nsd = manager
         // many phones and tablets drop multicast packets (mDNS) to save battery unless an app holds this lock

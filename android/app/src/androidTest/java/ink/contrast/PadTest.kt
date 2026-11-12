@@ -48,6 +48,8 @@ import java.util.concurrent.TimeUnit
  * picture shows, a swipe reaches the PC as a stroke in fractions of the picture, the toolbar's buttons reach it as
  * commands, a dropped link comes back, a wrong code shows the PC's words, and a PC whose key changed is stopped.
  * The first time with a PC, nothing goes after HELLO until the presenter says its PC check matches.
+ * The USB cable is stood in for by a fake PC on this device's 127.0.0.1:47830, where the PC's `adb reverse` puts it:
+ * the pad opens over it with no code typed, it takes over from Wi-Fi, and Wi-Fi comes back when it goes.
  * Screenshots of each step are kept.
  */
 @RunWith(AndroidJUnit4::class)
@@ -57,6 +59,8 @@ class PadTest {
     private val ctx = inst.targetContext
     private val shots = File(ctx.getExternalFilesDir(null), "shots")
     private lateinit var pc: FakePc
+    /** The PC at the other end of the USB cable, when a test starts one. */
+    private var cable: FakePc? = null
 
     /** A message from the tablet (opened, when it came sealed). */
     class Msg(val type: Int, val payload: ByteArray) {
@@ -76,9 +80,16 @@ class PadTest {
         private val privateKey: PrivateKey = PadCrypto.privateKey(ByteArray(32) { 0x22 }),
         val publicKey: ByteArray = VECTOR_PC_KEY,
         private val name: String = "TEST-PC",
+        /** 0: any free port (a PC on "Wi-Fi"); [PadProtocol.USB_PORT]: the PC at the other end of the USB cable. */
+        port: Int = 0,
     ) {
-        val server = ServerSocket(0, 4, InetAddress.getByName("127.0.0.1"))
+        val server = ServerSocket().apply {
+            reuseAddress = true   // the cable's port, again in the next test
+            bind(java.net.InetSocketAddress(InetAddress.getByName("127.0.0.1"), port), 4)
+        }
         val got = LinkedBlockingQueue<Msg>()
+        /** One entry each time a welcomed session ends (the tablet closed it, or the test dropped it). */
+        val ended = LinkedBlockingQueue<Long>()
         /** Accept a connection and close it at once (the PC not answering), to see "Lost the PC". */
         @Volatile var refuse = false
         @Volatile private var session: Session? = null
@@ -112,6 +123,7 @@ class PadTest {
         }
 
         private fun serve(s: Socket) {
+            var welcomed = false
             try {
                 val input = DataInputStream(s.getInputStream())
                 fun read(): Msg {
@@ -144,6 +156,7 @@ class PadTest {
                 val old = session
                 session = me   // the right code replaces a connected tablet (the same one, back after a drop)
                 try { old?.socket?.close() } catch (e: IOException) {}
+                welcomed = true
                 sealed(me, PadProtocol.message(PadProtocol.WELCOME,
                     """{"name":"$name","screenW":1600,"screenH":900,"version":2}""".toByteArray()))
                 sealed(me, state(0))
@@ -168,6 +181,7 @@ class PadTest {
                     }
                 }
             } catch (e: IOException) { /* the tablet left, or the test closed it */ }
+            finally { if (welcomed) ended += System.currentTimeMillis() }
         }
 
         private fun sealed(to: Session, message: ByteArray) = synchronized(to) {
@@ -220,6 +234,7 @@ class PadTest {
             Stage.values().flatMap { monitor.getActivitiesInStage(it) }.filterIsInstance<PadActivity>().forEach { it.finish() }
         }
         pc.close()
+        cable?.close()
     }
 
     /** The pad on screen (found through the test runner's record of activities, not a field in the app). */
@@ -247,6 +262,14 @@ class PadTest {
         assertNotNull("the first time, the PC check is asked about before anything else is sent", device.wait(Until.findObject(
             By.text("First time with TEST-PC: does the PC show the PC check $check? (⚙ Settings, beside the code)")), 8000))
         assertNull("nothing is sent after HELLO while the check is open", pc.got.poll(2, TimeUnit.SECONDS))
+    }
+
+    /** The pad with nothing typed: the connect screen (and the cable, tried every 2 s). */
+    private fun openPadEmpty() {
+        prefs.edit().remove("pad.address").commit()
+        ctx.startActivity(Intent(ctx, PadActivity::class.java)
+            .putExtra(PadActivity.EXTRA_TEST_SCREENSHOTS, true)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
     }
 
     private fun press(name: String) {
@@ -403,5 +426,53 @@ class PadTest {
             By.text("Took too long: tap Connect again.")), PadConnection.CHECK_WAIT_MS + 8000))
         assertNull("nothing was sent after HELLO", pc.got.poll(1, TimeUnit.SECONDS))
         assertNull("the question is gone", device.findObject(By.desc("It matches")))
+    }
+
+    @Test fun theUsbCableOpensThePadWithNoCodeTyped() {
+        val usb = FakePc("", port = PadProtocol.USB_PORT).also { cable = it }
+        openPadEmpty()
+        assertNotNull("the tablet tries the cable by itself (HELLO)", usb.next(PadProtocol.HELLO, 10000))
+        assertNotNull("no PC check question over the cable: the PROOF at once, made with the empty code", usb.next(PadProtocol.PROOF))
+        assertNotNull("the pictures come", usb.next(PadProtocol.FRAME_ACK))
+        assertNotNull("the title says the cable", device.wait(Until.findObject(By.text("TEST-PC · By the USB cable")), 4000))
+        assertNull("nothing was asked", device.findObject(By.desc("It matches")))
+        assertArrayEquals("the PC's key is remembered under its own name", FakePc.VECTOR_PC_KEY,
+            Base64.getDecoder().decode(prefs.getString(PadActivity.PIN_PREFIX + "TEST-PC", "")))
+        device.waitForIdle()
+        shot("27 by the USB cable")
+
+        // unplugged, with no code typed this session: the connect screen
+        usb.close()
+        assertNotNull("back to the connect screen", device.wait(Until.findObject(By.desc("Connect")), 10000))
+        assertNotNull("saying why", device.findObject(By.textStartsWith("The USB connection to the PC ended.")))
+    }
+
+    @Test fun theCableTakesOverFromWifiAndHandsBack() {
+        openPad("123456")
+        assertNotNull(pc.next(PadProtocol.HELLO))
+        firstTimeCheckShows()
+        press("It matches")
+        assertNotNull("connected over Wi-Fi", pc.next(PadProtocol.FRAME_ACK))
+        assertNotNull(device.wait(Until.findObject(By.text("TEST-PC")), 4000))
+
+        // plugged in: the cable takes over (the same PC: its key is known, nothing asked)
+        val usb = FakePc("", port = PadProtocol.USB_PORT).also { cable = it }
+        assertNotNull("the tablet tries the cable (HELLO)", usb.next(PadProtocol.HELLO, 10000))
+        assertNotNull("PROOF over the cable", usb.next(PadProtocol.PROOF))
+        assertNotNull("pictures over the cable", usb.next(PadProtocol.FRAME_ACK))
+        assertNotNull("the tablet closed its Wi-Fi session", pc.ended.poll(5, TimeUnit.SECONDS))
+        assertNotNull("the title says the cable", device.wait(Until.findObject(By.text("TEST-PC · By the USB cable")), 4000))
+        pc.got.clear()
+        assertNull("no Wi-Fi tries while the cable is open", pc.next(PadProtocol.HELLO, 5000))
+        shot("28 the cable took over")
+
+        // unplugged: back to Wi-Fi by itself, with the code typed earlier
+        usb.close()
+        assertNotNull("the tablet says HELLO on Wi-Fi again by itself", pc.next(PadProtocol.HELLO, 10000))
+        assertNotNull("the code it held gets it back in (PROOF)", pc.next(PadProtocol.PROOF))
+        assertNotNull("and the pictures come back over Wi-Fi", pc.next(PadProtocol.FRAME_ACK))
+        assertNotNull("the title no longer says the cable", device.wait(Until.findObject(By.text("TEST-PC")), 4000))
+        assertNull("no \"Lost the PC\"", device.findObject(By.text("Lost the PC")))
+        shot("29 back on Wi-Fi")
     }
 }

@@ -9,10 +9,21 @@ package ink.contrast.core
  *   for a PC it knows, or once the presenter [confirm]s the PC check the first time → the PC's WELCOME (sealed) →
  *   [seal] / [receive] both ways.
  *
+ * [overCable]: the link goes through the USB cable (docs/pad-protocol.md, "USB (phase 2)"): the code is empty, and a
+ * PC met for the first time gets its PROOF at once (the cable is the proof of being in the room), while a
+ * remembered key that differs still stops, as on Wi-Fi.
+ *
  * Threads: [proof] and [seal] are called from the one thread that writes, [receive] from the one that reads; each
  * direction's seal is only ever used by its own thread.
  */
-class PadClient(private val code: String, private val device: String, private val own: PadCrypto.KeyPair = PadCrypto.newKeyPair()) {
+class PadClient(
+    private val code: String,
+    private val device: String,
+    private val own: PadCrypto.KeyPair = PadCrypto.newKeyPair(),
+    private val overCable: Boolean = false,
+) {
+    init { require(!overCable || code.isEmpty()) { "over the USB cable the code is empty" } }
+
     enum class Phase {
         HELLO, CHALLENGED,
         /** A PC met for the first time: nothing is sent until the presenter says its PC check matches ([confirm]). */
@@ -42,7 +53,7 @@ class PadClient(private val code: String, private val device: String, private va
     /**
      * The CHALLENGE's key against [remembered], the key kept for this PC's name (null: never met).
      * [acceptAnyway]: the key the presenter chose "Connect anyway" for, after the warning; it is checked like a new PC.
-     * A PC met before goes on at once; a new one waits for the presenter to compare the PC check, so a machine
+     * A PC met before goes on at once (and a new one over the cable); a new one on Wi-Fi waits for the presenter to compare the PC check, so a machine
      * pretending to be the PC never gets a PROOF to try codes against; a changed key stops here.
      */
     fun answer(c: PcMessage.Challenge, remembered: ByteArray?, acceptAnyway: ByteArray? = null): Answer {
@@ -52,6 +63,7 @@ class PadClient(private val code: String, private val device: String, private va
             PcKey.CHANGED -> { phase = Phase.STOPPED; Answer.Changed }
             PcKey.NEW -> {
                 if (PadCrypto.readPoint(c.key) == null) throw PadProtocolException("The PC's key isn't a P-256 public key")
+                if (overCable) return Answer.Proof(proof(c))   // no "It matches" over the cable
                 challenge = c
                 phase = Phase.AWAITING_CHECK
                 Answer.Check(PadCrypto.pcCheck(c.key))
