@@ -64,6 +64,9 @@ class MainActivity : Activity() {
             refresh()
         }.apply { background = GradientDrawable().apply { setColor(blue); cornerRadius = 10 * dp }; setTextColor(Color.WHITE) }
         col.addView(startButton)
+        col.addView(space(12))
+        // pad mode: this tablet draws on a PC's screen instead of its own (the PC runs Contrast Ink too)
+        col.addView(button("Use this tablet as a pad for a PC") { startActivity(Intent(this, PadActivity::class.java)) })
         col.addView(space(20))
 
         col.addView(text("Settings", 20f, bold = true))
