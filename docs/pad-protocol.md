@@ -82,10 +82,14 @@ pretending to be a PC it has paired with before.
    (no code). At most 1 KB, within 3 s of connecting.
 3. PC → tablet: CHALLENGE (0x86) JSON `{"key":"<base64 of the PC's own public key>","salt":"<base64 of 16 random bytes>","name":"LAPTOP"}`
    — or REJECT (locked out after wrong codes, a broken hello, an old tablet).
-4. The tablet compares the PC's key with the one it remembers for that PC (by name): the first time it shows the
-   PC check so the presenter can compare it with the PC's screen, and remembers the key; if it differs from the
-   remembered one it stops and warns ("not the PC you paired with: if you didn't reinstall Contrast Ink on it,
-   don't connect"), offering to connect anyway.
+4. The tablet compares the PC's key with the one it remembers for that PC. It remembers keys under the name the
+   presenter chose the PC by: the Bonjour name for a PC found on the network, the CHALLENGE `name` for a typed
+   address. **The first time** (no key remembered): it shows the PC check and asks the presenter to confirm it
+   matches what the PC shows (⚙ Settings, beside the code) **before sending the PROOF** — the PC waits up to 30 s
+   for it — so a machine pretending to be the PC never gets a PROOF to guess the code from. **A remembered key that
+   differs**: it stops and warns ("not the PC you paired with: if you didn't reinstall Contrast Ink on it, don't
+   connect"), sending nothing more unless the presenter chooses to connect anyway (which shows the check too).
+   **The same key**: it goes on at once. A key is remembered only once a sealed WELCOME has arrived.
 5. Both: `shared` = SHA-256 of the ECDH result (its 32-byte x coordinate, big-endian) — the form Windows'
    `DeriveKeyFromHash` gives, which every platform can compute the same way;
    `keys` = HKDF-SHA256(ikm = shared, salt = salt, info = UTF-8 `"contrastink pad v2 " + code`, 64 bytes);
@@ -101,6 +105,8 @@ pretending to be a PC it has paired with before.
    refuses a counter not greater than the last it accepted (a replay), and closes.
 
 A PC that receives a version-1 HELLO (with a code) answers REJECT "Please update Contrast Ink on the tablet."
+A REJECT only ever comes before the session is open, in the clear; WELCOME's `version` is 2. The PC's setting is
+⚙ Settings → "Let a Tablet Draw Here (Over Wi-Fi)".
 
 Limits the PC enforces (tablets need not, but must not exceed them): HELLO ≤ 1 KB within 3 s of connecting; at
 most 4 connections not yet in; 5 wrong codes in a row lock everyone out for 30 s; 20 wrong codes make a new code;
@@ -110,9 +116,9 @@ REJECT texts the PC sends: "Please update Contrast Ink on the tablet.", "Too man
 then try again.", "Wrong code: type the code Contrast Ink shows on the PC (⚙ Settings)."
 
 What it protects against: anyone listening on the Wi-Fi sees neither the screen nor the code; a machine
-advertising itself under a paired PC's name is caught by its key. What it does not: at the very first pairing, a
-machine pretending to be the PC could collect a PROOF and try every code offline — compare the PC check on both
-screens the first time. A private network or the PC's own hotspot remains the safest choice for patient images.
+advertising itself under a paired PC's name is caught by its key. What it does not: a presenter who confirms the
+first-time check without comparing it could hand a machine pretending to be the PC a PROOF to try every code
+against offline — so compare it, once per PC. A private network or the PC's own hotspot remains the safest choice for patient images.
 
 ### Version 2 test vectors (hex; every implementation's tests assert these)
 
