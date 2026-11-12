@@ -1,3 +1,4 @@
+import CryptoKit
 import UIKit
 import XCTest
 
@@ -100,41 +101,74 @@ final class ContrastInkUITests: XCTestCase {
 
     // MARK: pad mode
 
-    /// The iPad as a PC's drawing pad, against a pretend PC in this test runner: the code goes in HELLO, the PC's
-    /// picture is shown and acknowledged, a drag becomes a stroke in fractions of the picture, and Undo is a COMMAND.
+    /// A PC name no earlier run of the app has paired with (the app remembers each PC's key by its name).
+    private static func freshName(_ prefix: String) -> String { "\(prefix)-\(UUID().uuidString.prefix(8))" }
+
+    private func launchPad(_ pc: FakePC, code: String = "123456") {
+        app.launchArguments = ["-padTest", "127.0.0.1:\(pc.port)", code]
+        app.launch()
+    }
+
+    /// HELLO on that connection, version 2, with a key and no code.
+    private func checkHello(_ pc: FakePC, connection: Int) throws {
+        let i = try XCTUnwrap(pc.waitFor(0x01, timeout: 20, where: { $0.connection == connection }), "HELLO on connection \(connection)")
+        XCTAssertEqual(pc.messages.first { $0.connection == connection }?.type, 0x01, "HELLO is the first message")
+        let h = try XCTUnwrap(JSONSerialization.jsonObject(with: pc.messages[i].payload) as? [String: Any])
+        XCTAssertNil(h["code"], "the code never crosses the network")
+        XCTAssertEqual(h["version"] as? Int, 2)
+        XCTAssertEqual((h["key"] as? String).flatMap { Data(base64Encoded: $0) }?.count, 65, "a P-256 public key, 04|X|Y")
+        XCTAssertNotNil(h["device"] as? String)
+    }
+
+    private var picture: XCUIElement { app.descendants(matching: .any)["padPicture"] }
+    private var pictureShown: Bool { (picture.value as? String) == "shown" }
+
+    /// The iPad as a PC's drawing pad, against a pretend PC that speaks version 2: the handshake, a broken and a
+    /// huge picture refused (not acknowledged, not shown), the real one shown then acknowledged, a drag becomes a
+    /// stroke in fractions of the picture, the toolbar's commands, everything sealed, and a Wi-Fi drop survived.
     func testPadModeAgainstAFakePC() throws {
-        let pc = FakePC()
+        let pc = FakePC(name: Self.freshName("TEST-PC"))
         XCTAssertTrue(pc.start(), "the fake PC listens on the loopback")
         defer { pc.stop() }
-        app.launchArguments = ["-padTest", "127.0.0.1:\(pc.port)", "123456"]
-        app.launch()
+        launchPad(pc)
+        try checkHello(pc, connection: 1)
+        XCTAssertNotNil(pc.waitFor(0x04, where: { $0.connection == 1 }), "PROOF after the CHALLENGE")
+        XCTAssertTrue(app.buttons["Pen"].waitForExistence(timeout: 10), "the pad's toolbar, after WELCOME")
+        let first = app.staticTexts["padFirstTime"]
+        XCTAssertTrue(first.waitForExistence(timeout: 5), "the first time with this PC: its check, to compare")
+        XCTAssertTrue(first.label.contains("6FC6-6A90"), "the spec's PC check for this key: \(first.label)")
+        XCTAssertTrue(picture.waitForExistence(timeout: 5))
+        shot("P0 first time with this PC: compare the PC check")
+        app.buttons["padCheckMatches"].tap()
 
-        let hello = try XCTUnwrap(pc.waitFor(0x01, timeout: 20), "the app connects and says HELLO")
-        XCTAssertEqual(hello, 0, "HELLO is the first message")
-        let h = try XCTUnwrap(JSONSerialization.jsonObject(with: pc.messages[hello].payload) as? [String: Any])
-        XCTAssertEqual(h["code"] as? String, "123456")
-        XCTAssertEqual(h["version"] as? Int, 1)
-        XCTAssertNotNil(h["device"] as? String)
+        // a FRAME that isn't a picture: not shown, and not acknowledged as shown
+        var before = pc.messages.count
+        pc.send(0x83, Data("this is not a JPEG".utf8))
+        XCTAssertNil(pc.waitFor(0x03, after: before, timeout: 2), "a broken picture is not acknowledged")
+        XCTAssertFalse(pictureShown, "a broken picture is not shown")
+        // one over 4096 px: refused from its header, before it is decoded
+        pc.send(0x83, Self.picture(width: 5000, height: 8))
+        XCTAssertNil(pc.waitFor(0x03, after: before, timeout: 2), "a huge picture is not acknowledged")
+        XCTAssertFalse(pictureShown, "a huge picture is not shown")
 
-        pc.send(0x81, json: #"{"name":"TEST-PC","screenW":1600,"screenH":900,"version":1}"#)
-        pc.send(0x84, json: #"{"tool":"pen","color":0,"width":2,"opacity":1.0,"fading":false,"canUndo":true}"#)
-        let before = pc.messages.count
-        pc.send(0x83, Self.testScreen())
+        // the real one: shown, then acknowledged; and from then on one after each FRAME_ACK
+        before = pc.messages.count
+        pc.pace(Self.testScreen())
         XCTAssertNotNil(pc.waitFor(0x03, after: before), "FRAME_ACK once the picture is on screen")
-        XCTAssertTrue(app.buttons["Pen"].waitForExistence(timeout: 5), "the pad's toolbar")
+        XCTAssertTrue(pictureShown, "the picture is shown")
+        let acks = pc.messages.count
+        XCTAssertNotNil(pc.waitFor(0x03, after: acks), "the next FRAME after the ACK, and its ACK")
         Thread.sleep(forTimeInterval: 0.5)
         shot("P1 pad: the PC's screen")
 
         // a drag across the picture, from 20%, 30% to 70%, 60% of it
-        let picture = app.descendants(matching: .any)["padPicture"]
-        XCTAssertTrue(picture.waitForExistence(timeout: 5))
         let start = pc.messages.count
         let a = picture.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.3))
         let b = picture.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.6))
         a.press(forDuration: 0.1, thenDragTo: b, withVelocity: 600, thenHoldForDuration: 0.1)
         shot("P2 the stroke as the iPad draws it")
         let endAt = try XCTUnwrap(pc.waitFor(0x12, after: start), "STROKE_END after the drag")
-        let stroke = Array(pc.messages[start...endAt])
+        let stroke = Array(pc.messages[start...endAt]).filter { $0.type != 0x03 && $0.type != 0x02 }
         let begin = try XCTUnwrap(stroke.first { $0.type == 0x10 }, "STROKE_BEGIN")
         XCTAssertEqual(begin.payload.count, 9)
         XCTAssertEqual(FakePC.f32(begin.payload, at: 0), 0.2, accuracy: 0.05, "begins where the drag began (x)")
@@ -151,18 +185,86 @@ final class ContrastInkUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 1)
         shot("P3 the iPad lets its stroke go (the PC's picture has it)")
 
-        let beforeUndo = pc.messages.count
-        app.buttons["padUndo"].tap()
-        XCTAssertNotNil(pc.waitFor(0x20, after: beforeUndo, where: { String(decoding: $0.payload, as: UTF8.self) == "undo" }),
-                        "Undo sends COMMAND undo")
-        let beforeCircle = pc.messages.count
-        app.buttons["Circle"].tap()
-        XCTAssertNotNil(pc.waitFor(0x20, after: beforeCircle, where: { String(decoding: $0.payload, as: UTF8.self) == "tool:oval" }),
-                        "Circle sends COMMAND tool:oval")
-        pc.send(0x84, json: #"{"tool":"oval","color":3,"width":2,"opacity":1.0,"fading":false,"canUndo":false}"#)
+        func command(_ button: XCUIElement, sends word: String) {
+            let n = pc.messages.count
+            button.tap()
+            XCTAssertNotNil(pc.waitFor(0x20, after: n, where: { String(decoding: $0.payload, as: UTF8.self) == word }),
+                            "sends COMMAND \(word)")
+        }
+        command(app.buttons["padUndo"], sends: "undo")
+        command(app.buttons["Circle"], sends: "tool:oval")
+        command(app.buttons["Thick line"], sends: "width:2")
+        command(app.buttons["Fading ink"], sends: "fade:on")
+        pc.send(0x84, json: #"{"tool":"oval","color":3,"width":2,"opacity":1.0,"fading":true,"canUndo":true}"#)
         Thread.sleep(forTimeInterval: 0.5)
-        shot("P4 the PC says circle and cyan: the toolbar follows")
+        shot("P4 the PC says circle, cyan, thick, fading: the toolbar follows")
+        command(app.buttons["Fading ink"], sends: "fade:off")
         XCTAssertNotNil(pc.waitFor(0x02, timeout: 5), "PING every 2 s")
+
+        // the Wi-Fi drops: the iPad stays on the pad with the last picture and comes back by itself
+        pc.drop()
+        XCTAssertTrue(picture.exists, "the pad stays on screen")
+        try checkHello(pc, connection: 2)
+        XCTAssertTrue(pictureShown, "the last picture is kept while reconnecting")
+        XCTAssertNotNil(pc.waitFor(0x03, where: { $0.connection == 2 }), "pictures again on the new connection")
+        XCTAssertFalse(app.staticTexts["padFirstTime"].exists, "the same PC: no first-time check again")
+        shot("P5 back after the Wi-Fi drop")
+        command(app.buttons["padUndo"], sends: "undo")
+
+        // everything after the PROOF went sealed, on both connections
+        for c in 1...2 {
+            let mine = pc.messages.filter { $0.connection == c }
+            let p = try XCTUnwrap(mine.firstIndex { $0.type == 0x04 }, "PROOF on connection \(c)")
+            XCTAssertEqual(mine[..<p].map(\.type), [0x01], "only HELLO before PROOF")
+            XCTAssertTrue(mine[(p + 1)...].allSatisfy(\.sealed), "nothing in the clear after PROOF (connection \(c))")
+        }
+    }
+
+    /// A wrong code: the PC's own words, as it sent them, and nothing more is sent.
+    func testPadWrongCode() throws {
+        let pc = FakePC(name: Self.freshName("CODE-PC"))
+        XCTAssertTrue(pc.start())
+        defer { pc.stop() }
+        launchPad(pc, code: "654321")
+        try checkHello(pc, connection: 1)
+        let text = app.staticTexts["padMessage"]
+        XCTAssertTrue(text.waitForExistence(timeout: 10), "the PC's REJECT text")
+        XCTAssertEqual(text.label, FakePC.rejectWrongCode, "word for word")
+        shot("W1 wrong code")
+        Thread.sleep(forTimeInterval: 3)
+        XCTAssertEqual(pc.messages.map(\.type), [0x01, 0x04], "HELLO and PROOF, then nothing (no quiet retries)")
+        XCTAssertEqual(pc.connectionCount, 1)
+    }
+
+    /// The same name with another key: the iPad warns, sends nothing after HELLO, and connects only when told to.
+    func testPadDifferentPCUnderARememberedName() throws {
+        let pc = FakePC(name: Self.freshName("PIN-PC"))
+        XCTAssertTrue(pc.start())
+        defer { pc.stop() }
+        launchPad(pc)
+        XCTAssertTrue(app.buttons["Pen"].waitForExistence(timeout: 20), "paired once: its key is remembered")
+        Thread.sleep(forTimeInterval: 1)
+        app.terminate()
+
+        let other = P256.KeyAgreement.PrivateKey()
+        pc.setKey(other)
+        launchPad(pc)
+        try checkHello(pc, connection: 2)
+        let warning = app.staticTexts["padMessage"]
+        XCTAssertTrue(warning.waitForExistence(timeout: 10), "a warning")
+        XCTAssertTrue(warning.label.contains("isn't the PC you paired with"), warning.label)
+        XCTAssertTrue(warning.label.contains(pc.check), "the new PC check: \(warning.label)")
+        shot("K1 not the PC you paired with")
+        Thread.sleep(forTimeInterval: 3)
+        XCTAssertEqual(pc.messages.filter { $0.connection == 2 }.map(\.type), [0x01], "nothing after HELLO, not even PROOF")
+        XCTAssertFalse(app.buttons["Pen"].exists, "not on the pad")
+
+        app.buttons["padConnectAnyway"].tap()
+        try checkHello(pc, connection: 3)
+        XCTAssertTrue(app.buttons["Pen"].waitForExistence(timeout: 10), "connected when the presenter says so")
+        let first = app.staticTexts["padFirstTime"]
+        XCTAssertTrue(first.waitForExistence(timeout: 5) && first.label.contains(pc.check), "its new check, to compare")
+        shot("K2 connected anyway: compare the new check")
     }
 
     /// A stand-in for a PC's screen: a dark slide with a title bar and a grid, 1600 x 900 like a FRAME.
@@ -180,5 +282,16 @@ final class ContrastInkUITests: XCTestCase {
                 withAttributes: [.font: UIFont.boldSystemFont(ofSize: 56), .foregroundColor: UIColor.white])
         }
         return img.jpegData(compressionQuality: 0.8) ?? Data()
+    }
+
+    /// A plain JPEG of any size (a huge one for the size check).
+    static func picture(width: Int, height: Int) -> Data {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let img = UIGraphicsImageRenderer(size: CGSize(width: width, height: height), format: format).image { ctx in
+            UIColor.gray.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        }
+        return img.jpegData(compressionQuality: 0.5) ?? Data()
     }
 }
