@@ -56,10 +56,10 @@ enum SmokeTest {
         send(PadProtocol.strokeEnd())
         check(c.ink.board.marks.count == 1, "a tablet stroke becomes a mark")
         let px = pixel(c.ink, 0.375, 0.375)
-        check(px.map { $0.alpha > 0.8 && $0.red > 0.8 && $0.green < 0.4 } ?? false,
-              "the mark is drawn in red where it was drawn (\(px.map { "r \($0.red) g \($0.green) a \($0.alpha)" } ?? "no pixels"))")
+        check(px.map { $0.alphaComponent > 0.8 && $0.redComponent > 0.8 && $0.greenComponent < 0.4 } ?? false,
+              "the mark is drawn in red where it was drawn (\(px.map { "r \($0.redComponent) g \($0.greenComponent) a \($0.alphaComponent)" } ?? "no pixels"))")
         let empty = pixel(c.ink, 0.8, 0.2)
-        check(empty.map { $0.alpha < 0.05 } ?? false, "the rest of the layer is see-through")
+        check(empty.map { $0.alphaComponent < 0.05 } ?? false, "the rest of the layer is see-through")
         send(PadProtocol.command("undo"))
         check(c.ink.board.marks.isEmpty, "undo from the tablet removes it")
         send(PadProtocol.command("tool:arrow"))

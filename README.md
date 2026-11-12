@@ -8,6 +8,7 @@ Also for iPad and Android, for personal use:
 - **iPad** (Apple Pencil, slides as PDF, built-in recording, projector): see [ios/README.md](ios/README.md).
 - **Android** phone or tablet (draws over any app, records the screen): see [android/README.md](android/README.md).
   The APK is on **Releases → Android (latest)**.
+- **Mac** (draws over PowerPoint or anything, OBS, tablets as pads): see [mac/README.md](mac/README.md).
 
 This page is about the Windows app.
 
