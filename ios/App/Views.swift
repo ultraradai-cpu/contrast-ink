@@ -15,7 +15,8 @@ struct RootView: View {
     @EnvironmentObject var lecture: Lecture
 
     var body: some View {
-        if lecture.deck == nil { HomeView() } else { PresenterView() }
+        if PadLaunch.test != nil { PadView() }   // the UI test of pad mode, straight onto its fake PC
+        else if lecture.deck == nil { HomeView() } else { PresenterView() }
     }
 }
 
@@ -27,6 +28,7 @@ struct HomeView: View {
     @State private var picking: Picking?
     @State private var importing = Picking.pdf   // what the open picker is for (kept after it closes)
     @State private var problem: String?
+    @State private var padOpen = false
 
     enum Picking: Identifiable { case pdf, images; var id: Int { hashValue } }
 
@@ -39,6 +41,11 @@ struct HomeView: View {
                     Button { lecture.open(Deck(title: "Whiteboard", source: .whiteboard)) } label: { Label("Whiteboard", systemImage: "rectangle.and.pencil.and.ellipsis") }
                 } footer: {
                     Text("In PowerPoint: File → Export → PDF, then open the PDF here. Each slide keeps its own marks.")
+                }
+                Section {
+                    Button { padOpen = true } label: { Label("Use this iPad as a pad for a PC", systemImage: "ipad.landscape") }
+                } footer: {
+                    Text("Contrast Ink on the PC shows a code: the PC's screen comes to this iPad, and what you draw here is drawn on the PC (and recorded there).")
                 }
                 if !decks.isEmpty {
                     Section("Recent slides") {
@@ -56,6 +63,7 @@ struct HomeView: View {
             .navigationTitle("Contrast Ink")
         }
         .onAppear { decks = Library.decks() }
+        .fullScreenCover(isPresented: $padOpen) { PadView(close: { padOpen = false }).environmentObject(lecture) }
         // one picker for both (two .fileImporter on one view: some iOS versions only ever show the last)
         .fileImporter(isPresented: Binding(get: { picking != nil }, set: { if !$0 { picking = nil } }),
                       allowedContentTypes: importing == .images ? [.image] : [.pdf],
