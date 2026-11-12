@@ -134,6 +134,9 @@
       <RadioButton x:Name="TabletOn" Content="Yes: Its Pen Works Like the Mouse"/>
       <RadioButton x:Name="TabletOff" Content="No: Pens Are Pens (Pen Screens: Cintiq, Kamvas...)"/>
       <TextBlock x:Name="TabletText" Foreground="#8A95A6" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap" MaxWidth="400"/>
+      <TextBlock Text="Android Tablet or iPad as a Pad" Foreground="#8A95A6" FontSize="12" Margin="0,8,0,2"/>
+      <CheckBox x:Name="OptPad" Content="Let a Tablet Draw Here (Over Wi-Fi)"/>
+      <TextBlock x:Name="PadText" Foreground="{StaticResource Ink}" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap" MaxWidth="400" Visibility="Collapsed"/>
       </StackPanel>
       </StackPanel>
     </StackPanel>

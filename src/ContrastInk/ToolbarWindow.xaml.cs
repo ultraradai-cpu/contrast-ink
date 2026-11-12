@@ -213,7 +213,7 @@ public partial class ToolbarWindow : Window
     {
         (OptZ, nameof(Settings.UndoWithZ)), (OptRightClick, nameof(Settings.UndoWithRightClick)), (OptButton, nameof(Settings.UndoButtonByPen)),
         (OptEraserEnd, nameof(Settings.PenEraserEnd)), (OptSlides, nameof(Settings.MarksPerSlide)),
-        (OptNames, nameof(Settings.ShowButtonNames)),
+        (OptNames, nameof(Settings.ShowButtonNames)), (OptPad, nameof(Settings.TabletPad)),
     };
 
     static void Mark(Button b, bool on)
@@ -246,6 +246,7 @@ public partial class ToolbarWindow : Window
             OptZ.IsChecked = s.UndoWithZ; OptRightClick.IsChecked = s.UndoWithRightClick; OptButton.IsChecked = s.UndoButtonByPen;
             OptEraserEnd.IsChecked = s.PenEraserEnd; OptSlides.IsChecked = s.MarksPerSlide;
             OptNames.IsChecked = s.ShowButtonNames;
+            OptPad.IsChecked = s.TabletPad;
             TabletAuto.IsChecked = s.PenTabletMode == TabletMode.Auto;
             TabletOn.IsChecked = s.PenTabletMode == TabletMode.On;
             TabletOff.IsChecked = s.PenTabletMode == TabletMode.Off;
@@ -282,6 +283,13 @@ public partial class ToolbarWindow : Window
         double room = Math.Max(200, dip - others);
         if (double.IsInfinity(Full.MaxWidth) ? room < Full.ActualWidth + 1 : Math.Abs(Full.MaxWidth - room) > 1)
             Full.MaxWidth = room;
+    }
+
+    /// <summary>How to connect a tablet (this run's code, the address), or that one is connected; null: switched off.</summary>
+    public void ShowPad(string? text)
+    {
+        PadText.Text = text ?? "";
+        PadText.Visibility = text == null ? Visibility.Collapsed : Visibility.Visible;
     }
 
     /// <summary>Says under the choice what was found at start, and how its pen is used now.</summary>

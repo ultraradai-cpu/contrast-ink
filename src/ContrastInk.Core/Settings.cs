@@ -48,6 +48,8 @@ public sealed class Settings
     /// a mouse. Auto: yes when Windows reports such a tablet and no pen screen. Takes effect when Contrast Ink starts.
     /// </summary>
     public TabletMode PenTabletMode { get; set; } = TabletMode.Auto;
+    /// <summary>A tablet (Android or iPad) may connect over the network and be used as a pad that draws here.</summary>
+    public bool TabletPad { get; set; }
 
     /// <summary>Keeps every value in range, so a hand-edited or old file can't break the app.</summary>
     public Settings Clean(int screens)

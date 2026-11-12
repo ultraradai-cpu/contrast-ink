@@ -597,3 +597,220 @@ public class PenTabletTests
         finally { File.Delete(path); }
     }
 }
+
+/// <summary>The PC-tablet link (docs/pad-protocol.md): the same test bytes as the Android and iPad apps' tests.</summary>
+public class PadProtocolTests
+{
+    static byte[] Hex(string h) => Convert.FromHexString(h.Replace(" ", ""));
+
+    [Fact]
+    public void SpecTestVectorsDecode()
+    {
+        var r = new PadReader();
+        var all = Hex("01 00 00 00 2A").Concat(System.Text.Encoding.UTF8.GetBytes("{\"code\":\"123456\",\"device\":\"t\",\"version\":1}"))
+            .Concat(Hex("10 00 00 00 09 3F 00 00 00 3E 80 00 00 00"))
+            .Concat(Hex("11 00 00 00 12 00 02 3F 00 00 00 3F 00 00 00 3F 80 00 00 00 00 00 00"))
+            .Concat(Hex("12 00 00 00 00")).Concat(Hex("20 00 00 00 04 75 6E 64 6F")).Concat(Hex("03 00 00 00 00")).ToArray();
+        // arriving a few bytes at a time, as a network does
+        var msgs = new List<(byte type, byte[] payload)>();
+        for (int i = 0; i < all.Length; i += 3) msgs.AddRange(r.Add(all.AsSpan(i, Math.Min(3, all.Length - i))));
+        Assert.Equal(new byte[] { Pad.Hello, Pad.StrokeBegin, Pad.StrokePoints, Pad.StrokeEnd, Pad.Command, Pad.FrameAck }, msgs.Select(m => m.type));
+        Assert.Equal(("123456", "t"), Pad.ReadHello(msgs[0].payload));
+        Assert.Equal((0.5f, 0.25f, false), Pad.ReadBegin(msgs[1].payload));
+        Assert.Equal(new List<(float, float)> { (0.5f, 0.5f), (1f, 0f) }, Pad.ReadPoints(msgs[2].payload));
+        Assert.Equal(new PadCommand(PadAction.Undo), Pad.ReadCommand(msgs[4].payload));
+    }
+
+    [Fact]
+    public void MessagesAreTypeLengthPayload()
+    {
+        Assert.Equal(Hex("20 00 00 00 04 75 6E 64 6F"), Pad.Message(Pad.Command, "undo"));
+        Assert.Equal(Hex("85 00 00 00 00"), Pad.Message(Pad.Pong, ReadOnlySpan<byte>.Empty));
+    }
+
+    [Fact]
+    public void TooLongIsRefusedAndUnknownTypesPassThrough()
+    {
+        Assert.Throws<InvalidDataException>(() => new PadReader().Add(Hex("83 7F FF FF FF")));
+        var m = new PadReader().Add(Hex("7E 00 00 00 02 AA BB 03 00 00 00 00"));
+        Assert.Equal(new byte[] { 0x7E, Pad.FrameAck }, m.Select(x => x.type));
+    }
+
+    [Theory]
+    [InlineData("tool:laser", PadAction.Tool, (int)Tool.Laser)] [InlineData("tool:OVAL", PadAction.Tool, (int)Tool.Oval)]
+    [InlineData("color:2", PadAction.Color, 2)] [InlineData("width:0", PadAction.Width, 0)]
+    [InlineData("next", PadAction.Next, 0)] [InlineData("fade:on", PadAction.Fade, 1)]
+    public void CommandsAreUnderstood(string text, PadAction action, int value) =>
+        Assert.Equal(new PadCommand(action, value), Pad.ReadCommand(System.Text.Encoding.UTF8.GetBytes(text)));
+
+    [Theory]
+    [InlineData("color:9")] [InlineData("tool:spraycan")] [InlineData("width:-1")] [InlineData("format c:")] [InlineData("opacity:NaN")]
+    public void UnknownOrOutOfRangeCommandsAreIgnored(string text) =>
+        Assert.Null(Pad.ReadCommand(System.Text.Encoding.UTF8.GetBytes(text)));
+
+    [Fact]
+    public void OpacityIsClampedAndCoordinatesStayOnTheScreen()
+    {
+        Assert.Equal(Settings.MinOpacity, Pad.ReadCommand(System.Text.Encoding.UTF8.GetBytes("opacity:0.01"))!.Value.Amount);
+        Assert.Equal((1f, 0f, true), Pad.ReadBegin(Hex("40 00 00 00 FF C0 00 00 01")));   // 2.0 and NaN
+    }
+
+    [Fact]
+    public void WelcomeAndStateAreJson()
+    {
+        var w = new PadReader().Add(Pad.WelcomeMessage("LAPTOP", 1920, 1080))[0];
+        using var doc = System.Text.Json.JsonDocument.Parse(w.payload);
+        Assert.Equal((Pad.Welcome, "LAPTOP", 1920, 1), (w.type, doc.RootElement.GetProperty("name").GetString(), doc.RootElement.GetProperty("screenW").GetInt32(), doc.RootElement.GetProperty("version").GetInt32()));
+        var st = new PadReader().Add(Pad.StateMessage(new Settings { Tool = Tool.Laser, Color = 3 }, canUndo: true))[0];
+        using var s = System.Text.Json.JsonDocument.Parse(st.payload);
+        Assert.Equal(("laser", 3, true), (s.RootElement.GetProperty("tool").GetString(), s.RootElement.GetProperty("color").GetInt32(), s.RootElement.GetProperty("canUndo").GetBoolean()));
+    }
+
+    [Fact]
+    public void CodesAreSixDigits() => Assert.All(Enumerable.Range(0, 50).Select(_ => Pad.NewCode()), c => Assert.Matches("^[0-9]{6}$", c));
+}
+
+/// <summary>What strangers on the same Wi-Fi can do before they know the code: nothing that harms the app.</summary>
+public class PadSafetyTests
+{
+    static byte[] Hello(string json) => System.Text.Encoding.UTF8.GetBytes(json);
+
+    [Theory]
+    [InlineData("1")] [InlineData("[]")] [InlineData("\"x\"")] [InlineData("null")] [InlineData("{\"code\":5}")]
+    [InlineData("{\"code\":\"\\uD800\"}")] [InlineData("{{{")] [InlineData("")]
+    public void ABrokenHelloIsRefusedNeverThrown(string json)
+    {
+        var h = Pad.ReadHello(Hello(json));
+        Assert.True(h == null || h.Value.code != "123456");
+    }
+
+    [Fact]
+    public void AnOversizedHelloIsRefused() =>
+        Assert.Null(Pad.ReadHello(Hello("{\"code\":\"123456\",\"device\":\"" + new string('x', 2000) + "\"}")));
+
+    [Fact]
+    public void TheDeviceNameIsShortAndPrintable() =>
+        Assert.Equal("iPad", Pad.ReadHello(Hello("{\"code\":\"1\",\"device\":\"\\u0007iPad\\n\"}"))!.Value.device);
+
+    [Fact]
+    public void BeforeTheCodeAHugeLengthIsRefusedAtOnce()
+    {
+        var r = new PadReader { MaxLength = Pad.HelloMax };
+        Assert.Throws<InvalidDataException>(() => r.Add(new byte[] { 0x01, 0x00, 0x00, 0x08, 0x00 }));   // 2048 bytes announced
+    }
+
+    [Fact]
+    public void ManySmallMessagesInOneReadAllComeOut()
+    {
+        var all = Enumerable.Range(0, 5000).SelectMany(_ => Pad.Message(Pad.Ping, ReadOnlySpan<byte>.Empty)).ToArray();
+        Assert.Equal(5000, new PadReader().Add(all).Count);
+    }
+
+    [Fact]
+    public void FiveWrongCodesLockEveryoneOutForThirtySeconds()
+    {
+        var g = new PadGuard();
+        var t = new DateTime(2026, 11, 12, 10, 0, 0, DateTimeKind.Utc);
+        for (int i = 0; i < 4; i++) Assert.False(g.Wrong(t));
+        Assert.False(g.Locked(t));
+        g.Wrong(t);
+        Assert.True(g.Locked(t.AddSeconds(29)));
+        Assert.False(g.Locked(t.AddSeconds(31)));
+    }
+
+    [Fact]
+    public void TwentyWrongCodesMakeANewCode()
+    {
+        var g = new PadGuard();
+        var t = DateTime.UtcNow;
+        int newCodes = 0;
+        for (int i = 0; i < 40; i++) if (g.Wrong(t)) newCodes++;
+        Assert.Equal(2, newCodes);
+    }
+
+    [Fact]
+    public void TheRightCodeResetsTheRunButNotTheTotal()
+    {
+        var g = new PadGuard();
+        var t = DateTime.UtcNow;
+        for (int i = 0; i < 4; i++) g.Wrong(t);
+        g.Right();
+        for (int i = 0; i < 4; i++) g.Wrong(t);
+        Assert.False(g.Locked(t));   // never five in a row
+        for (int i = 0; i < 11; i++) g.Wrong(t);
+        Assert.True(g.Wrong(t));     // the 20th wrong for this code
+    }
+}
+
+/// <summary>Version 2 of the tablet link: the spec's test vectors and what an eavesdropper or a wrong code gets.</summary>
+public class PadCryptoTests
+{
+    static readonly byte[] TabletD = Enumerable.Repeat((byte)0x11, 32).ToArray(), PcD = Enumerable.Repeat((byte)0x22, 32).ToArray();
+    static readonly byte[] Salt = Convert.FromHexString("000102030405060708090A0B0C0D0E0F");
+
+    static (byte[] toPc, byte[] toTablet) Both(string tabletCode, string pcCode, out (byte[], byte[]) pcSide)
+    {
+        using var t = PadCrypto.FromPrivate(TabletD);
+        using var p = PadCrypto.FromPrivate(PcD);
+        pcSide = PadCrypto.Keys(p, PadCrypto.ReadPoint(PadCrypto.PublicPoint(t))!, Salt, pcCode);
+        return PadCrypto.Keys(t, PadCrypto.ReadPoint(PadCrypto.PublicPoint(p))!, Salt, tabletCode);
+    }
+
+    [Fact]
+    public void BothSidesGetTheSameKeysWithTheSameCode()
+    {
+        var tablet = Both("123456", "123456", out var pc);
+        Assert.Equal(pc.Item1, tablet.toPc);
+        Assert.Equal(pc.Item2, tablet.toTablet);
+        Assert.NotEqual(tablet.toPc, tablet.toTablet);
+    }
+
+    [Fact]
+    public void AWrongCodeCantOpenTheProof()
+    {
+        var tablet = Both("123457", "123456", out var pc);
+        using var seal = new PadSeal(tablet.toPc);
+        using var open = new PadSeal(pc.Item1);
+        Assert.Null(open.Open(seal.Seal(Pad.Message(Pad.Command, PadCrypto.ProofText))));
+    }
+
+    [Fact]
+    public void SealedMessagesOpenOnceInOrderAndNotAltered()
+    {
+        var tablet = Both("123456", "123456", out var pc);
+        using var seal = new PadSeal(tablet.toPc);
+        using var open = new PadSeal(pc.Item1);
+        var a = seal.Seal(Pad.Message(Pad.Command, "undo"));
+        var b = seal.Seal(Pad.Message(Pad.Command, "next"));
+        Assert.Equal(Pad.Message(Pad.Command, "undo"), open.Open(a));
+        Assert.Null(open.Open(a));                                  // replayed
+        var altered = (byte[])b.Clone(); altered[14] ^= 1;
+        Assert.Null(open.Open(altered));                           // changed in flight
+        Assert.Equal(Pad.Message(Pad.Command, "next"), open.Open(b));
+    }
+
+    [Fact]
+    public void NotAPointIsRefused()
+    {
+        Assert.Null(PadCrypto.ReadPoint(new byte[65]));
+        Assert.Null(PadCrypto.ReadPoint(new byte[] { 4, 1, 2 }));
+    }
+
+    /// <summary>Prints the vectors written into docs/pad-protocol.md (the Android and iPad tests assert them).</summary>
+    [Fact]
+    public void SpecVectors()
+    {
+        using var t = PadCrypto.FromPrivate(TabletD);
+        using var p = PadCrypto.FromPrivate(PcD);
+        var keys = Both("123456", "123456", out _);
+        using var seal = new PadSeal(keys.toPc);
+        var proof = seal.Seal(Pad.Message(Pad.Command, PadCrypto.ProofText));
+        File.WriteAllText(Path.Combine(Path.GetTempPath(), "pad-v2-vectors.txt"),
+            $"tablet public key   {Convert.ToHexString(PadCrypto.PublicPoint(t))}\n" +
+            $"PC public key       {Convert.ToHexString(PadCrypto.PublicPoint(p))}\n" +
+            $"tablet->PC key      {Convert.ToHexString(keys.toPc)}\n" +
+            $"PC->tablet key      {Convert.ToHexString(keys.toTablet)}\n" +
+            $"first sealed PROOF  {Convert.ToHexString(proof)}  (COMMAND \"hello\", counter 1)\n");
+        Assert.Equal(65 + 0, PadCrypto.PublicPoint(t).Length + 0);
+    }
+}
