@@ -10,7 +10,7 @@ namespace ContrastInk.Core;
 /// </summary>
 public static class Pad
 {
-    public const int Port = 47820, Version = 1;
+    public const int Port = 47820, Version = 2;
     public const string ServiceType = "_contrastink._tcp";
     public const int MaxLength = 16 * 1024 * 1024;
 
@@ -35,6 +35,11 @@ public static class Pad
     public static byte[] WelcomeMessage(string name, int screenW, int screenH) =>
         Message(Welcome, JsonSerializer.Serialize(new { name, screenW, screenH, version = Version }));
 
+    /// <summary>The REJECT texts (docs/pad-protocol.md lists them; the tablets show them as they are).</summary>
+    public const string UpdateTablet = "Please update Contrast Ink on the tablet.",
+        TooManyWrong = "Too many wrong codes: wait 30 seconds, then try again.",
+        WrongCode = "Wrong code: type the code Contrast Ink shows on the PC (⚙ Settings).";
+
     public static byte[] StateMessage(Settings s, bool canUndo) =>
         Message(State, JsonSerializer.Serialize(new
         {
@@ -42,12 +47,11 @@ public static class Pad
             opacity = Math.Round(s.Opacity, 2), fading = s.FadingInk, canUndo,
         }));
 
-    /// <summary>What a tablet's HELLO says; null when it isn't one we understand.</summary>
-    /// <remarks>
-    /// Read from strangers before any code is known: nothing in it may throw (a HELLO of just "1", or a lone UTF-16
-    /// surrogate, once threw past the catch on a network thread, which ends the whole app).
-    /// </remarks>
-    public static (string code, string device)? ReadHello(ReadOnlySpan<byte> payload)
+    /// <summary>
+    /// A version-2 HELLO: the tablet's name and its fresh public key (65 bytes). Null for anything else, including a
+    /// version-1 HELLO (it carries the code in the clear: such a tablet must be updated). Never throws.
+    /// </summary>
+    public static (string device, byte[] key)? ReadHelloV2(ReadOnlySpan<byte> payload)
     {
         if (payload.Length > HelloMax) return null;
         try
@@ -55,12 +59,25 @@ public static class Pad
             using var doc = JsonDocument.Parse(payload.ToArray());
             var r = doc.RootElement;
             if (r.ValueKind != JsonValueKind.Object) return null;
-            var code = r.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString() ?? "" : "";
+            if (!r.TryGetProperty("version", out var v) || v.ValueKind != JsonValueKind.Number || !v.TryGetInt32(out var ver) || ver < 2) return null;
+            if (!r.TryGetProperty("key", out var k) || k.ValueKind != JsonValueKind.String) return null;
+            var key = Convert.FromBase64String(k.GetString() ?? "");
+            if (key.Length != 65) return null;
             var device = r.TryGetProperty("device", out var d) && d.ValueKind == JsonValueKind.String ? d.GetString() ?? "" : "";
             device = new string(device.Where(ch => !char.IsControl(ch)).Take(40).ToArray()).Trim();
-            return (code, device.Length == 0 ? "a tablet" : device);
+            return (device.Length == 0 ? "a tablet" : device, key);
         }
         catch (Exception) { return null; }
+    }
+
+    public static byte[] ChallengeMessage(byte[] pcKey, byte[] salt, string name) =>
+        Message(PadCrypto.Challenge, JsonSerializer.Serialize(new { key = Convert.ToBase64String(pcKey), salt = Convert.ToBase64String(salt), name }));
+
+    /// <summary>The PC check shown beside the code: the first 4 bytes of SHA-256 of the PC's public key, "6FC6-6A90".</summary>
+    public static string PcCheck(byte[] pcKey)
+    {
+        var h = System.Security.Cryptography.SHA256.HashData(pcKey);
+        return $"{h[0]:X2}{h[1]:X2}-{h[2]:X2}{h[3]:X2}";
     }
 
     /// <summary>The longest HELLO accepted (a stranger's first message: small, so it can't be used to fill memory).</summary>

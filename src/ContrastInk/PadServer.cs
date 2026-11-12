@@ -36,11 +36,16 @@ sealed class PadServer : IDisposable
 
     const int MaxPending = 4;             // strangers not yet past the code, at once
     const int MaxQueued = 4000;           // messages from the tablet waiting for the UI: more is a flood
-    static readonly TimeSpan HelloWithin = TimeSpan.FromSeconds(3), Silence = TimeSpan.FromSeconds(10);
+    // the hello within 3 s; the proof within 30 (the presenter may be comparing the PC check, or deciding)
+    static readonly TimeSpan HelloWithin = TimeSpan.FromSeconds(3), ProofWithin = TimeSpan.FromSeconds(30), Silence = TimeSpan.FromSeconds(10);
 
     readonly Dispatcher ui;
     readonly Func<Native.RECT> screen;   // the screen being drawn on, in real pixels
     readonly Func<System.Windows.Media.Imaging.BitmapSource?> marks;   // the drawing layer's picture, on the UI thread
+    readonly System.Security.Cryptography.ECDiffieHellman pcKey;       // this PC's own key (kept between runs)
+    readonly byte[] pcPoint;
+    /// <summary>What the tablet shows the first time, to compare with this PC: "6FC6-6A90".</summary>
+    public string PcCheck { get; }
     readonly PadGuard guard = new();
     readonly object gate = new();       // guards current, Code, guard
     TcpListener? listener;
@@ -58,6 +63,8 @@ sealed class PadServer : IDisposable
         public string Name = "";
         public volatile bool AckPending, Closed;
         public DateTime SentAt;
+        public PadSeal? Out, In;   // once the code is proven: everything is sealed (version 2)
+        readonly object sealing = new();
         readonly System.Collections.Concurrent.BlockingCollection<byte[]> outbox = new(64);
 
         public Connection(TcpClient c)
@@ -74,8 +81,17 @@ sealed class PadServer : IDisposable
             finally { Close(); }
         }) { IsBackground = true, Name = "pad writer" }.Start();
 
-        /// <summary>Queues a message; a full queue means the tablet isn't keeping up: it is dropped.</summary>
-        public void Send(byte[] m) { if (Closed || !outbox.TryAdd(m)) Close(); }
+        /// <summary>Queues a message, sealed (in the order sent: the counters must be in order); a full queue means
+        /// the tablet isn't keeping up: it is dropped.</summary>
+        public void Send(byte[] m)
+        {
+            lock (sealing)
+            {
+                if (Closed) return;
+                var wire = Out != null ? Pad.Message(PadCrypto.Sealed, Out.Seal(m)) : m;
+                if (!outbox.TryAdd(wire)) Close();
+            }
+        }
 
         public void Close()
         {
@@ -86,11 +102,15 @@ sealed class PadServer : IDisposable
         }
     }
 
-    public PadServer(Dispatcher ui, Func<Native.RECT> screen, Func<System.Windows.Media.Imaging.BitmapSource?> marks, string? code = null)
+    public PadServer(Dispatcher ui, Func<Native.RECT> screen, Func<System.Windows.Media.Imaging.BitmapSource?> marks,
+        System.Security.Cryptography.ECDiffieHellman pcKey, string? code = null)
     {
         this.ui = ui;
         this.screen = screen;
         this.marks = marks;
+        this.pcKey = pcKey;
+        pcPoint = PadCrypto.PublicPoint(pcKey);
+        PcCheck = Pad.PcCheck(pcPoint);
         Code = code ?? Pad.NewCode();
     }
 
@@ -148,9 +168,13 @@ sealed class PadServer : IDisposable
     void Serve(TcpClient tcp)
     {
         var conn = new Connection(tcp);
-        var reader = new PadReader { MaxLength = Pad.HelloMax };   // a stranger's first message is small
+        var reader = new PadReader { MaxLength = Pad.HelloMax };   // a stranger's first messages are small
         var buf = new byte[64 * 1024];
-        bool admitted = false, counted = true;
+        int step = 0;   // 0: waiting for HELLO, 1: CHALLENGE sent, waiting for PROOF, 2: in
+        bool counted = true;
+        byte[]? salt = null;
+        System.Security.Cryptography.ECDiffieHellmanPublicKey? tabletKey = null;
+        string device = "";
         var deadline = DateTime.UtcNow + HelloWithin;
         try
         {
@@ -164,31 +188,50 @@ sealed class PadServer : IDisposable
                 catch (IOException e) when (e.InnerException is SocketException { SocketErrorCode: SocketError.TimedOut })
                 {
                     // a byte now and then must not keep a stranger's connection open, nor a silent tablet's
-                    if (!admitted && DateTime.UtcNow > deadline) return;
-                    if (admitted && DateTime.UtcNow - heard > Silence) return;
+                    if (step < 2 && DateTime.UtcNow > deadline) return;
+                    if (step == 2 && DateTime.UtcNow - heard > Silence) return;
                     continue;
                 }
                 if (n <= 0) return;
                 heard = DateTime.UtcNow;
                 foreach (var (type, payload) in reader.Add(buf.AsSpan(0, n)))
                 {
-                    if (!admitted)
+                    if (step == 0)
                     {
-                        if (!Admit(conn, type, payload)) return;
-                        admitted = true;
+                        // HELLO: the tablet's fresh key. Answer with this PC's key and a salt, or refuse.
+                        var hello = type == Pad.Hello ? Pad.ReadHelloV2(payload) : null;
+                        tabletKey = hello == null ? null : PadCrypto.ReadPoint(hello.Value.key);
+                        string? why = tabletKey == null ? Pad.UpdateTablet : null;
+                        lock (gate) if (why == null && guard.Locked(DateTime.UtcNow)) why = Pad.TooManyWrong;
+                        if (why != null) { Refuse(conn, why); return; }
+                        device = hello!.Value.device;
+                        salt = System.Security.Cryptography.RandomNumberGenerator.GetBytes(16);
+                        conn.Stream.Write(Pad.ChallengeMessage(pcPoint, salt, Environment.MachineName));
+                        step = 1;
+                        deadline = DateTime.UtcNow + ProofWithin;
+                        continue;
+                    }
+                    if (step == 1)
+                    {
+                        if (!Prove(conn, type, payload, tabletKey!, salt!, device)) return;
+                        step = 2;
                         reader.MaxLength = Pad.MaxLength;
                         Interlocked.Decrement(ref pending); counted = false;
                         continue;
                     }
                     if (!ReferenceEquals(Volatile.Read(ref current), conn)) return;   // replaced or dropped
-                    switch (type)
-                    {
-                        case Pad.Ping: conn.Send(Pad.Message(Pad.Pong, ReadOnlySpan<byte>.Empty)); break;
-                        case Pad.FrameAck: conn.AckPending = false; break;
-                        default: Deliver(conn, type, payload); break;
-                    }
+                    // in: only sealed messages, each opened in order (a replay, a change or another key: closed)
+                    var inner = type == PadCrypto.Sealed ? conn.In!.Open(payload) : null;
+                    if (inner == null) return;
+                    foreach (var (t, p) in new PadReader().Add(inner))
+                        switch (t)
+                        {
+                            case Pad.Ping: conn.Send(Pad.Message(Pad.Pong, ReadOnlySpan<byte>.Empty)); break;
+                            case Pad.FrameAck: conn.AckPending = false; break;
+                            default: Deliver(conn, t, p); break;
+                        }
                 }
-                if (!admitted && DateTime.UtcNow > deadline) return;
+                if (step < 2 && DateTime.UtcNow > deadline) return;
             }
         }
         catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException or InvalidDataException) { }
@@ -202,40 +245,49 @@ sealed class PadServer : IDisposable
         }
     }
 
-    /// <summary>
-    /// The first message: HELLO with this run's code, for a free slot. Refusals say why in words a presenter can
-    /// act on, but a busy slot is checked first, so the refusal never tells a guesser whether the code was right.
-    /// </summary>
-    bool Admit(Connection conn, byte type, byte[] payload)
+    static void Refuse(Connection conn, string why)
     {
-        var hello = type == Pad.Hello ? Pad.ReadHello(payload) : null;
-        string? why;
+        try { conn.Stream.Write(Pad.Message(Pad.Reject, why)); } catch (Exception) { }
+    }
+
+    /// <summary>
+    /// The PROOF: sealed with keys made from this run's code. Opened, the tablet knows the code (it never crossed the
+    /// network) and the session starts, replacing a connected tablet (the same one, back after a Wi-Fi drop before
+    /// this PC noticed). Not opened: a wrong code, counted against guessing.
+    /// </summary>
+    bool Prove(Connection conn, byte type, byte[] payload, System.Security.Cryptography.ECDiffieHellmanPublicKey tabletKey, byte[] salt, string device)
+    {
+        string code;
+        lock (gate) code = Code;
+        var (toPc, toTablet) = PadCrypto.Keys(pcKey, tabletKey, salt, code);
+        var open = new PadSeal(toPc);
+        var proof = type == PadCrypto.Proof ? open.Open(payload) : null;
+        var said = proof == null ? null : new PadReader().Add(proof);
+        bool right = said is { Count: 1 } && said[0].type == Pad.Command && System.Text.Encoding.UTF8.GetString(said[0].payload) == PadCrypto.ProofText;
+        Connection? old = null;
         bool newCode = false;
-        var now = DateTime.UtcNow;
+        string? why = null;
         lock (gate)
         {
-            if (hello == null) why = "Please update Contrast Ink on the tablet.";
-            else if (current != null) why = "Another tablet is connected to this PC. Disconnect it first.";
-            else if (guard.Locked(now)) why = "Too many wrong codes: wait 30 seconds, then try again.";
-            else if (!CodesEqual(hello.Value.code, Code))
+            if (guard.Locked(DateTime.UtcNow)) why = Pad.TooManyWrong;
+            else if (!right)
             {
-                why = "Wrong code: type the code Contrast Ink shows on the PC (⚙ Settings).";
-                if (guard.Wrong(now)) { Code = Pad.NewCode(); newCode = true; }
+                why = Pad.WrongCode;
+                if (guard.Wrong(DateTime.UtcNow)) { Code = Pad.NewCode(); newCode = true; }
             }
             else
             {
-                why = null;
                 guard.Right();
-                conn.Name = hello.Value.device;
+                conn.Name = device;
+                conn.In = open;
+                conn.Out = new PadSeal(toTablet);
+                old = current;
                 current = conn;
             }
         }
         if (newCode) ui.BeginInvoke(() => CodeChanged?.Invoke());
-        if (why != null)
-        {
-            try { conn.Stream.Write(Pad.Message(Pad.Reject, why)); } catch (Exception) { }
-            return false;
-        }
+        if (why != null) { open.Dispose(); Refuse(conn, why); return false; }
+        old?.Close();
         conn.StartWriter();
         var r = screen();
         conn.Send(Pad.WelcomeMessage(Environment.MachineName, r.Right - r.Left, r.Bottom - r.Top));
@@ -243,9 +295,6 @@ sealed class PadServer : IDisposable
         ui.BeginInvoke(() => ConnectionChanged?.Invoke(name));
         return true;
     }
-
-    static bool CodesEqual(string a, string b) =>
-        System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(System.Text.Encoding.UTF8.GetBytes(a), System.Text.Encoding.UTF8.GetBytes(b));
 
     // messages for the UI: queued here and handed over in one go, at input priority, so a flood can't starve the
     // presenter's own mouse and keys, and can't grow without end
@@ -438,5 +487,27 @@ sealed class DnsSd : IDisposable
         // the request and the instance it points to stay allocated: Windows may still use them after deregistering
         // (a few hundred bytes, once per switch-off)
         request = IntPtr.Zero;
+    }
+}
+
+/// <summary>
+/// This PC's own key for the tablet link, kept between runs in the user's Windows key store, so a tablet can
+/// recognise this PC next time (and notice a machine pretending to be it). If the store can't be used, a key for
+/// this run only: tablets then see a new PC and show its check again.
+/// </summary>
+static class PadIdentity
+{
+    const string KeyName = "Contrast Ink tablet link";
+
+    public static System.Security.Cryptography.ECDiffieHellman Load()
+    {
+        try
+        {
+            var k = System.Security.Cryptography.CngKey.Exists(KeyName)
+                ? System.Security.Cryptography.CngKey.Open(KeyName)
+                : System.Security.Cryptography.CngKey.Create(System.Security.Cryptography.CngAlgorithm.ECDiffieHellmanP256, KeyName);
+            return new System.Security.Cryptography.ECDiffieHellmanCng(k);
+        }
+        catch (System.Security.Cryptography.CryptographicException e) { App.Log(e); return PadCrypto.NewKey(); }
     }
 }

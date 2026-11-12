@@ -615,7 +615,7 @@ public class PadProtocolTests
         var msgs = new List<(byte type, byte[] payload)>();
         for (int i = 0; i < all.Length; i += 3) msgs.AddRange(r.Add(all.AsSpan(i, Math.Min(3, all.Length - i))));
         Assert.Equal(new byte[] { Pad.Hello, Pad.StrokeBegin, Pad.StrokePoints, Pad.StrokeEnd, Pad.Command, Pad.FrameAck }, msgs.Select(m => m.type));
-        Assert.Equal(("123456", "t"), Pad.ReadHello(msgs[0].payload));
+        Assert.Null(Pad.ReadHelloV2(msgs[0].payload));   // a version-1 HELLO (the code in the clear) is refused
         Assert.Equal((0.5f, 0.25f, false), Pad.ReadBegin(msgs[1].payload));
         Assert.Equal(new List<(float, float)> { (0.5f, 0.5f), (1f, 0f) }, Pad.ReadPoints(msgs[2].payload));
         Assert.Equal(new PadCommand(PadAction.Undo), Pad.ReadCommand(msgs[4].payload));
@@ -660,7 +660,7 @@ public class PadProtocolTests
     {
         var w = new PadReader().Add(Pad.WelcomeMessage("LAPTOP", 1920, 1080))[0];
         using var doc = System.Text.Json.JsonDocument.Parse(w.payload);
-        Assert.Equal((Pad.Welcome, "LAPTOP", 1920, 1), (w.type, doc.RootElement.GetProperty("name").GetString(), doc.RootElement.GetProperty("screenW").GetInt32(), doc.RootElement.GetProperty("version").GetInt32()));
+        Assert.Equal((Pad.Welcome, "LAPTOP", 1920, 2), (w.type, doc.RootElement.GetProperty("name").GetString(), doc.RootElement.GetProperty("screenW").GetInt32(), doc.RootElement.GetProperty("version").GetInt32()));
         var st = new PadReader().Add(Pad.StateMessage(new Settings { Tool = Tool.Laser, Color = 3 }, canUndo: true))[0];
         using var s = System.Text.Json.JsonDocument.Parse(st.payload);
         Assert.Equal(("laser", 3, true), (s.RootElement.GetProperty("tool").GetString(), s.RootElement.GetProperty("color").GetInt32(), s.RootElement.GetProperty("canUndo").GetBoolean()));
@@ -678,19 +678,26 @@ public class PadSafetyTests
     [Theory]
     [InlineData("1")] [InlineData("[]")] [InlineData("\"x\"")] [InlineData("null")] [InlineData("{\"code\":5}")]
     [InlineData("{\"code\":\"\\uD800\"}")] [InlineData("{{{")] [InlineData("")]
-    public void ABrokenHelloIsRefusedNeverThrown(string json)
+    public void ABrokenHelloIsRefusedNeverThrown(string json) => Assert.Null(Pad.ReadHelloV2(Hello(json)));
+
+    static string Key => Convert.ToBase64String(new byte[] { 4 }.Concat(new byte[64]).ToArray());
+
+    [Theory]
+    [InlineData("{\"version\":2,\"key\":\"!!!\"}")] [InlineData("{\"version\":2,\"key\":\"AAAA\"}")]
+    [InlineData("{\"version\":\"2\",\"key\":\"K\"}")] [InlineData("{\"version\":2.5,\"key\":\"K\"}")] [InlineData("{\"version\":2,\"key\":5}")]
+    public void ABrokenVersion2HelloIsRefused(string json) => Assert.Null(Pad.ReadHelloV2(Hello(json.Replace("\"K\"", "\"" + Key + "\""))));
+
+    [Fact]
+    public void AVersion2HelloGivesTheKeyAndAShortPrintableName()
     {
-        var h = Pad.ReadHello(Hello(json));
-        Assert.True(h == null || h.Value.code != "123456");
+        var h = Pad.ReadHelloV2(Hello($"{{\"version\":2,\"device\":\"\\u0007iPad\\n\",\"key\":\"{Key}\"}}"));
+        Assert.Equal(("iPad", 65), (h!.Value.device, h.Value.key.Length));
     }
 
     [Fact]
     public void AnOversizedHelloIsRefused() =>
-        Assert.Null(Pad.ReadHello(Hello("{\"code\":\"123456\",\"device\":\"" + new string('x', 2000) + "\"}")));
+        Assert.Null(Pad.ReadHelloV2(Hello($"{{\"version\":2,\"key\":\"{Key}\",\"device\":\"" + new string('x', 2000) + "\"}")));
 
-    [Fact]
-    public void TheDeviceNameIsShortAndPrintable() =>
-        Assert.Equal("iPad", Pad.ReadHello(Hello("{\"code\":\"1\",\"device\":\"\\u0007iPad\\n\"}"))!.Value.device);
 
     [Fact]
     public void BeforeTheCodeAHugeLengthIsRefusedAtOnce()
@@ -790,27 +797,27 @@ public class PadCryptoTests
     }
 
     [Fact]
+    public void ThePcCheckIsTheSpecs() =>
+        Assert.Equal("6FC6-6A90", Pad.PcCheck(Convert.FromHexString("04D65A93977CAA3D1B081852FF57A79E465F1660577304BAEAD505DD3A48589CF350185E895372DF6221EA3A137557E473FDDB6755F05BD507C3C533FCE9C91285")));
+
+    [Fact]
+    public void TheSpecsVectorsHold()
+    {
+        using var t = PadCrypto.FromPrivate(TabletD);
+        using var p = PadCrypto.FromPrivate(PcD);
+        Assert.Equal("040217E617F0B6443928278F96999E69A23A4F2C152BDF6D6CDF66E5B80282D4ED194A7DEBCB97712D2DDA3CA85AA8765A56F45FC758599652F2897C65306E5794", Convert.ToHexString(PadCrypto.PublicPoint(t)));
+        var keys = Both("123456", "123456", out _);
+        Assert.Equal("DF563C024C91B19647C1653F3A8E43A1F43779F68708CF133853BCD3BC3A5A98", Convert.ToHexString(keys.toPc));
+        Assert.Equal("A848F926D9916CEE78F6203D58A043C11A99389BE63198DE580581A4CBAAB8D2", Convert.ToHexString(keys.toTablet));
+        using var seal = new PadSeal(keys.toPc);
+        Assert.Equal("0000000000000000000000012DCC2D016D67988C73F5CD844EA2BE5AFB2499203A49A95C4546",
+            Convert.ToHexString(seal.Seal(Pad.Message(Pad.Command, PadCrypto.ProofText))));
+    }
+
+    [Fact]
     public void NotAPointIsRefused()
     {
         Assert.Null(PadCrypto.ReadPoint(new byte[65]));
         Assert.Null(PadCrypto.ReadPoint(new byte[] { 4, 1, 2 }));
-    }
-
-    /// <summary>Prints the vectors written into docs/pad-protocol.md (the Android and iPad tests assert them).</summary>
-    [Fact]
-    public void SpecVectors()
-    {
-        using var t = PadCrypto.FromPrivate(TabletD);
-        using var p = PadCrypto.FromPrivate(PcD);
-        var keys = Both("123456", "123456", out _);
-        using var seal = new PadSeal(keys.toPc);
-        var proof = seal.Seal(Pad.Message(Pad.Command, PadCrypto.ProofText));
-        File.WriteAllText(Path.Combine(Path.GetTempPath(), "pad-v2-vectors.txt"),
-            $"tablet public key   {Convert.ToHexString(PadCrypto.PublicPoint(t))}\n" +
-            $"PC public key       {Convert.ToHexString(PadCrypto.PublicPoint(p))}\n" +
-            $"tablet->PC key      {Convert.ToHexString(keys.toPc)}\n" +
-            $"PC->tablet key      {Convert.ToHexString(keys.toTablet)}\n" +
-            $"first sealed PROOF  {Convert.ToHexString(proof)}  (COMMAND \"hello\", counter 1)\n");
-        Assert.Equal(65 + 0, PadCrypto.PublicPoint(t).Length + 0);
     }
 }

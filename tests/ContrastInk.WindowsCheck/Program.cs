@@ -333,9 +333,71 @@ static class Program
     }
 
     /// <summary>
-    /// A stand-in tablet, over the network as a real one would be: a wrong code is refused; the right one gets the
-    /// screen's picture, one after another as each is acknowledged; a line drawn on it appears on the screen; undo
-    /// and clear from it work; "next" turns the slide.
+    /// A stand-in tablet speaking version 2 as a real one does: its own fresh key, the PC's key and salt back, keys
+    /// from the code, a sealed PROOF; from then on every message sealed both ways.
+    /// </summary>
+    sealed class TestTablet : IDisposable
+    {
+        public readonly System.Net.Sockets.TcpClient Tcp;
+        public readonly System.Net.Sockets.NetworkStream Net;
+        readonly PadReader reader = new();
+        PadSeal? toPc, fromPc;
+        public string Refused = "";
+        public byte[]? PcKey;
+
+        public TestTablet(int port) { Tcp = new System.Net.Sockets.TcpClient("127.0.0.1", port); Net = Tcp.GetStream(); }
+
+        /// <summary>The handshake with this code; true when the PC let it in (WELCOME opened).</summary>
+        public bool Pair(string code)
+        {
+            using var mine = PadCrypto.NewKey();
+            Net.Write(Pad.Message(Pad.Hello, JsonSerializer.Serialize(new { device = "check", version = 2, key = Convert.ToBase64String(PadCrypto.PublicPoint(mine)) })));
+            var first = PadRead(Net, reader, g => g.Count > 0, 5000);
+            if (first.Count == 0) return false;
+            if (first[0].type == Pad.Reject) { Refused = System.Text.Encoding.UTF8.GetString(first[0].payload); return false; }
+            using var ch = JsonDocument.Parse(first[0].payload);
+            PcKey = Convert.FromBase64String(ch.RootElement.GetProperty("key").GetString()!);
+            var salt = Convert.FromBase64String(ch.RootElement.GetProperty("salt").GetString()!);
+            var (a, b) = PadCrypto.Keys(mine, PadCrypto.ReadPoint(PcKey)!, salt, code);
+            toPc = new PadSeal(a); fromPc = new PadSeal(b);
+            Net.Write(Pad.Message(PadCrypto.Proof, toPc.Seal(Pad.Message(Pad.Command, PadCrypto.ProofText))));
+            var answer = Read(g => g.Count > 0, 5000);
+            if (answer.Count == 0) return false;
+            if (answer[0].type == Pad.Reject) { Refused = System.Text.Encoding.UTF8.GetString(answer[0].payload); return false; }
+            return answer[0].type == Pad.Welcome;
+        }
+
+        public void Send(byte type, byte[] payload) => Net.Write(Pad.Message(PadCrypto.Sealed, toPc!.Seal(Pad.Message(type, payload))));
+        public void Send(byte type, string text) => Send(type, System.Text.Encoding.UTF8.GetBytes(text));
+
+        /// <summary>What the PC sent, opened (a REJECT in the clear is passed as it is).</summary>
+        public List<(byte type, byte[] payload)> Read(Func<List<(byte type, byte[] payload)>, bool> enough, int ms)
+        {
+            var opened = new List<(byte, byte[])>();
+            var buf = new byte[1 << 16];
+            var until = DateTime.UtcNow.AddMilliseconds(ms);
+            while (DateTime.UtcNow < until && !enough(opened))
+            {
+                if (!Net.DataAvailable) { Thread.Sleep(20); continue; }
+                int n = Net.Read(buf, 0, buf.Length);
+                if (n <= 0) break;
+                foreach (var (t, p) in reader.Add(buf.AsSpan(0, n)))
+                {
+                    if (t == PadCrypto.Sealed && fromPc?.Open(p) is { } inner) opened.AddRange(new PadReader().Add(inner));
+                    else if (t != PadCrypto.Sealed) opened.Add((t, p));
+                }
+            }
+            return opened;
+        }
+
+        public void Dispose() { toPc?.Dispose(); fromPc?.Dispose(); Tcp.Dispose(); }
+    }
+
+    /// <summary>
+    /// A stand-in tablet, over the network as a real one would be (version 2, encrypted): a wrong code is refused; the
+    /// right one gets the screen's picture, one after another as each is acknowledged; a line drawn on it appears on
+    /// the screen and in its picture; undo and next work; a second tablet with the right code takes over; strangers'
+    /// broken messages can't end the app, and guessing is locked out.
     /// </summary>
     static void TabletPad(JsonElement st)
     {
@@ -344,50 +406,54 @@ static class Program
         if (port == 0) return;
         try
         {
-            using (var bad = new System.Net.Sockets.TcpClient("127.0.0.1", port))
+            using (var wrong = new TestTablet(port))
             {
-                var bs = bad.GetStream();
-                bs.Write(Pad.Message(Pad.Hello, "{\"code\":\"000000\",\"device\":\"check\",\"version\":1}"));
-                var m = PadRead(bs, new PadReader(), g => g.Count > 0, 5000);
-                Check(m.Any(x => x.type == Pad.Reject), "tablet link: a wrong code is refused", m.Count == 0 ? "no answer" : System.Text.Encoding.UTF8.GetString(m[0].payload));
+                bool inWithWrong = wrong.Pair("000000");
+                Check(!inWithWrong && wrong.Refused == Pad.WrongCode, "tablet link: a wrong code is refused (the code itself never sent)", wrong.Refused);
             }
-            using var c = new System.Net.Sockets.TcpClient("127.0.0.1", port);
-            var ns = c.GetStream();
-            var r = new PadReader();
-            ns.Write(Pad.Message(Pad.Hello, $"{{\"code\":\"{PadCode}\",\"device\":\"check\",\"version\":1}}"));
-            var got = PadRead(ns, r, g => g.Any(x => x.type == Pad.Frame) && g.Any(x => x.type == Pad.State), 8000);
-            var welcome = got.FirstOrDefault(x => x.type == Pad.Welcome);
-            Check(welcome.payload != null && JsonDocument.Parse(welcome.payload).RootElement.GetProperty("screenW").GetInt32() == screen.Width,
-                  "tablet link: the right code is welcomed, with the screen's size", welcome.payload == null ? "no WELCOME" : System.Text.Encoding.UTF8.GetString(welcome.payload));
+            using (var old = new System.Net.Sockets.TcpClient("127.0.0.1", port))
+            {
+                old.GetStream().Write(Pad.Message(Pad.Hello, "{\"code\":\"" + PadCode + "\",\"device\":\"old\",\"version\":1}"));
+                var m = PadRead(old.GetStream(), new PadReader(), g => g.Count > 0, 5000);
+                var said = m.Count > 0 ? System.Text.Encoding.UTF8.GetString(m[0].payload) : "no answer";
+                Check(said == Pad.UpdateTablet, "tablet link: a version-1 tablet (code in the clear) is told to update", said);
+            }
+
+            using var t = new TestTablet(port);
+            bool paired = t.Pair(PadCode);
+            Check(paired, "tablet link: the right code is let in, everything sealed from then on", paired ? "WELCOME opened" : "refused: " + t.Refused);
+            if (!paired) return;
+            Check(t.PcKey != null && Pad.PcCheck(t.PcKey).Length == 9, "tablet link: the PC sends its own key (the tablet's PC check)", t.PcKey == null ? "none" : Pad.PcCheck(t.PcKey));
+            var got = t.Read(g => g.Any(x => x.type == Pad.Frame) && g.Any(x => x.type == Pad.State), 8000);
             var frame = got.FirstOrDefault(x => x.type == Pad.Frame);
             Size size = default;
             if (frame.payload != null) using (var img = Image.FromStream(new MemoryStream(frame.payload))) size = img.Size;
             Check(size.Width > 100 && Math.Abs((double)size.Width / size.Height - (double)screen.Width / screen.Height) < 0.02,
                   "tablet link: the tablet gets a picture of the screen", $"{(frame.payload?.Length ?? 0) / 1024} KB, {size.Width} x {size.Height}");
-            ns.Write(Pad.Message(Pad.FrameAck, ReadOnlySpan<byte>.Empty));
-            var next = PadRead(ns, r, g => g.Any(x => x.type == Pad.Frame), 3000);
+            t.Send(Pad.FrameAck, Array.Empty<byte>());
+            var next = t.Read(g => g.Any(x => x.type == Pad.Frame), 3000);
             Check(next.Any(x => x.type == Pad.Frame), "tablet link: the next picture comes once the last is acknowledged", $"{next.Count} messages");
 
             // a red line drawn on the tablet, across the middle of the screen
-            ns.Write(Pad.Message(Pad.Command, "clear"));
-            ns.Write(Pad.Message(Pad.Command, "tool:pen"));
-            ns.Write(Pad.Message(Pad.Command, "color:0"));
+            t.Send(Pad.Command, "clear");
+            t.Send(Pad.Command, "tool:pen");
+            t.Send(Pad.Command, "color:0");
             float fy = (float)(Row(5) - screen.Top) / screen.Height;
-            ns.Write(Pad.Message(Pad.StrokeBegin, PadPoint(0.2f, fy).Concat(new byte[] { 0 }).ToArray()));
+            t.Send(Pad.StrokeBegin, PadPoint(0.2f, fy).Concat(new byte[] { 0 }).ToArray());
             var pts = new List<byte> { 0, 10 };
             for (int i = 1; i <= 10; i++) pts.AddRange(PadPoint(0.2f + 0.04f * i, fy));
-            ns.Write(Pad.Message(Pad.StrokePoints, pts.ToArray()));
-            ns.Write(Pad.Message(Pad.StrokeEnd, ReadOnlySpan<byte>.Empty));
+            t.Send(Pad.StrokePoints, pts.ToArray());
+            t.Send(Pad.StrokeEnd, Array.Empty<byte>());
             Thread.Sleep(600);
             var red = ColorTranslator.FromHtml(Settings.Colors[0]);
             int mx = screen.Left + (int)(screen.Width * 0.4);
             var drawn = Closest(Shot("40-tablet-line"), mx, Row(5), red, 6);
             Check(Diff(drawn, red) <= 40, "tablet link: a line drawn on the tablet appears on the screen", Hex(drawn));
             // the tablet's next picture has the line too (the marks are laid over the copy of the screen)
-            ns.Write(Pad.Message(Pad.FrameAck, ReadOnlySpan<byte>.Empty));
-            PadRead(ns, r, g => g.Any(x => x.type == Pad.Frame), 3000);   // the one already on its way
-            ns.Write(Pad.Message(Pad.FrameAck, ReadOnlySpan<byte>.Empty));
-            var withLine = PadRead(ns, r, g => g.Any(x => x.type == Pad.Frame), 3000).LastOrDefault(x => x.type == Pad.Frame);
+            t.Send(Pad.FrameAck, Array.Empty<byte>());
+            t.Read(g => g.Any(x => x.type == Pad.Frame), 3000);   // the one already on its way
+            t.Send(Pad.FrameAck, Array.Empty<byte>());
+            var withLine = t.Read(g => g.Any(x => x.type == Pad.Frame), 3000).LastOrDefault(x => x.type == Pad.Frame);
             Color inPicture = Color.Black;
             if (withLine.payload != null)
                 using (var img = new Bitmap(new MemoryStream(withLine.payload)))
@@ -397,29 +463,28 @@ static class Program
                 }
             Check(Diff(inPicture, red) <= 60, "tablet link: the tablet's picture shows the marks", Hex(inPicture));
 
-            // a second tablet guessing while this one is connected learns nothing about the code
-            using (var other = new System.Net.Sockets.TcpClient("127.0.0.1", port))
-            {
-                var os = other.GetStream();
-                os.Write(Pad.Message(Pad.Hello, "{\"code\":\"999999\",\"device\":\"other\",\"version\":1}"));
-                var m = PadRead(os, new PadReader(), g => g.Count > 0, 5000);
-                var said = m.Count > 0 ? System.Text.Encoding.UTF8.GetString(m[0].payload) : "no answer";
-                Check(said.StartsWith("Another tablet", StringComparison.Ordinal), "tablet link: while one is connected, another hears only that (not whether its code was right)", said);
-            }
-            ns.Write(Pad.Message(Pad.Command, "undo"));
+            t.Send(Pad.Command, "undo");
             Thread.Sleep(500);
             var undone = Closest(Shot("41-tablet-undo"), mx, Row(5), red, 6);
             Check(IsWhite(undone), "tablet link: undo on the tablet takes it away", Hex(undone));
 
             int k0 = slide.Keys.Count;
-            ns.Write(Pad.Message(Pad.Command, "next"));
+            t.Send(Pad.Command, "next");
             Thread.Sleep(500);
             Check(slide.Keys.Skip(k0).Contains(Keys.Right), "tablet link: next on the tablet turns the slide", "keys seen: " + string.Join(",", slide.Keys.Skip(k0)));
-            c.Close();
+
+            // a second tablet with the right code takes over (the same tablet back after a Wi-Fi drop)
+            using (var again = new TestTablet(port))
+            {
+                bool took = again.Pair(PadCode);
+                Thread.Sleep(300);
+                bool firstClosed = t.Read(g => false, 800).Count == 0 && !IsOpen(t.Tcp);
+                Check(took && firstClosed, "tablet link: the right code again takes over (a tablet back after a Wi-Fi drop)", $"let in {took}, the old connection closed {firstClosed}");
+            }
             Thread.Sleep(500);
 
             // strangers on the Wi-Fi, without the code: a broken first message once ended the whole app
-            foreach (var junk in new[] { new byte[] { 0x01, 0, 0, 0, 1, (byte)'1' }, Pad.Message(Pad.Hello, "{\"code\":\"\\uD800\"}"), new byte[] { 0x01, 0, 0x10, 0, 0 } })
+            foreach (var junk in new[] { new byte[] { 0x01, 0, 0, 0, 1, (byte)'1' }, Pad.Message(Pad.Hello, "{\"version\":2,\"key\":\"\\uD800\"}"), new byte[] { 0x01, 0, 0x10, 0, 0 }, Pad.Message(PadCrypto.Proof, new byte[40]) })
                 using (var j = new System.Net.Sockets.TcpClient("127.0.0.1", port))
                 {
                     j.GetStream().Write(junk);
@@ -431,18 +496,23 @@ static class Program
             // guessing: five wrong codes in a row lock everyone out for a while
             string last = "";
             for (int i = 0; i < 6; i++)
-                using (var g = new System.Net.Sockets.TcpClient("127.0.0.1", port))
+                using (var g = new TestTablet(port))
                 {
-                    g.GetStream().Write(Pad.Message(Pad.Hello, $"{{\"code\":\"{100000 + i}\",\"device\":\"guess\",\"version\":1}}"));
-                    var m = PadRead(g.GetStream(), new PadReader(), x => x.Count > 0, 3000);
-                    last = m.Count > 0 ? System.Text.Encoding.UTF8.GetString(m[0].payload) : "no answer";
+                    g.Pair((100000 + i).ToString());
+                    last = g.Refused;
                 }
-            Check(last.StartsWith("Too many wrong codes", StringComparison.Ordinal), "tablet link: after five wrong codes, guessing is locked out", last);
+            Check(last == Pad.TooManyWrong, "tablet link: after five wrong codes, guessing is locked out", last);
         }
-        catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException or JsonException or ArgumentException or InvalidDataException)
+        catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException or JsonException or ArgumentException or InvalidDataException or KeyNotFoundException or FormatException)
         {
             Check(false, "tablet link: the stand-in tablet's conversation", e.Message);
         }
+    }
+
+    static bool IsOpen(System.Net.Sockets.TcpClient c)
+    {
+        try { return !(c.Client.Poll(0, System.Net.Sockets.SelectMode.SelectRead) && c.Client.Available == 0); }
+        catch (Exception) { return false; }
     }
 
     // ---------------------------------------------------------------- undo, every way, and marks for each slide

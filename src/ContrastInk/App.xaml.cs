@@ -225,7 +225,7 @@ public partial class App : Application
     void StartPad(string? code = null)
     {
         if (pad != null) return;
-        pad = new PadServer(Dispatcher, ScreenForPad, overlay.Snapshot, code);
+        pad = new PadServer(Dispatcher, ScreenForPad, overlay.Snapshot, PadIdentity.Load(), code);
         pad.CodeChanged += () => { ShowPad(); toolbar.Notice("Someone kept typing wrong tablet codes: there is a new code (⚙ Settings)."); };
         pad.Received += OnPad;
         pad.ConnectionChanged += name =>
@@ -257,9 +257,9 @@ public partial class App : Application
 
     void ShowPad() => toolbar.ShowPad(pad == null ? null
         : pad.Connected != null ? $"Connected: {pad.Connected}."
-        : $"On the tablet: Contrast Ink → Use as a pad → {Environment.MachineName}, code {pad.Code}."
+        : $"On the tablet: Contrast Ink → Use as a pad → {Environment.MachineName}, code {pad.Code}. The first time, the tablet shows a PC check: it must be {pad.PcCheck}."
           + (PadServer.Addresses() is { Count: > 0 } a ? $" Or type the address {a[0]}" + (pad.Port != Pad.Port ? $":{pad.Port}" : "") + "." : "")
-          + " Windows may ask to let Contrast Ink use the network: allow it (lecture-hall Wi-Fi is often a \"public\" network: tick that too). Pictures of this screen go to the tablet over the Wi-Fi: with patient images, use a private network or your own hotspot.");
+          + " Windows may ask to let Contrast Ink use the network: allow it (lecture-hall Wi-Fi is often a \"public\" network: tick that too). The pictures sent to the tablet are encrypted; with patient images a private network or your own hotspot is safer still.");
 
     void OnPad(byte type, byte[] payload)
     {
