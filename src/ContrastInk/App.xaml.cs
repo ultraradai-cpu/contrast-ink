@@ -225,7 +225,7 @@ public partial class App : Application
     void StartPad(string? code = null)
     {
         if (pad != null) return;
-        pad = new PadServer(Dispatcher, ScreenForPad, overlay.Snapshot, PadIdentity.Load(), code);
+        pad = new PadServer(Dispatcher, ScreenForPad, overlay.Snapshot, PadIdentity.Load(), code, usbDoorAlways: code != null);   // code: only the Windows check
         pad.CodeChanged += () => { ShowPad(); toolbar.Notice("Someone kept typing wrong tablet codes: there is a new code (⚙ Settings)."); };
         pad.Received += OnPad;
         pad.ConnectionChanged += name =>

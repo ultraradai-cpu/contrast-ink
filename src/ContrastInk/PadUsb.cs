@@ -162,13 +162,15 @@ static class Adb
         return null;
     }
 
-    public static void Watch(Func<bool> running)
+    /// <param name="any">Told every few seconds whether at least one tablet is set up (the PC's cable door opens only then).</param>
+    public static void Watch(Func<bool> running, Action<bool> any)
     {
         var done = new HashSet<string>();
         while (running())
         {
             var adb = Find();
-            if (adb != null)
+            if (adb == null) done.Clear();
+            else
             {
                 var now = Run(adb, "devices")?.Split('\n').Select(l => l.Trim().Split('\t'))
                     .Where(p => p.Length == 2 && p[1] == "device").Select(p => p[0]).ToHashSet() ?? new HashSet<string>();
@@ -176,6 +178,7 @@ static class Adb
                     if (Run(adb, $"-s {serial} reverse tcp:{Pad.UsbPort} tcp:{Pad.UsbPort}") != null) done.Add(serial);
                 done.IntersectWith(now);   // unplugged: set up again when it comes back
             }
+            any(done.Count > 0);
             for (int i = 0; i < 10 && running(); i++) Thread.Sleep(500);
         }
     }

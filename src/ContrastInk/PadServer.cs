@@ -50,7 +50,12 @@ sealed class PadServer : IDisposable
     readonly object gate = new();       // guards current, Code, guard
     TcpListener? listener, usbListener;
     Connection? current;
-    int pending;
+    // strangers not yet in, counted per door (one shared count let four stalled strangers on the Wi-Fi block even a
+    // tablet on the cable) and per address on the Wi-Fi (one machine can't hold every place)
+    int pendingWifi, pendingUsb;
+    readonly Dictionary<IPAddress, int> pendingByAddress = new();
+    const int MaxPendingPerAddress = 2, MaxPendingUsb = 2;
+    readonly bool usbDoorAlways;   // the Windows check: the cable door open with no Android tablet attached
     volatile bool running;
     DnsSd? advert;
 
@@ -104,8 +109,9 @@ sealed class PadServer : IDisposable
     }
 
     public PadServer(Dispatcher ui, Func<Native.RECT> screen, Func<System.Windows.Media.Imaging.BitmapSource?> marks,
-        System.Security.Cryptography.ECDiffieHellman pcKey, string? code = null)
+        System.Security.Cryptography.ECDiffieHellman pcKey, string? code = null, bool usbDoorAlways = false)
     {
+        this.usbDoorAlways = usbDoorAlways;
         this.ui = ui;
         this.screen = screen;
         this.marks = marks;
@@ -125,12 +131,10 @@ sealed class PadServer : IDisposable
         }
         if (listener == null) throw new InvalidOperationException("no free network port (47820 to 47829 are all in use)");
         Run("pad accept", () => AcceptLoop(listener, usb: false));
-        // the USB door: reachable only from this PC (Android's USB link, adb reverse, arrives here)
-        try { usbListener = new TcpListener(IPAddress.Loopback, Pad.UsbPort); usbListener.Start(); Run("pad usb accept", () => AcceptLoop(usbListener, usb: true)); }
-        catch (SocketException e) { App.Log(e); usbListener = null; }
+        if (usbDoorAlways) UsbDoor(true);
         Run("pad frames", FrameLoop);
         Run("pad ipad usb", () => UsbMux.Watch(() => running, OpenedOverUsb));
-        Run("pad android usb", () => Adb.Watch(() => running));
+        Run("pad android usb", () => Adb.Watch(() => running, any => { if (!usbDoorAlways) UsbDoor(any); }));
         try { advert = DnsSd.Register(Environment.MachineName, Port); } catch (Exception e) { App.Log(e); }
     }
 
@@ -158,30 +162,68 @@ sealed class PadServer : IDisposable
     /// <summary>Ends the tablet's connection (the presenter switched the link off, or wants another tablet).</summary>
     public void Drop() { Connection? c; lock (gate) c = current; c?.Close(); }
 
+    /// <summary>
+    /// The cable door for Android (where adb reverse arrives): reachable only from this PC, and open only while an
+    /// Android tablet is plugged in and set up — not all the time, since any program on this PC can reach it.
+    /// </summary>
+    void UsbDoor(bool open)
+    {
+        lock (gate)
+        {
+            if (open == (usbListener != null) || (open && !running)) return;
+            if (!open) { try { usbListener!.Stop(); } catch (Exception) { } usbListener = null; return; }
+            try
+            {
+                var l = new TcpListener(IPAddress.Loopback, Pad.UsbPort);
+                l.Start();
+                usbListener = l;
+                Run("pad usb accept", () => AcceptLoop(l, usb: true));
+            }
+            catch (SocketException e) { App.Log(e); }
+        }
+    }
+
     void AcceptLoop(TcpListener l, bool usb)
     {
         while (running)
         {
             TcpClient c;
             try { c = l.AcceptTcpClient(); }
-            catch (Exception) when (!running) { return; }
-            catch (SocketException) { continue; }
-            if (Interlocked.Increment(ref pending) > MaxPending) { Interlocked.Decrement(ref pending); try { c.Close(); } catch (Exception) { } continue; }
-            Run("pad tablet", () => Serve(c, usb));
+            catch (Exception) { if (!running || !ReferenceEquals(l, usb ? usbListener : listener)) return; continue; }
+            var from = (c.Client.RemoteEndPoint as IPEndPoint)?.Address ?? IPAddress.None;
+            bool room;
+            lock (gate)
+            {
+                if (usb) room = pendingUsb < MaxPendingUsb;
+                else room = pendingWifi < MaxPending && pendingByAddress.GetValueOrDefault(from) < MaxPendingPerAddress;
+                if (room)
+                {
+                    if (usb) pendingUsb++;
+                    else { pendingWifi++; pendingByAddress[from] = pendingByAddress.GetValueOrDefault(from) + 1; }
+                }
+            }
+            if (!room) { try { c.Close(); } catch (Exception) { } continue; }
+            Run("pad tablet", () => Serve(c, usb, () =>
+            {
+                lock (gate)
+                {
+                    if (usb) { pendingUsb--; return; }
+                    pendingWifi--;
+                    if (--pendingByAddress[from] <= 0) pendingByAddress.Remove(from);
+                }
+            }));
         }
     }
 
-    /// <summary>An iPad's USB connection, opened by this PC through Apple's USB service; ends when the session ends.</summary>
-    void OpenedOverUsb(TcpClient c)
-    {
-        Interlocked.Increment(ref pending);
-        Serve(c, usb: true);
-    }
+    /// <summary>An iPad's USB connection, opened by this PC through Apple's USB service (one per iPad, so no count);
+    /// ends when the session ends.</summary>
+    void OpenedOverUsb(TcpClient c) => Serve(c, usb: true, () => { });
 
     /// <summary>A tablet is connected by the cable (not over Wi-Fi).</summary>
     public bool OverUsb => current?.Usb == true;
 
-    void Serve(TcpClient tcp, bool usb)
+    /// <param name="admitted">Called once when the connection stops being a stranger (let in, or ended).</param>
+    void Serve(TcpClient tcp, bool usb, Action admitted)
     {
         var conn = new Connection(tcp) { Usb = usb };
         var reader = new PadReader { MaxLength = Pad.HelloMax };   // a stranger's first messages are small
@@ -232,7 +274,7 @@ sealed class PadServer : IDisposable
                         if (!Prove(conn, type, payload, tabletKey!, salt!, device)) return;
                         step = 2;
                         reader.MaxLength = Pad.MaxLength;
-                        Interlocked.Decrement(ref pending); counted = false;
+                        admitted(); counted = false;
                         continue;
                     }
                     if (!ReferenceEquals(Volatile.Read(ref current), conn)) return;   // replaced or dropped
@@ -253,7 +295,7 @@ sealed class PadServer : IDisposable
         catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException or InvalidDataException) { }
         finally
         {
-            if (counted) Interlocked.Decrement(ref pending);
+            if (counted) admitted();
             conn.Close();
             bool wasCurrent;
             lock (gate) { wasCurrent = ReferenceEquals(current, conn); if (wasCurrent) current = null; }
@@ -436,7 +478,7 @@ sealed class PadServer : IDisposable
         running = false;
         advert?.Dispose();
         try { listener?.Stop(); } catch (Exception) { }
-        try { usbListener?.Stop(); } catch (Exception) { }
+        UsbDoor(false);
         Drop();
     }
 }
