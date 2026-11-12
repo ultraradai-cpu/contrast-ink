@@ -10,6 +10,7 @@ import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import ink.contrast.core.Fade
+import ink.contrast.core.Laser
 import ink.contrast.core.Marks
 import ink.contrast.core.Pt
 import ink.contrast.core.Settings
@@ -51,6 +52,11 @@ class InkView(context: Context, private val host: Host) : View(context) {
     private var shapeStart: Pt? = null
     private var shapeEnd: Pt? = null
     private var ignoreGesture = false              // a stylus button press: undo, and this touch draws nothing
+    // the laser pointer: never a mark
+    private class Glow(val x: Float, val y: Float, val at: Long, val line: Int)
+    private val laser = ArrayList<Glow>()
+    private var laserLine = 0
+    private var laserDot: Pt? = null
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
@@ -58,6 +64,10 @@ class InkView(context: Context, private val host: Host) : View(context) {
     }
 
     val markCount get() = marks.drawing.size
+    /** The laser's line is on screen (for the app's own test). */
+    val laserShowing get() = laser.isNotEmpty()
+    /** The newest mark's opacity, 0 to 1 (for the app's own test). */
+    val lastMarkAlpha get() = marks.drawing.lastOrNull()?.let { Color.alpha(it.color) / 255f }
     val canUndo get() = marks.canUndo
 
     init { updateDescription() }
@@ -114,6 +124,7 @@ class InkView(context: Context, private val host: Host) : View(context) {
         if (ignoreGesture) return true
         val p = Pt(e.x, e.y)
         val erasing = s.tool == Tool.ERASER || (s.stylusEraserEnd && type == MotionEvent.TOOL_TYPE_ERASER)
+        if (s.tool == Tool.LASER && !erasing) { laserTouch(e); return true }
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 liveErasing = erasing
@@ -132,6 +143,64 @@ class InkView(context: Context, private val host: Host) : View(context) {
         }
         invalidate()
         return true
+    }
+
+    // ---------- laser pointer ----------
+
+    private fun laserTouch(e: MotionEvent) {
+        val now = SystemClock.uptimeMillis()
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> { laserLine++; laser += Glow(e.x, e.y, now, laserLine) }
+            MotionEvent.ACTION_MOVE -> {
+                for (i in 0 until e.historySize) laser += Glow(e.getHistoricalX(i), e.getHistoricalY(i), e.getHistoricalEventTime(i), laserLine)
+                laser += Glow(e.x, e.y, now, laserLine)
+            }
+        }
+        // the dot stays while touching; lifted, a stylus's hover brings it back, a finger's doesn't
+        laserDot = if (e.actionMasked == MotionEvent.ACTION_UP || e.actionMasked == MotionEvent.ACTION_CANCEL) null else Pt(e.x, e.y)
+        postInvalidateOnAnimation()
+    }
+
+    /** A stylus hovering over the layer (with the laser chosen): the dot follows it. */
+    override fun onHoverEvent(e: MotionEvent): Boolean {
+        if (host.settings.tool != Tool.LASER) return super.onHoverEvent(e)
+        laserDot = if (e.actionMasked == MotionEvent.ACTION_HOVER_EXIT) null else Pt(e.x, e.y)
+        invalidate()
+        return true
+    }
+
+    /** The laser was put away (another tool, or drawing off): the dot goes, the line fades as it would. */
+    fun hideLaserDot() { laserDot = null; invalidate() }
+
+    private fun drawLaser(c: Canvas, now: Long) {
+        laser.removeAll { Laser.opacity(now - it.at) <= 0f }
+        val w = Laser.width(Settings.WIDTHS[host.settings.width]) * density
+        // three passes: a wide soft glow, the red line, a thin bright core (so it reads as light, not ink)
+        for (pass in 0..2) {
+            for (i in 1 until laser.size) {
+                val a = laser[i - 1]
+                val b = laser[i]
+                if (a.line != b.line) continue
+                val o = Laser.opacity(now - b.at)
+                paint.color = glowColor(pass, o)
+                paint.strokeWidth = when (pass) { 0 -> w * 2.4f; 1 -> w; else -> w * 0.3f }
+                c.drawLine(a.x, a.y, b.x, b.y, paint)
+            }
+        }
+        laserDot?.let { d ->
+            paint.style = Paint.Style.FILL
+            paint.color = glowColor(0, 1f); c.drawCircle(d.x, d.y, w * 1.3f, paint)
+            paint.color = glowColor(1, 1f); c.drawCircle(d.x, d.y, w / 2, paint)
+            paint.color = glowColor(2, 1f); c.drawCircle(d.x, d.y, w * 0.18f, paint)
+            paint.style = Paint.Style.STROKE
+        }
+        if (laser.isNotEmpty()) postInvalidateOnAnimation()
+    }
+
+    private fun glowColor(pass: Int, o: Float): Int = when (pass) {
+        0 -> Color.argb((255 * 0.25f * o).toInt(), Color.red(Laser.COLOR), Color.green(Laser.COLOR), Color.blue(Laser.COLOR))
+        1 -> Color.argb((255 * o).toInt(), Color.red(Laser.COLOR), Color.green(Laser.COLOR), Color.blue(Laser.COLOR))
+        else -> Color.argb((255 * 0.8f * o).toInt(), 255, 255, 255)
     }
 
     private fun move(p: Pt) {
@@ -172,7 +241,14 @@ class InkView(context: Context, private val host: Host) : View(context) {
     private fun newMark(points: List<Pt>, s: Settings, smooth: Boolean): Mark {
         val hl = s.tool == Tool.HIGHLIGHTER
         val w = if (hl) Settings.highlighterWidth(Settings.WIDTHS[s.width]) * density else width(s)
-        return Mark(nextId++, points.toList(), Settings.COLORS[s.color], w, hl, smooth)
+        return Mark(nextId++, points.toList(), inkColor(s), w, hl, smooth)
+    }
+
+    /** The chosen colour at the chosen opacity (the highlighter keeps its own see-through look). */
+    private fun inkColor(s: Settings): Int {
+        val c = Settings.COLORS[s.color]
+        if (s.tool == Tool.HIGHLIGHTER) return c
+        return Color.argb((Color.alpha(c) * s.opacity).toInt().coerceIn(0, 255), Color.red(c), Color.green(c), Color.blue(c))
     }
 
     // ---------- drawing ----------
@@ -185,10 +261,11 @@ class InkView(context: Context, private val host: Host) : View(context) {
             draw(canvas, m.points, m.color, m.width, m.highlighter, m.smooth, o)
         }
         val s = host.settings
-        live?.let { draw(canvas, it, Settings.COLORS[s.color], liveWidth(s), s.tool == Tool.HIGHLIGHTER, true, 1f) }
+        live?.let { draw(canvas, it, inkColor(s), liveWidth(s), s.tool == Tool.HIGHLIGHTER, true, 1f) }
         val a = shapeStart
         val b = shapeEnd
-        if (a != null && b != null) draw(canvas, shapePoints(a, b, s), Settings.COLORS[s.color], width(s), false, false, 1f)
+        if (a != null && b != null) draw(canvas, shapePoints(a, b, s), inkColor(s), width(s), false, false, 1f)
+        drawLaser(canvas, now)
         if (fading.keys.any { id -> marks.drawing.any { it.id == id } }) postInvalidateOnAnimation()
     }
 

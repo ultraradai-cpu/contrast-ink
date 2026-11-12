@@ -18,6 +18,7 @@ import android.os.Looper
 import android.view.Gravity
 import android.view.WindowManager
 import ink.contrast.core.Settings
+import ink.contrast.core.Tool
 
 /**
  * Contrast Ink running: a drawing layer over the whole screen and a small toolbar, both on top of every app.
@@ -145,6 +146,7 @@ class InkService : Service(), InkView.Host {
     fun setDrawing(on: Boolean) {
         if (drawing == on) return
         drawing = on
+        if (!on) ink.hideLaserDot()
         applyDrawing()
         runCatching { wm.updateViewLayout(ink, inkParams) }
         bar.refresh()
@@ -169,6 +171,7 @@ class InkService : Service(), InkView.Host {
 
     fun update(change: (Settings) -> Settings) {
         settings = change(settings).cleaned()
+        if (settings.tool != Tool.LASER) ink.hideLaserDot()
         prefs().edit().putString("settings", settings.encode()).apply()
         bar.refresh()
     }

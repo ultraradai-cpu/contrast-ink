@@ -89,6 +89,26 @@ object Fade {
 }
 
 /**
+ * The laser pointer: a glowing dot where the stylus hovers or touches, and while touching, a glowing line that fades
+ * away behind it. Never a mark: not kept, undone or erased.
+ */
+object Laser {
+    const val COLOR = 0xFFFF2D2D.toInt()
+    const val HOLD_MS = 600L
+    const val OUT_MS = 600L
+
+    /** How bright a bit of the line drawn this long ago is: 1 = fully, 0 = gone (drop it). */
+    fun opacity(ageMs: Long): Float {
+        if (ageMs <= HOLD_MS) return 1f
+        val t = (ageMs - HOLD_MS).toFloat() / OUT_MS
+        return if (t >= 1f) 0f else 1f - t
+    }
+
+    /** The line's width for the chosen pen width (density-independent pixels): easy to see from the back of a hall. */
+    fun width(penWidth: Float) = maxOf(8f, penWidth * 1.6f)
+}
+
+/**
  * The marks on screen and their undo history. Every change the presenter makes is a step that can be undone
  * (Clear too); a change that is not the presenter's (fading ink going away) is not.
  * Generic over the drawing type, so it is tested with plain values.
@@ -126,7 +146,7 @@ class Marks<D>(private val empty: D, private val historyLimit: Int = 300) {
     }
 }
 
-enum class Tool { PEN, HIGHLIGHTER, ARROW, OVAL, ERASER }
+enum class Tool { PEN, HIGHLIGHTER, ARROW, OVAL, ERASER, LASER }
 
 /** What the app remembers between lectures. The same colours, widths and tools as the Windows and iPad apps. */
 data class Settings(
@@ -134,6 +154,8 @@ data class Settings(
     val color: Int = 0,
     val width: Int = 1,
     val fadingInk: Boolean = false,
+    /** How solid new pen, arrow and circle marks are: 1 = solid, down to 0.1 (the highlighter keeps its own look). */
+    val opacity: Float = 1f,
     /** Off: only a stylus draws; a finger touching the drawing layer switches drawing off (so the next tap reaches the app below). */
     val fingerDraws: Boolean = true,
     /** The stylus's side button undoes the last mark. */
@@ -144,7 +166,8 @@ data class Settings(
     val showButtonNames: Boolean = true,
 ) {
     /** Keeps every value in range, so an old or damaged saved copy can't break the app. */
-    fun cleaned() = copy(color = color.coerceIn(0, COLORS.size - 1), width = width.coerceIn(0, WIDTHS.size - 1))
+    fun cleaned() = copy(color = color.coerceIn(0, COLORS.size - 1), width = width.coerceIn(0, WIDTHS.size - 1),
+        opacity = if (opacity.isFinite()) opacity.coerceIn(MIN_OPACITY, 1f) else 1f)
 
     companion object {
         // red, yellow, green, cyan and white stand out on dark MR/CT images; black is for white slides; red works on both
@@ -153,6 +176,7 @@ data class Settings(
         /** Pen thickness in density-independent pixels: thin for labels, thick to be seen in a video. */
         val WIDTHS = listOf(3f, 6f, 10f)
         val WIDTH_NAMES = listOf("Thin", "Medium", "Thick")
+        const val MIN_OPACITY = 0.1f
 
         /** The highlighter is a wide, see-through version of the same thickness. */
         fun highlighterWidth(width: Float) = width * 4 + 6
@@ -167,6 +191,7 @@ data class Settings(
                 color = v["color"]?.toIntOrNull() ?: d.color,
                 width = v["width"]?.toIntOrNull() ?: d.width,
                 fadingInk = v["fadingInk"]?.toBooleanStrictOrNull() ?: d.fadingInk,
+                opacity = v["opacity"]?.toFloatOrNull() ?: d.opacity,
                 fingerDraws = v["fingerDraws"]?.toBooleanStrictOrNull() ?: d.fingerDraws,
                 stylusButtonUndoes = v["stylusButtonUndoes"]?.toBooleanStrictOrNull() ?: d.stylusButtonUndoes,
                 stylusEraserEnd = v["stylusEraserEnd"]?.toBooleanStrictOrNull() ?: d.stylusEraserEnd,
@@ -176,7 +201,7 @@ data class Settings(
     }
 
     fun encode(): String = listOf(
-        "tool=${tool.name}", "color=$color", "width=$width", "fadingInk=$fadingInk", "fingerDraws=$fingerDraws",
+        "tool=${tool.name}", "color=$color", "width=$width", "fadingInk=$fadingInk", "opacity=$opacity", "fingerDraws=$fingerDraws",
         "stylusButtonUndoes=$stylusButtonUndoes", "stylusEraserEnd=$stylusEraserEnd", "showButtonNames=$showButtonNames",
     ).joinToString("\n")
 }

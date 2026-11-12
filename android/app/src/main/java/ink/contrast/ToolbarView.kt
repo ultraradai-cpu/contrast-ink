@@ -10,6 +10,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.SeekBar
 import android.widget.TextView
 import ink.contrast.core.Settings
 import ink.contrast.core.Tool
@@ -38,6 +39,8 @@ class ToolbarView(context: Context, private val app: InkService) : LinearLayout(
     private val timeText: TextView
     private val foldBtn: TextView
     private val noticeText: TextView
+    private lateinit var opacityBar: SeekBar
+    private lateinit var opacityText: TextView
     private var folded = false
     private val names = HashMap<View, String>()   // every button's name, shown or not as the settings say
 
@@ -64,7 +67,7 @@ class ToolbarView(context: Context, private val app: InkService) : LinearLayout(
         // row 2: the tools, fading ink, clear
         val row2 = row()
         listOf(Tool.PEN to ("✎" to "Pen"), Tool.HIGHLIGHTER to ("▬" to "Highlighter"), Tool.ARROW to ("↗" to "Arrow"),
-            Tool.OVAL to ("◯" to "Circle"), Tool.ERASER to ("⌫" to "Eraser")).forEach { (t, label) ->
+            Tool.OVAL to ("◯" to "Circle"), Tool.ERASER to ("⌫" to "Eraser"), Tool.LASER to ("●" to "Laser pointer")).forEach { (t, label) ->
             tools[t] = button(label.first, label.second) {
                 app.update { it.copy(tool = t) }
                 app.setDrawing(true)   // picking a tool means "draw"
@@ -89,6 +92,29 @@ class ToolbarView(context: Context, private val app: InkService) : LinearLayout(
                 .also { it.textSize = 10f + i * 6; row3.addView(it) }
         }
         full.addView(row3)
+
+        // row 4: opacity of new pen, arrow and circle marks (10% to 100%)
+        val row4 = row()
+        row4.addView(TextView(context).apply {
+            text = "Opacity"; setTextColor(offText); textSize = 13f
+            setPadding((6 * dp).toInt(), 0, (4 * dp).toInt(), 0)
+        })
+        opacityBar = SeekBar(context).apply {
+            max = 90   // 10% + 0..90
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) {
+                    opacityText.text = "${progress + 10}%"
+                    if (fromUser) app.update { it.copy(opacity = (progress + 10) / 100f) }
+                }
+                override fun onStartTrackingTouch(bar: SeekBar) {}
+                override fun onStopTrackingTouch(bar: SeekBar) {}
+            })
+        }
+        names[opacityBar] = "Opacity of the pen, arrow and circle"
+        row4.addView(opacityBar, LayoutParams((170 * dp).toInt(), (40 * dp).toInt()))
+        opacityText = TextView(context).apply { setTextColor(offText); textSize = 13f; minWidth = (40 * dp).toInt() }
+        row4.addView(opacityText)
+        full.addView(row4)
         addView(full)
 
         noticeText = TextView(context).apply {
@@ -172,6 +198,10 @@ class ToolbarView(context: Context, private val app: InkService) : LinearLayout(
             v.layoutParams = (v.layoutParams as LayoutParams).apply { width = (32 * dp).toInt(); height = (32 * dp).toInt(); setMargins((4 * dp).toInt(), (6 * dp).toInt(), (4 * dp).toInt(), (6 * dp).toInt()) }
         }
         widths.forEachIndexed { i, v -> mark(v, i == s.width) }
+        val pct = Math.round(s.opacity * 100)
+        if (opacityBar.progress != pct - 10) opacityBar.progress = pct - 10
+        opacityText.text = "$pct%"
+        tools[Tool.LASER]?.setTextColor(if (s.tool == Tool.LASER) Color.WHITE else Color.rgb(0xFF, 0x2D, 0x2D))
         mark(fadeBtn, s.fadingInk)
         undoBtn.alpha = if (app.ink.canUndo) 1f else 0.4f
         val rec = app.recorder

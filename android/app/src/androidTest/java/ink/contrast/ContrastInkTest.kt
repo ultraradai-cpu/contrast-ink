@@ -132,9 +132,31 @@ class ContrastInkTest {
         assertEquals("the eraser removes the mark it touches", 2, marks())
         shot("07 erased the pen line")
 
+        // laser pointer: a glowing line while touching, gone a moment later, and never a mark
+        press("Laser pointer")
+        drag(0.15f, 0.8f, 0.85f, 0.8f)
+        var lit = false
+        inst.runOnMainSync { lit = InkService.running?.ink?.laserShowing == true }
+        shot("07b laser")
+        assertTrue("laser: its glowing line shows while drawing", lit)
+        assertEquals("laser: never a mark", 2, marks())
+        Thread.sleep(2000)
+        inst.runOnMainSync { lit = InkService.running?.ink?.laserShowing == true }
+        assertTrue("laser: the line is gone 2 s later", !lit)
+
+        // opacity: new pen marks at the chosen opacity
+        inst.runOnMainSync { InkService.running?.update { it.copy(opacity = 0.5f) } }
+        press("Pen")
+        drag(0.15f, 0.9f, 0.85f, 0.9f)
+        var alpha: Float? = null
+        inst.runOnMainSync { alpha = InkService.running?.ink?.lastMarkAlpha }
+        shot("07c half opacity line")
+        assertEquals("opacity 50%: the new line is half see-through", 0.5f, alpha ?: -1f, 0.02f)
+        inst.runOnMainSync { InkService.running?.update { it.copy(opacity = 1f) } }
+
         press("Draw on / off")
         assertTrue("✎ again switches drawing off", !drawing())
-        assertEquals("marks stay when drawing goes off", 2, marks())
+        assertEquals("marks stay when drawing goes off", 3, marks())
         press("Make the toolbar small")
         shot("08 small toolbar, drawing off, marks stay")
         assertNotNull("small toolbar keeps the record button", device.findObject(By.desc("Record the screen")))

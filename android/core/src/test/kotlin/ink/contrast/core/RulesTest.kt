@@ -96,7 +96,7 @@ class SettingsTest {
     @Test fun damagedOrOldSettingsAreSafe() {
         assertEquals(Settings(), Settings.decode(null))
         assertEquals(Settings(), Settings.decode("not settings"))
-        val s = Settings.decode("color=99\nwidth=-4\ntool=LASER\nfadingInk=true")
+        val s = Settings.decode("color=99\nwidth=-4\ntool=SPRAYCAN\nfadingInk=true")
         assertEquals(Settings.COLORS.size - 1, s.color)
         assertEquals(0, s.width)
         assertEquals(Tool.PEN, s.tool)
@@ -156,5 +156,28 @@ class ButtonNamesSettingTest {
         assertTrue(Settings().showButtonNames)
         assertTrue("an older saved copy keeps the names", Settings.decode("tool=PEN\ncolor=2").showButtonNames)
         assertFalse(Settings.decode(Settings(showButtonNames = false).encode()).showButtonNames)
+    }
+}
+
+class LaserAndOpacityTest {
+    @Test fun laserLineStaysBrightThenFadesThenGoes() {
+        assertEquals(1f, Laser.opacity(0), 0f)
+        assertEquals(1f, Laser.opacity(600), 0f)
+        assertEquals(0.5f, Laser.opacity(900), 0.01f)
+        assertEquals(0f, Laser.opacity(1200), 0f)
+        assertEquals(0f, Laser.opacity(10_000), 0f)
+    }
+
+    @Test fun laserIsNeverThin() { assertEquals(8f, Laser.width(3f), 0f); assertEquals(16f, Laser.width(10f), 0.001f) }
+
+    @Test fun opacityStaysInRangeAndIsRemembered() {
+        assertEquals(1f, Settings().opacity, 0f)
+        assertEquals(Settings.MIN_OPACITY, Settings(opacity = 0.01f).cleaned().opacity, 0f)
+        assertEquals(1f, Settings(opacity = 7f).cleaned().opacity, 0f)
+        assertEquals(1f, Settings(opacity = Float.NaN).cleaned().opacity, 0f)
+        val back = Settings.decode(Settings(opacity = 0.4f, tool = Tool.LASER).encode())
+        assertEquals(0.4f, back.opacity, 0.0001f); assertEquals(Tool.LASER, back.tool)
+        assertEquals("an older saved copy is solid", 1f, Settings.decode("color=2").opacity, 0f)
+        assertEquals(1f, Settings.decode("opacity=NaN").opacity, 0f)
     }
 }
