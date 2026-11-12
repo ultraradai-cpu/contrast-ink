@@ -3,3 +3,6 @@ obj/
 out/
 *.user
 .vs/
+
+# Claude Code working folders
+.claude/

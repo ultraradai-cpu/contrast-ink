@@ -148,4 +148,21 @@ static class Native
         catch (Exception e) when (e is EntryPointNotFoundException or DllNotFoundException) { }
         return (tablets, screens);
     }
+
+    // ---------- a key press for the app in front (the tablet's next / previous slide) ----------
+    [StructLayout(LayoutKind.Sequential)]
+    struct KEYBDINPUT { public ushort wVk, wScan; public uint dwFlags, time; public IntPtr dwExtraInfo; }
+    [StructLayout(LayoutKind.Explicit, Size = 40)]
+    struct INPUT { [FieldOffset(0)] public uint type; [FieldOffset(8)] public KEYBDINPUT ki; }
+    [DllImport("user32.dll", SetLastError = true)] static extern uint SendInput(uint n, INPUT[] inputs, int size);
+    public const ushort VK_LEFT = 0x25, VK_RIGHT = 0x27;
+
+    /// <summary>Presses and releases a key, as if typed: PowerPoint, a PDF viewer or a DICOM viewer turns the page.</summary>
+    public static void PressKey(ushort vk)
+    {
+        const uint KEYUP = 0x2, EXTENDED = 0x1;   // the arrow keys are "extended" keys
+        var down = new INPUT { type = 1, ki = new KEYBDINPUT { wVk = vk, dwFlags = EXTENDED } };
+        var up = new INPUT { type = 1, ki = new KEYBDINPUT { wVk = vk, dwFlags = EXTENDED | KEYUP } };
+        SendInput(2, new[] { down, up }, Marshal.SizeOf<INPUT>());
+    }
 }
