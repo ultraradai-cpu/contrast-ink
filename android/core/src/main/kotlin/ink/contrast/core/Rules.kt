@@ -183,3 +183,32 @@ fun clock(ms: Long): String {
     val s = max(0L, ms) / 1000
     return if (s >= 3600) "%d:%02d:%02d".format(s / 3600, s / 60 % 60, s % 60) else "%d:%02d".format(s / 60, s % 60)
 }
+
+/** The recording's size and file name, decided without Android so they are tested anywhere. */
+object Recording {
+    /**
+     * The video's size for a screen of [screenW] x [screenH]: the screen's shape, at most 1920 on the long side,
+     * both sides multiples of 16 (what hardware video encoders handle everywhere). [supported] says whether the
+     * phone's encoder takes a size; when it doesn't, smaller sizes are tried, down to 640 on the long side.
+     */
+    fun videoSize(screenW: Int, screenH: Int, supported: (Int, Int) -> Boolean = { _, _ -> true }): Pair<Int, Int> {
+        val long = maxOf(screenW, screenH, 1)
+        var last = 0 to 0
+        for (limit in intArrayOf(1920, 1600, 1280, 960, 640)) {
+            val scale = minOf(1f, limit.toFloat() / long)
+            val w = maxOf(16, (screenW * scale).toInt() / 16 * 16)
+            val h = maxOf(16, (screenH * scale).toInt() / 16 * 16)
+            last = w to h
+            if (supported(w, h)) return last
+        }
+        return last
+    }
+
+    /** "Lecture 2026-11-12 093015.mp4", or "Lecture 2026-11-12 093015 (2).mp4" when that name is taken. */
+    fun fileName(stamp: String, taken: (String) -> Boolean): String {
+        var name = "Lecture $stamp.mp4"
+        var n = 2
+        while (taken(name)) name = "Lecture $stamp (${n++}).mp4"
+        return name
+    }
+}

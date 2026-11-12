@@ -51,13 +51,13 @@ class ToolbarView(context: Context, private val app: InkService) : LinearLayout(
         drawBtn = button("✎ Off", "Draw on / off") { app.toggleDrawing() }.also { it.minWidth = (64 * dp).toInt(); row1.addView(it) }
         undoBtn = button("↶", "Undo") { app.ink.undo() }.also { row1.addView(it) }
         recBtn = button("⏺", "Record the screen") { app.recordTapped() }.also { it.setTextColor(Color.rgb(0xFF, 0x3B, 0x30)); row1.addView(it) }
-        pauseBtn = button("⏸", "Pause recording") { app.recorder.togglePause() }.also { row1.addView(it) }
+        pauseBtn = button("⏸", "Pause recording") { app.recorder.togglePause()?.let { notice(it) } }.also { row1.addView(it) }
         timeText = TextView(context).apply {
             setTextColor(offText); textSize = 14f; typeface = Typeface.MONOSPACE
             setPadding((4 * dp).toInt(), 0, (4 * dp).toInt(), 0); gravity = Gravity.CENTER_VERTICAL
         }.also { row1.addView(it, LayoutParams(LayoutParams.WRAP_CONTENT, (44 * dp).toInt())) }
         foldBtn = button("‹", "Make the toolbar small") { folded = !folded; refresh(); app.barResized() }.also { row1.addView(it) }
-        row1.addView(button("✕", "Quit Contrast Ink") { app.recorder.stop(saveToGallery = true); app.quit() })
+        row1.addView(button("✕", "Quit Contrast Ink") { app.quit() })   // a recording is saved first
         addView(row1)
 
         // row 2: the tools, fading ink, clear

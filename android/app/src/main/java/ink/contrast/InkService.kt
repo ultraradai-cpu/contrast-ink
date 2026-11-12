@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.content.res.Configuration
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
@@ -50,6 +51,8 @@ class InkService : Service(), InkView.Host {
         private set
     var drawing = false
         private set
+    private var quitting = false     // Quit was pressed while a recording was being saved: go once it's saved
+    private var destroyed = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -91,6 +94,12 @@ class InkService : Service(), InkView.Host {
         }
         wm.addView(bar, barParams)
         bar.refresh()
+        bar.post { keepBarOnScreen() }   // a place saved on a bigger screen, or the other way round
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        bar.post { keepBarOnScreen() }   // turned the phone: the toolbar must not end up off the edge
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -99,16 +108,32 @@ class InkService : Service(), InkView.Host {
     }
 
     override fun onDestroy() {
-        recorder.stop(saveToGallery = true)
-        runCatching { wm.removeView(bar) }
-        runCatching { wm.removeView(ink) }
+        destroyed = true
+        recorder.stop(saveToGallery = true)   // only if Android itself ends the service mid-recording
+        hideWindows()
         running = null
         super.onDestroy()
     }
 
+    /**
+     * Quit (the toolbar's ✕, or the notification). A recording is stopped and saved first: the drawing layer and the
+     * toolbar go at once, the notification says "saving" until the video is in the Gallery, then the service ends.
+     */
     fun quit() {
+        if (recorder.active || recorder.saving) {
+            quitting = true
+            hideWindows()
+            if (recorder.active) recorder.stop(saveToGallery = true)
+            runCatching { startInForeground(recording = false, saving = true) }
+            return
+        }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    private fun hideWindows() {
+        if (::bar.isInitialized) runCatching { wm.removeView(bar) }
+        if (::ink.isInitialized) runCatching { wm.removeView(ink) }
     }
 
     private fun prefs() = getSharedPreferences("contrast-ink", MODE_PRIVATE)
@@ -151,7 +176,25 @@ class InkService : Service(), InkView.Host {
     fun moveBar(dx: Int, dy: Int) {
         barParams.x += dx
         barParams.y += dy
+        keepBarOnScreen()
+    }
+
+    /** The whole toolbar stays on the screen: dragged past an edge, turned phone, or a place saved on another screen. */
+    private fun keepBarOnScreen() {
+        val (sw, sh) = screenSize()
+        barParams.x = barParams.x.coerceIn(0, maxOf(0, sw - bar.width))
+        barParams.y = barParams.y.coerceIn(0, maxOf(0, sh - bar.height))
         runCatching { wm.updateViewLayout(bar, barParams) }
+    }
+
+    private fun screenSize(): Pair<Int, Int> {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val b = wm.currentWindowMetrics.bounds
+            return b.width() to b.height()
+        }
+        val m = android.util.DisplayMetrics()
+        @Suppress("DEPRECATION") wm.defaultDisplay.getRealMetrics(m)
+        return m.widthPixels to m.heightPixels
     }
 
     fun barMoved() { prefs().edit().putInt("barX", barParams.x).putInt("barY", barParams.y).apply() }
@@ -162,21 +205,31 @@ class InkService : Service(), InkView.Host {
 
     fun recordTapped() {
         if (recorder.active) { recorder.stop(saveToGallery = true); return }
+        if (recorder.saving) { bar.notice("Still saving the last recording to the Gallery: one moment."); return }
         // Android asks the presenter first, in its own window: a small invisible screen asks for us
         startActivity(Intent(this, RecordActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 
     /** Android said yes to recording the screen. Called from [RecordActivity] while it is still on screen. */
     fun startRecording(resultCode: Int, data: Intent) {
-        startInForeground(recording = true)   // must come before the screen is asked for (Android 14)
+        if (recorder.active || quitting) return   // a second ⏺ answered while the first was asking
+        // must come before the screen is asked for (Android 14)
+        val fg = runCatching { startInForeground(recording = true) }
+        if (fg.isFailure) {
+            bar.notice("Recording didn't start: Android refused (${fg.exceptionOrNull()?.message ?: "no reason given"}).")
+            return
+        }
         val problem = recorder.start(resultCode, data)
-        if (problem != null) { startInForeground(recording = false); bar.notice(problem) }
+        if (problem != null) { runCatching { startInForeground(recording = false) }; bar.notice(problem) }
         bar.refresh()
     }
 
+    /** The recording ended (and is saved, or couldn't be): may be called from the saving thread. */
     fun recordingEnded(message: String?) {
         main.post {
-            startInForeground(recording = false)
+            if (destroyed) return@post
+            if (quitting) { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(); return@post }
+            runCatching { startInForeground(recording = false) }
             if (message != null) bar.notice(message)
             bar.refresh()
         }
@@ -186,15 +239,15 @@ class InkService : Service(), InkView.Host {
 
     fun micAllowed() = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
-    private fun startInForeground(recording: Boolean) {
+    private fun startInForeground(recording: Boolean, saving: Boolean = false) {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Contrast Ink running", NotificationManager.IMPORTANCE_LOW))
         val stop = PendingIntent.getService(this, 0, Intent(this, InkService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE)
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         val note = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_note)
-            .setContentTitle(if (recording) "Contrast Ink is recording" else "Contrast Ink is running")
-            .setContentText(if (recording) "Press ⏹ on the toolbar to stop." else "Draw over any app. Tap to change settings.")
+            .setContentTitle(when { saving -> "Contrast Ink is saving the recording"; recording -> "Contrast Ink is recording"; else -> "Contrast Ink is running" })
+            .setContentText(when { saving -> "It closes once the video is in the Gallery."; recording -> "Press ⏹ on the toolbar to stop."; else -> "Draw over any app. Tap to change settings." })
             .setContentIntent(open)
             .addAction(Notification.Action.Builder(null, "Quit", stop).build())
             .setOngoing(true)
@@ -205,6 +258,11 @@ class InkService : Service(), InkView.Host {
                 type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
                 if (micAllowed()) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             }
+            startForeground(NOTE_ID, note, type)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && recording) {
+            // Android 11+ gives a service the microphone only when it says it uses it (otherwise: silence)
+            var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            if (micAllowed()) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             startForeground(NOTE_ID, note, type)
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && recording) {
             startForeground(NOTE_ID, note, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)

@@ -120,3 +120,33 @@ class SettingsTest {
         assertEquals("1:04:05", clock(3_845_000))
     }
 }
+
+class RecordingTest {
+    @Test fun phoneInPortraitKeepsItsShapeInMultiplesOf16() {
+        val (w, h) = Recording.videoSize(1080, 2400)
+        assertEquals(0, w % 16); assertEquals(0, h % 16)
+        assertTrue(h <= 1920)
+        assertEquals(1080f / 2400f, w.toFloat() / h, 0.02f)
+    }
+
+    @Test fun smallScreenIsNotMadeBigger() {
+        assertEquals(720 to 1280, Recording.videoSize(720, 1280))
+    }
+
+    @Test fun anEncoderThatRefusesTheSizeGetsASmallerOne() {
+        // a common limit: nothing over 1920 x 1088
+        val (w, h) = Recording.videoSize(2560, 1600) { a, b -> maxOf(a, b) <= 1920 && minOf(a, b) <= 1088 }
+        assertTrue(w <= 1920 && h <= 1088)
+        assertEquals(1600f / 2560f, h.toFloat() / w, 0.02f)
+    }
+
+    @Test fun anEncoderThatRefusesEverythingStillGetsTheSmallest() {
+        assertEquals(640 to 400, Recording.videoSize(2560, 1600) { _, _ -> false })
+    }
+
+    @Test fun twoRecordingsInTheSameSecondDontOverwriteEachOther() {
+        val taken = setOf("Lecture 2026-11-12 093015.mp4", "Lecture 2026-11-12 093015 (2).mp4")
+        assertEquals("Lecture 2026-11-12 093015 (3).mp4", Recording.fileName("2026-11-12 093015") { it in taken })
+        assertEquals("Lecture 2026-11-12 093016.mp4", Recording.fileName("2026-11-12 093016") { it in taken })
+    }
+}

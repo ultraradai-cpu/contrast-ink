@@ -44,7 +44,12 @@ Press **⏺**. When Android asks, choose **Entire screen** (recording a single a
 - The video has the whole screen with your voice. **The toolbar is in it** (Android can't hide it the way
   Windows does): make it small with ‹ and drag it to a corner.
 - **⏸ / ▶** pauses and resumes; **⏹** stops.
-- Videos go to **Movies/Contrast Ink** (Gallery, Files).
+- Videos go to **Movies/Contrast Ink** (Gallery, Files). A long lecture takes a little while to save: the toolbar
+  says when it's there. Quitting while recording (✕, or Quit on the notification) stops and saves it first.
+  On Android 8–9 allow storage on the setup screen (the microphone button asks for both), or videos stay in the
+  app's own folder, which is deleted with the app.
+- Hold the phone or tablet the way you'll present **before** pressing ⏺: the video keeps that shape, and turning the
+  screen mid-recording shows the new view smaller, with black bars.
 
 ## Not on Android (yet)
 

@@ -54,6 +54,7 @@ class MainActivity : Activity() {
         col.addView(button("Allow the microphone (for recording)") {
             val ask = mutableListOf(Manifest.permission.RECORD_AUDIO)
             if (Build.VERSION.SDK_INT >= 33) ask += Manifest.permission.POST_NOTIFICATIONS
+            if (Build.VERSION.SDK_INT < 29) ask += Manifest.permission.WRITE_EXTERNAL_STORAGE   // recordings into Movies
             requestPermissions(ask.toTypedArray(), 1)
         })
         col.addView(space(12))
@@ -96,6 +97,8 @@ class MainActivity : Activity() {
         val mic = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         overlayStep.text = (if (overlay) "✓ " else "1. ") + "Drawing over other apps" + if (overlay) " is allowed" else ": needed"
         micStep.text = (if (mic) "✓ " else "2. ") + "Microphone" + if (mic) " is allowed" else ": needed for sound in recordings"
+        if (Build.VERSION.SDK_INT < 29 && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED)
+            micStep.text = "${micStep.text}\nStorage: needed to put recordings in Movies (otherwise they stay in the app's own folder)"
         startButton.isEnabled = overlay
         startButton.alpha = if (overlay) 1f else 0.5f
         startButton.text = if (InkService.running != null) "Quit Contrast Ink" else "Start Contrast Ink"
