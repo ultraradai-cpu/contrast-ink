@@ -100,7 +100,7 @@ public partial class App : Application
             };
 
             // the tablet link: switched on in ⚙ Settings; the Windows check starts it with a code it knows
-            if (Environment.GetEnvironmentVariable("CONTRASTINK_TEST_PADCODE") is { Length: 6 } testCode) StartPad(testCode);
+            if (testRun && Environment.GetEnvironmentVariable("CONTRASTINK_TEST_PADCODE") is { Length: 6 } testCode) StartPad(testCode);
             else if (settings.TabletPad) StartPad();
 
             // PowerPoint's slide show likes to come to the front: stay above it
@@ -186,6 +186,7 @@ public partial class App : Application
         overlay.MarkStarting += () => undoButton.Park();   // never under the pen while drawing
         overlay.MarkDone += p =>
         {
+            pad?.SendState(settings, overlay.CanUndo);   // the tablet's undo button follows marks made here too
             if (!settings.UndoButtonByPen || !mode.Drawing || monitors.Count == 0) return;
             undoButton.ShowAt(p.X + 12, p.Y + 12, monitors[settings.Screen].Bounds);
             toolbar.KeepOnTop();
@@ -224,7 +225,8 @@ public partial class App : Application
     void StartPad(string? code = null)
     {
         if (pad != null) return;
-        pad = new PadServer(Dispatcher, () => monitors.Count == 0 ? default : monitors[Math.Clamp(settings.Screen, 0, monitors.Count - 1)].Bounds, code);
+        pad = new PadServer(Dispatcher, ScreenForPad, overlay.Snapshot, code);
+        pad.CodeChanged += () => { ShowPad(); toolbar.Notice("Someone kept typing wrong tablet codes: there is a new code (⚙ Settings)."); };
         pad.Received += OnPad;
         pad.ConnectionChanged += name =>
         {
@@ -234,17 +236,30 @@ public partial class App : Application
             ShowPad();
         };
         try { pad.Start(); }
-        catch (Exception e) { Log(e); pad.Dispose(); pad = null; toolbar.Notice("The tablet link couldn't start: " + e.Message); }
+        catch (Exception e)
+        {
+            Log(e);
+            pad.Dispose(); pad = null;
+            toolbar.Notice("The tablet link couldn't start: another program may be using its network port. Close Contrast Ink and open it again.");
+        }
         ShowPad();
     }
 
     void StopPad() { pad?.Dispose(); pad = null; overlay.RemoteCancel(); ShowPad(); }
 
+    /// <summary>The screen being drawn on, for the tablet link's threads: the list of screens is read once (the UI
+    /// thread may replace it when a projector is plugged in).</summary>
+    Native.RECT ScreenForPad()
+    {
+        var m = monitors;
+        return m.Count == 0 ? default : m[Math.Clamp(settings.Screen, 0, m.Count - 1)].Bounds;
+    }
+
     void ShowPad() => toolbar.ShowPad(pad == null ? null
         : pad.Connected != null ? $"Connected: {pad.Connected}."
         : $"On the tablet: Contrast Ink → Use as a pad → {Environment.MachineName}, code {pad.Code}."
           + (PadServer.Addresses() is { Count: > 0 } a ? $" Or type the address {a[0]}" + (pad.Port != Pad.Port ? $":{pad.Port}" : "") + "." : "")
-          + " (Windows may ask to let Contrast Ink use the network: allow it on private networks.)");
+          + " Windows may ask to let Contrast Ink use the network: allow it (lecture-hall Wi-Fi is often a \"public\" network: tick that too). Pictures of this screen go to the tablet over the Wi-Fi: with patient images, use a private network or your own hotspot.");
 
     void OnPad(byte type, byte[] payload)
     {
@@ -279,6 +294,7 @@ public partial class App : Application
     void Undo()
     {
         overlay.Undo();
+        pad?.SendState(settings, overlay.CanUndo);
         if (!overlay.CanUndo) undoButton.Park();
     }
 

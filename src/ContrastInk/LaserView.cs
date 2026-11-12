@@ -21,6 +21,9 @@ sealed class LaserView : FrameworkElement
 
     public LaserView() { IsHitTestVisible = false; }
 
+    /// <summary>Anything of the laser on screen (the tablet's picture then includes the marks layer).</summary>
+    public bool Showing => dot != null || trail.Count > 0;
+
     public void SetWidth(double penWidth) { width = Laser.Width(penWidth); InvalidateVisual(); }
 
     /// <summary>The pen or mouse moved; <paramref name="touching"/>: the line grows.</summary>

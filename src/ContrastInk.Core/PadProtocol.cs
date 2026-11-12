@@ -43,18 +43,28 @@ public static class Pad
         }));
 
     /// <summary>What a tablet's HELLO says; null when it isn't one we understand.</summary>
+    /// <remarks>
+    /// Read from strangers before any code is known: nothing in it may throw (a HELLO of just "1", or a lone UTF-16
+    /// surrogate, once threw past the catch on a network thread, which ends the whole app).
+    /// </remarks>
     public static (string code, string device)? ReadHello(ReadOnlySpan<byte> payload)
     {
+        if (payload.Length > HelloMax) return null;
         try
         {
             using var doc = JsonDocument.Parse(payload.ToArray());
             var r = doc.RootElement;
-            var code = r.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString()! : "";
-            var device = r.TryGetProperty("device", out var d) && d.ValueKind == JsonValueKind.String ? d.GetString()! : "a tablet";
-            return (code, device);
+            if (r.ValueKind != JsonValueKind.Object) return null;
+            var code = r.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString() ?? "" : "";
+            var device = r.TryGetProperty("device", out var d) && d.ValueKind == JsonValueKind.String ? d.GetString() ?? "" : "";
+            device = new string(device.Where(ch => !char.IsControl(ch)).Take(40).ToArray()).Trim();
+            return (code, device.Length == 0 ? "a tablet" : device);
         }
-        catch (JsonException) { return null; }
+        catch (Exception) { return null; }
     }
+
+    /// <summary>The longest HELLO accepted (a stranger's first message: small, so it can't be used to fill memory).</summary>
+    public const int HelloMax = 1024;
 
     /// <summary>STROKE_BEGIN: where (fractions of the screen) and whether the pen's eraser end touched.</summary>
     public static (float x, float y, bool eraserEnd)? ReadBegin(ReadOnlySpan<byte> p) =>
@@ -120,22 +130,64 @@ public readonly record struct PadCommand(PadAction Action, int Value = 0, double
 /// <summary>Splits a byte stream into messages, however it arrives (a message across reads, several in one).</summary>
 public sealed class PadReader
 {
-    readonly List<byte> buffer = new();
+    byte[] buffer = new byte[4096];
+    int start, end;   // the bytes not yet taken are buffer[start..end]
+
+    /// <summary>The longest message accepted now (lowered to <see cref="Pad.HelloMax"/> before a tablet is let in).</summary>
+    public int MaxLength { get; set; } = Pad.MaxLength;
 
     /// <summary>Adds what arrived; returns every message now complete. Throws when a length is past the limit.</summary>
     public List<(byte type, byte[] payload)> Add(ReadOnlySpan<byte> data)
     {
-        buffer.AddRange(data.ToArray());
-        var done = new List<(byte, byte[])>();
-        while (buffer.Count >= 5)
+        if (end + data.Length > buffer.Length)
         {
-            var head = buffer.GetRange(0, 5).ToArray();
-            uint len = BinaryPrimitives.ReadUInt32BigEndian(head.AsSpan(1));
-            if (len > Pad.MaxLength) throw new InvalidDataException("pad message too long: " + len);
-            if (buffer.Count < 5 + len) break;
-            done.Add((head[0], buffer.GetRange(5, (int)len).ToArray()));
-            buffer.RemoveRange(0, 5 + (int)len);
+            // move what is left to the front, and grow only when that isn't enough
+            int left = end - start;
+            var into = left + data.Length > buffer.Length ? new byte[Math.Max(buffer.Length * 2, left + data.Length)] : buffer;
+            Array.Copy(buffer, start, into, 0, left);
+            buffer = into; start = 0; end = left;
         }
+        data.CopyTo(buffer.AsSpan(end));
+        end += data.Length;
+        var done = new List<(byte, byte[])>();
+        while (end - start >= 5)
+        {
+            uint len = BinaryPrimitives.ReadUInt32BigEndian(buffer.AsSpan(start + 1));
+            if (len > (uint)MaxLength) throw new InvalidDataException("pad message too long: " + len);
+            if (end - start < 5 + len) break;
+            done.Add((buffer[start], buffer.AsSpan(start + 5, (int)len).ToArray()));
+            start += 5 + (int)len;
+        }
+        if (start == end) start = end = 0;
         return done;
     }
+}
+
+/// <summary>
+/// Wrong codes: a 6-digit code must not be guessable by a script on the same Wi-Fi. Five wrong in a row lock
+/// everyone out for 30 s; twenty wrong in all make a new code (the presenter sees it change). At most about
+/// 10 guesses a minute, against a code that changes every 20: guessing it is a 1 in 50,000 chance.
+/// </summary>
+public sealed class PadGuard
+{
+    public const int InARow = 5, BeforeNewCode = 20;
+    public static readonly TimeSpan Lockout = TimeSpan.FromSeconds(30);
+    int wrongInARow, wrongForThisCode;
+    DateTime lockedUntil = DateTime.MinValue;
+
+    /// <summary>Whether a HELLO may be tried at all right now.</summary>
+    public bool Locked(DateTime now) => now < lockedUntil;
+
+    /// <summary>A wrong code was given. True: time for a new code.</summary>
+    public bool Wrong(DateTime now)
+    {
+        wrongForThisCode++;
+        if (++wrongInARow >= InARow) { wrongInARow = 0; lockedUntil = now + Lockout; }
+        if (wrongForThisCode < BeforeNewCode) return false;
+        wrongForThisCode = 0;
+        return true;
+    }
+
+    /// <summary>The right code: the count of guesses in a row starts again.</summary>
+    public void Right() => wrongInARow = 0;
 }

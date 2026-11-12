@@ -669,3 +669,75 @@ public class PadProtocolTests
     [Fact]
     public void CodesAreSixDigits() => Assert.All(Enumerable.Range(0, 50).Select(_ => Pad.NewCode()), c => Assert.Matches("^[0-9]{6}$", c));
 }
+
+/// <summary>What strangers on the same Wi-Fi can do before they know the code: nothing that harms the app.</summary>
+public class PadSafetyTests
+{
+    static byte[] Hello(string json) => System.Text.Encoding.UTF8.GetBytes(json);
+
+    [Theory]
+    [InlineData("1")] [InlineData("[]")] [InlineData("\"x\"")] [InlineData("null")] [InlineData("{\"code\":5}")]
+    [InlineData("{\"code\":\"\\uD800\"}")] [InlineData("{{{")] [InlineData("")]
+    public void ABrokenHelloIsRefusedNeverThrown(string json)
+    {
+        var h = Pad.ReadHello(Hello(json));
+        Assert.True(h == null || h.Value.code != "123456");
+    }
+
+    [Fact]
+    public void AnOversizedHelloIsRefused() =>
+        Assert.Null(Pad.ReadHello(Hello("{\"code\":\"123456\",\"device\":\"" + new string('x', 2000) + "\"}")));
+
+    [Fact]
+    public void TheDeviceNameIsShortAndPrintable() =>
+        Assert.Equal("iPad", Pad.ReadHello(Hello("{\"code\":\"1\",\"device\":\"\\u0007iPad\\n\"}"))!.Value.device);
+
+    [Fact]
+    public void BeforeTheCodeAHugeLengthIsRefusedAtOnce()
+    {
+        var r = new PadReader { MaxLength = Pad.HelloMax };
+        Assert.Throws<InvalidDataException>(() => r.Add(new byte[] { 0x01, 0x00, 0x00, 0x08, 0x00 }));   // 2048 bytes announced
+    }
+
+    [Fact]
+    public void ManySmallMessagesInOneReadAllComeOut()
+    {
+        var all = Enumerable.Range(0, 5000).SelectMany(_ => Pad.Message(Pad.Ping, ReadOnlySpan<byte>.Empty)).ToArray();
+        Assert.Equal(5000, new PadReader().Add(all).Count);
+    }
+
+    [Fact]
+    public void FiveWrongCodesLockEveryoneOutForThirtySeconds()
+    {
+        var g = new PadGuard();
+        var t = new DateTime(2026, 11, 12, 10, 0, 0, DateTimeKind.Utc);
+        for (int i = 0; i < 4; i++) Assert.False(g.Wrong(t));
+        Assert.False(g.Locked(t));
+        g.Wrong(t);
+        Assert.True(g.Locked(t.AddSeconds(29)));
+        Assert.False(g.Locked(t.AddSeconds(31)));
+    }
+
+    [Fact]
+    public void TwentyWrongCodesMakeANewCode()
+    {
+        var g = new PadGuard();
+        var t = DateTime.UtcNow;
+        int newCodes = 0;
+        for (int i = 0; i < 40; i++) if (g.Wrong(t)) newCodes++;
+        Assert.Equal(2, newCodes);
+    }
+
+    [Fact]
+    public void TheRightCodeResetsTheRunButNotTheTotal()
+    {
+        var g = new PadGuard();
+        var t = DateTime.UtcNow;
+        for (int i = 0; i < 4; i++) g.Wrong(t);
+        g.Right();
+        for (int i = 0; i < 4; i++) g.Wrong(t);
+        Assert.False(g.Locked(t));   // never five in a row
+        for (int i = 0; i < 11; i++) g.Wrong(t);
+        Assert.True(g.Wrong(t));     // the 20th wrong for this code
+    }
+}

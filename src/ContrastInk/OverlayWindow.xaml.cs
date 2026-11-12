@@ -152,6 +152,7 @@ public partial class OverlayWindow : Window
     {
         if (key == pageKey) return;
         FinishShape();
+        RemoteEnd();   // a tablet stroke under way stays on the slide it was drawn on
         pages[pageKey] = new Page(new StrokeCollection(Ink.Strokes.Where(s => !fading.ContainsKey(s))), history);
         if (key == "")
             foreach (var slide in pages.Keys.Where(k => k != "").ToList()) pages.Remove(slide);
@@ -217,10 +218,13 @@ public partial class OverlayWindow : Window
         try { Ink.Strokes.Add(remote); } finally { quiet = false; }
     }
 
+    const int MaxRemotePoints = 20000;   // a stroke longer than this is a flood, not a hand
+
     public void RemoteMove(IEnumerable<(float x, float y)> points)
     {
         foreach (var (fx, fy) in points)
         {
+            if (remote != null && remote.StylusPoints.Count >= MaxRemotePoints) return;
             var p = FromPad(fx, fy);
             if (remoteErasing) RemoteErase(p);
             else if (remoteLaser) LaserLayer.Move(p, touching: true);
@@ -266,6 +270,23 @@ public partial class OverlayWindow : Window
     {
         var hit = Ink.Strokes.HitTest(p, 16);
         if (hit.Count > 0) Ink.Strokes.Remove(hit);   // remembered for undo, like the eraser
+    }
+
+    /// <summary>
+    /// The marks (and the laser) as a picture at most 1600 px wide, for the tablet's view of the screen; null when
+    /// there are none. Asked by the tablet link a few times a second, on the UI thread.
+    /// </summary>
+    public System.Windows.Media.Imaging.BitmapSource? Snapshot()
+    {
+        if (Ink.Strokes.Count == 0 && !LaserLayer.Showing) return null;
+        if (Content is not FrameworkElement root || root.ActualWidth < 1 || root.ActualHeight < 1) return null;
+        var toDevice = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformToDevice.M11 ?? 1;
+        double px = root.ActualWidth * toDevice, s = Math.Min(1, 1600 / px) * toDevice;
+        var bmp = new System.Windows.Media.Imaging.RenderTargetBitmap(
+            Math.Max(1, (int)(root.ActualWidth * s)), Math.Max(1, (int)(root.ActualHeight * s)), 96 * s, 96 * s, PixelFormats.Pbgra32);
+        bmp.Render(root);
+        bmp.Freeze();
+        return bmp;
     }
 
     // ---------- laser pointer ----------
@@ -377,6 +398,7 @@ public partial class OverlayWindow : Window
     public void ClearAll()
     {
         FinishShape();
+        RemoteCancel();
         if (Ink.Strokes.Count > 0) Ink.Strokes.Clear();   // fading marks stay listed, so Undo can bring them back properly
     }
 

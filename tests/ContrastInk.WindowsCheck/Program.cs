@@ -383,6 +383,29 @@ static class Program
             int mx = screen.Left + (int)(screen.Width * 0.4);
             var drawn = Closest(Shot("40-tablet-line"), mx, Row(5), red, 6);
             Check(Diff(drawn, red) <= 40, "tablet link: a line drawn on the tablet appears on the screen", Hex(drawn));
+            // the tablet's next picture has the line too (the marks are laid over the copy of the screen)
+            ns.Write(Pad.Message(Pad.FrameAck, ReadOnlySpan<byte>.Empty));
+            PadRead(ns, r, g => g.Any(x => x.type == Pad.Frame), 3000);   // the one already on its way
+            ns.Write(Pad.Message(Pad.FrameAck, ReadOnlySpan<byte>.Empty));
+            var withLine = PadRead(ns, r, g => g.Any(x => x.type == Pad.Frame), 3000).LastOrDefault(x => x.type == Pad.Frame);
+            Color inPicture = Color.Black;
+            if (withLine.payload != null)
+                using (var img = new Bitmap(new MemoryStream(withLine.payload)))
+                {
+                    double k = (double)img.Width / screen.Width;
+                    inPicture = Closest(img, (int)((mx - screen.Left) * k), (int)((Row(5) - screen.Top) * k), red, 4);
+                }
+            Check(Diff(inPicture, red) <= 60, "tablet link: the tablet's picture shows the marks", Hex(inPicture));
+
+            // a second tablet guessing while this one is connected learns nothing about the code
+            using (var other = new System.Net.Sockets.TcpClient("127.0.0.1", port))
+            {
+                var os = other.GetStream();
+                os.Write(Pad.Message(Pad.Hello, "{\"code\":\"999999\",\"device\":\"other\",\"version\":1}"));
+                var m = PadRead(os, new PadReader(), g => g.Count > 0, 5000);
+                var said = m.Count > 0 ? System.Text.Encoding.UTF8.GetString(m[0].payload) : "no answer";
+                Check(said.StartsWith("Another tablet", StringComparison.Ordinal), "tablet link: while one is connected, another hears only that (not whether its code was right)", said);
+            }
             ns.Write(Pad.Message(Pad.Command, "undo"));
             Thread.Sleep(500);
             var undone = Closest(Shot("41-tablet-undo"), mx, Row(5), red, 6);
@@ -392,8 +415,31 @@ static class Program
             ns.Write(Pad.Message(Pad.Command, "next"));
             Thread.Sleep(500);
             Check(slide.Keys.Skip(k0).Contains(Keys.Right), "tablet link: next on the tablet turns the slide", "keys seen: " + string.Join(",", slide.Keys.Skip(k0)));
+            c.Close();
+            Thread.Sleep(500);
+
+            // strangers on the Wi-Fi, without the code: a broken first message once ended the whole app
+            foreach (var junk in new[] { new byte[] { 0x01, 0, 0, 0, 1, (byte)'1' }, Pad.Message(Pad.Hello, "{\"code\":\"\\uD800\"}"), new byte[] { 0x01, 0, 0x10, 0, 0 } })
+                using (var j = new System.Net.Sockets.TcpClient("127.0.0.1", port))
+                {
+                    j.GetStream().Write(junk);
+                    PadRead(j.GetStream(), new PadReader(), g => g.Count > 0, 1500);
+                }
+            Thread.Sleep(500);
+            Check(!app.HasExited, "tablet link: broken or oversized first messages from strangers don't end the app", app.HasExited ? "the app exited" : "still running");
+
+            // guessing: five wrong codes in a row lock everyone out for a while
+            string last = "";
+            for (int i = 0; i < 6; i++)
+                using (var g = new System.Net.Sockets.TcpClient("127.0.0.1", port))
+                {
+                    g.GetStream().Write(Pad.Message(Pad.Hello, $"{{\"code\":\"{100000 + i}\",\"device\":\"guess\",\"version\":1}}"));
+                    var m = PadRead(g.GetStream(), new PadReader(), x => x.Count > 0, 3000);
+                    last = m.Count > 0 ? System.Text.Encoding.UTF8.GetString(m[0].payload) : "no answer";
+                }
+            Check(last.StartsWith("Too many wrong codes", StringComparison.Ordinal), "tablet link: after five wrong codes, guessing is locked out", last);
         }
-        catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException or JsonException or ArgumentException)
+        catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException or JsonException or ArgumentException or InvalidDataException)
         {
             Check(false, "tablet link: the stand-in tablet's conversation", e.Message);
         }
