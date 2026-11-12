@@ -78,11 +78,11 @@
         <StackPanel x:Name="ColorPanel" Orientation="Horizontal"/>
         <Border Style="{StaticResource Sep}"/>
         <StackPanel x:Name="WidthPanel" Orientation="Horizontal"/>
-        <!-- opacity of new pen, arrow and circle marks: 10% to 100% -->
-        <Slider x:Name="OpacitySlider" Width="70" Minimum="0.1" Maximum="1" SmallChange="0.1" LargeChange="0.1"
-                VerticalAlignment="Center" Margin="4,0" Focusable="False" IsMoveToPointEnabled="True"
-                ToolTip="Opacity of the pen, arrow and circle (new marks). The highlighter keeps its own see-through look."/>
-        <TextBlock x:Name="OpacityText" Text="100%" Width="34" Foreground="{StaticResource Ink}" FontSize="12" VerticalAlignment="Center"/>
+        <!-- opacity of new pen, arrow and circle marks: 10% to 100% (narrow: the whole toolbar must fit a 1024-wide screen;
+             the value is in its name, shown under the buttons while the mouse or pen rests on it) -->
+        <Slider x:Name="OpacitySlider" Width="56" Minimum="0.1" Maximum="1" SmallChange="0.1" LargeChange="0.1"
+                VerticalAlignment="Center" Margin="2,0" Focusable="False" IsMoveToPointEnabled="True"
+                ToolTip="Opacity 100%: of the pen, arrow and circle (new marks). The highlighter keeps its own see-through look."/>
         <Border Style="{StaticResource Sep}"/>
         <Button x:Name="FadeBtn" Style="{StaticResource Tb}" Content="⏳" ToolTip="Fading ink (F): marks disappear after 3 seconds. Hold Shift while drawing to keep one."/>
         <Button x:Name="UndoBtn" Style="{StaticResource Tb}" Content="↶" ToolTip="Undo (Ctrl+Z)"/>

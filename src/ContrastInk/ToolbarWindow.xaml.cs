@@ -66,7 +66,7 @@ public partial class ToolbarWindow : Window
         LaserBtn.Click += (_, _) => ToolClicked?.Invoke(Tool.Laser);
         OpacitySlider.ValueChanged += (_, e) =>
         {
-            OpacityText.Text = $"{Math.Round(e.NewValue * 100)}%";
+            ShowOpacity(e.NewValue);
             if (!refreshing) OpacityChanged?.Invoke(Math.Round(e.NewValue, 2));
         };
         UndoBtn.Click += (_, _) => UndoClicked?.Invoke();
@@ -244,11 +244,17 @@ public partial class ToolbarWindow : Window
             OptEraserEnd.IsChecked = s.PenEraserEnd; OptSlides.IsChecked = s.MarksPerSlide;
             OptNames.IsChecked = s.ShowButtonNames;
             if (Math.Abs(OpacitySlider.Value - s.Opacity) > 0.001) OpacitySlider.Value = s.Opacity;
-            OpacityText.Text = $"{Math.Round(s.Opacity * 100)}%";
+            ShowOpacity(s.Opacity);
         }
         finally { refreshing = false; }
         FoldBtn.Content = folded ? "›" : "‹";
         if (showNames != s.ShowButtonNames) { showNames = s.ShowButtonNames; if (!showNames) Standing(); }
+    }
+
+    void ShowOpacity(double o)
+    {
+        Label(OpacitySlider, $"Opacity {Math.Round(o * 100)}%: of the pen, arrow and circle (new marks). The highlighter keeps its own see-through look.");
+        if (OpacitySlider.IsMouseOver && showNames) Hint.Text = (string)OpacitySlider.ToolTip;   // dragging: the % follows
     }
 
     bool showNames = true;   // ⚙ → Toolbar: names of buttons on hover (warnings and notices show either way)
