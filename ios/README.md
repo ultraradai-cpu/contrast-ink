@@ -65,13 +65,25 @@ screen, while the toolbar stays on your iPad. A mark appears on the projector wh
 
 ## Install
 
-It isn't on the App Store yet. To put it on an iPad you need a Mac with Xcode:
+It isn't on the App Store. Install it yourself (sideload) from a Windows PC, no Mac needed:
 
-1. `brew install xcodegen`, then in this `ios` folder: `xcodegen`
-2. Open `ContrastInk.xcodeproj`, choose your team under Signing & Capabilities, plug in the iPad, and press Run.
+1. Download **ContrastInk.ipa** from **Releases → iPad (latest)**:
+   https://github.com/ultraradai-cpu/contrast-ink/releases/download/ios-latest/ContrastInk.ipa
+2. On the PC, install **iTunes** (from apple.com, not the Microsoft Store version) and
+   **Sideloadly** (sideloadly.io).
+3. Plug the iPad into the PC with a cable and tap **Trust** on the iPad.
+4. Open Sideloadly, drag `ContrastInk.ipa` into it, type your Apple ID, press **Start**.
+   (Use a spare Apple ID if you prefer: it only signs the app.)
+5. On the iPad: **Settings → General → VPN & Device Management**, tap your Apple ID, **Trust**.
+6. iPadOS 16 and later: **Settings → Privacy & Security → Developer Mode → On**, and restart when asked.
 
-With a free Apple ID the app works for 7 days before it must be installed again; with an Apple Developer account
-($99 a year) it can go to TestFlight and the App Store.
+With a free Apple ID the app opens for **7 days**; then plug in and press Start in Sideloadly again (your decks and
+recordings stay). A free Apple ID can have 3 such apps at a time. AltStore (altstore.io) works too, and can renew
+the 7 days over Wi-Fi by itself while the PC is on.
+
+With a Mac instead: `brew install xcodegen`, `xcodegen` in this folder, open `ContrastInk.xcodeproj`, choose your
+team under Signing & Capabilities, plug in the iPad, press Run. An Apple Developer account ($99 a year) removes the
+7 days and allows TestFlight.
 
 ## For Developers
 

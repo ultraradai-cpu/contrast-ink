@@ -2,10 +2,15 @@ name: iOS
 
 # Every push that changes the iPad/iPhone app: test the shared rules, build the app, run it on a simulated iPad
 # (draw, change slides, undo, shapes) and keep the screenshots of every step as "ios-screenshots".
+# Then build ContrastInk.ipa for a real iPad, unsigned (Sideloadly or AltStore signs it with your own Apple ID).
+# On main it goes to the "ios-latest" release: one download link.
 on:
   push:
     paths: ["ios/**", ".github/workflows/ios.yml"]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   ios:
@@ -43,3 +48,30 @@ jobs:
         with:
           name: ios-screenshots
           path: ios/shots/
+      - name: Build ContrastInk.ipa for a real iPad (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild build -project ContrastInk.xcodeproj -scheme ContrastInk -configuration Release \
+            -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" | tail -40
+          rm -rf Payload && mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/ContrastInk.app Payload/
+          zip -qry ContrastInk.ipa Payload
+          ls -la ContrastInk.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ContrastInk-ipa
+          path: ios/ContrastInk.ipa
+      - name: Update the ios-latest release (main only)
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="Built from ${GITHUB_SHA::7}, passed the simulated-iPad check. Unsigned: install it with Sideloadly or AltStore and your Apple ID (see ios/README.md, Install on your iPad)."
+          if gh release view ios-latest >/dev/null 2>&1; then
+            git tag -f ios-latest "$GITHUB_SHA" && git push -f origin refs/tags/ios-latest
+            gh release upload ios-latest ContrastInk.ipa --clobber
+            gh release edit ios-latest --notes "$notes"
+          else
+            gh release create ios-latest ContrastInk.ipa --title "iPad (latest)" --target "$GITHUB_SHA" --notes "$notes"
+          fi
