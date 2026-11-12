@@ -10,7 +10,7 @@ drawing layer, so OBS records it. Version 1.
 ## Finding the PC (same Wi-Fi)
 
 - The PC advertises itself on the network with DNS-SD (Bonjour / mDNS), service type **`_contrastink._tcp`**,
-  instance name = the computer's name, port = its TCP port, TXT record `v=1`. (Not a UDP broadcast: an iPad app
+  instance name = the computer's name, port = its TCP port, TXT record `v=2` (the protocol version). (Not a UDP broadcast: an iPad app
   may only send broadcasts with a permission Apple must grant, which a sideloaded app can't have. iPad browses
   with NWBrowser, Android with NsdManager, Windows registers with DnsServiceRegister.)
 - The tablet lists the PCs by name; the presenter picks one and types the **6-digit code** the PC shows.
