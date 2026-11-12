@@ -235,13 +235,14 @@ class ScreenRecorder(private val service: InkService) {
                     val kind = ex.getTrackFormat(i).getString(MediaFormat.KEY_MIME)?.substringBefore('/') ?: continue
                     tracks[kind]?.let { map[i] = it; ex.selectTrack(i) }
                 }
-                // a part's times needn't start at 0 (Android can stamp them from when the screen was handed over):
-                // each part starts where the last one ended
-                val base = ex.sampleTime.coerceAtLeast(0)
+                // A part starts at its first picture, where the last part ended. Sound from before that picture is
+                // left out: a microphone can hand over the time it "missed" while paused, all at once, on resume.
+                val base = firstVideoTime(piece) ?: ex.sampleTime.coerceAtLeast(0)
                 var end = offset
                 while (true) {
                     val track = ex.sampleTrackIndex
                     if (track < 0) break
+                    if (ex.sampleTime < base) { ex.advance(); continue }
                     info.size = ex.readSampleData(buffer, 0)
                     if (info.size < 0) break
                     info.offset = 0
@@ -260,6 +261,18 @@ class ScreenRecorder(private val service: InkService) {
         }
         pieces.forEach { it.delete() }
         return into
+    }
+
+    /** The time of a part's first video frame, in µs (null when it has no video). */
+    private fun firstVideoTime(f: File): Long? {
+        val ex = MediaExtractor()
+        return try {
+            ex.setDataSource(f.absolutePath)
+            val v = (0 until ex.trackCount).firstOrNull { ex.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true }
+                ?: return null
+            ex.selectTrack(v)
+            ex.sampleTime.takeIf { it >= 0 }
+        } finally { ex.release() }
     }
 
     /** Puts the video in Movies/Contrast Ink, where the Gallery and Files apps show it. Null when it couldn't. */
