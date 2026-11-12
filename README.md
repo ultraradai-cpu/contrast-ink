@@ -110,6 +110,25 @@ Click a message to dismiss it.
 `<your video> chapters.txt` is saved next to the video, ready to paste into a YouTube description. With OBS 30.2 or newer
 and the **Hybrid MP4** recording format (Settings → Output → Recording Format), the chapters are also inside the video.
 
+## A Tablet as a Pad (Android or iPad)
+
+Draw on a tablet in your hand while the PC shows the slides and OBS records: the tablet shows a live picture of
+the PC's screen, and what you draw on it is drawn on the PC.
+
+1. On the PC: **⚙ Settings → Let a Tablet Draw Here (Over Wi-Fi)**. It shows a 6-digit **code** (new each time
+   Contrast Ink starts), a **PC check** (always the same for this PC) and the PC's address. The first time,
+   Windows may ask to let Contrast Ink use the network: allow it (tick "public" too if the lecture-hall Wi-Fi is
+   a public network).
+2. On the tablet (same Wi-Fi): Contrast Ink → **Use as a pad for a PC** → pick the PC → type the code.
+3. The first time with this PC, the tablet shows a PC check: tap **It matches** only if it is the same as on the
+   PC. Next time it goes straight in, and warns you if another machine ever pretends to be this PC.
+4. Draw. The tablet's toolbar has the tools, colours, widths, undo, clear, the laser, and ‹ › to change slides
+   (the app in front on the PC turns the page).
+
+Everything between the tablet and the PC is encrypted, and the code itself never crosses the network. Wrong codes
+are limited (five in a row lock pairing for 30 s; twenty make a new code). With patient images on screen, a
+private network or the PC's own hotspot is safer still. Coming next: the USB cable, used by itself when plugged in.
+
 ## OBS Settings
 
 - Use **Display Capture** (the whole screen), not Window Capture of PowerPoint, or your drawings won't be recorded.
