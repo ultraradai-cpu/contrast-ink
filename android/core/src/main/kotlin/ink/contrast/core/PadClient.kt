@@ -5,19 +5,72 @@ package ink.contrast.core
  * network and no threads, so every step is tested on any machine. The connection feeds it what the PC sends and
  * sends what it gives back:
  *
- *   [hello] → the PC's CHALLENGE → [proof] → the PC's WELCOME (sealed) → [seal] / [receive] both ways.
+ *   [hello] → the PC's CHALLENGE → [answer] (the PC's key against the one remembered for it) → the PROOF, at once
+ *   for a PC it knows, or once the presenter [confirm]s the PC check the first time → the PC's WELCOME (sealed) →
+ *   [seal] / [receive] both ways.
  *
  * Threads: [proof] and [seal] are called from the one thread that writes, [receive] from the one that reads; each
  * direction's seal is only ever used by its own thread.
  */
 class PadClient(private val code: String, private val device: String, private val own: PadCrypto.KeyPair = PadCrypto.newKeyPair()) {
-    enum class Phase { HELLO, CHALLENGED, PROOF_SENT, OPEN }
+    enum class Phase {
+        HELLO, CHALLENGED,
+        /** A PC met for the first time: nothing is sent until the presenter says its PC check matches ([confirm]). */
+        AWAITING_CHECK,
+        /** Stopped before the PROOF: another key under a remembered name, or the presenter said the check differs. */
+        STOPPED,
+        PROOF_SENT, OPEN,
+    }
+
+    /** What [answer] decided about the PC's CHALLENGE. */
+    sealed class Answer {
+        /** The PC the tablet remembers: send this PROOF now. */
+        class Proof(val bytes: ByteArray) : Answer()
+        /** The first time with this PC ([Phase.AWAITING_CHECK]): show [pcCheck], then [confirm] or [decline]. */
+        data class Check(val pcCheck: String) : Answer()
+        /** Another key under a remembered name ([Phase.STOPPED]): warn; nothing is sent. */
+        object Changed : Answer()
+    }
 
     @Volatile var phase = Phase.HELLO
         private set
     @Volatile private var toPc: PadSeal? = null
     @Volatile private var toTablet: PadSeal? = null
     private val inner = PadDecoder()
+    @Volatile private var challenge: PcMessage.Challenge? = null
+
+    /**
+     * The CHALLENGE's key against [remembered], the key kept for this PC's name (null: never met).
+     * [acceptAnyway]: the key the presenter chose "Connect anyway" for, after the warning; it is checked like a new PC.
+     * A PC met before goes on at once; a new one waits for the presenter to compare the PC check, so a machine
+     * pretending to be the PC never gets a PROOF to try codes against; a changed key stops here.
+     */
+    fun answer(c: PcMessage.Challenge, remembered: ByteArray?, acceptAnyway: ByteArray? = null): Answer {
+        check(phase == Phase.CHALLENGED) { "one answer to one CHALLENGE" }
+        return when (PcKey.check(remembered, c.key, acceptAnyway)) {
+            PcKey.SAME -> Answer.Proof(proof(c))
+            PcKey.CHANGED -> { phase = Phase.STOPPED; Answer.Changed }
+            PcKey.NEW -> {
+                if (PadCrypto.readPoint(c.key) == null) throw PadProtocolException("The PC's key isn't a P-256 public key")
+                challenge = c
+                phase = Phase.AWAITING_CHECK
+                Answer.Check(PadCrypto.pcCheck(c.key))
+            }
+        }
+    }
+
+    /** The presenter says the PC shows this PC check: the PROOF to send. */
+    @Synchronized fun confirm(): ByteArray {
+        val c = challenge
+        check(phase == Phase.AWAITING_CHECK && c != null) { "nothing to confirm" }
+        phase = Phase.CHALLENGED
+        return proof(c)
+    }
+
+    /** The presenter says the PC shows another PC check (or took too long): nothing is ever sent. */
+    @Synchronized fun decline() {
+        if (phase == Phase.AWAITING_CHECK) phase = Phase.STOPPED
+    }
 
     /** The first message: what the tablet is, and its fresh public key. */
     fun hello(): ByteArray = PadProtocol.hello(device, own.point)

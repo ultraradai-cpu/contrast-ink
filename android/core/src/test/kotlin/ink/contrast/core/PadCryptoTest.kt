@@ -223,6 +223,75 @@ class PadCryptoTest {
         assertEquals("but not to a third", PcKey.CHANGED, PcKey.check(a, b, acceptAnyway = a + byteArrayOf(1)))
     }
 
+    /** The tablet's side of a handshake, with everything it sends after HELLO kept in [sent]. */
+    private inner class Tablet(code: String = "123456") {
+        val client = PadClient(code, "t")
+        val pc = Pc("123456", PadDecoderForPc.hello(client.hello()))
+        val sent = ArrayList<ByteArray>()
+        fun challenged(remembered: ByteArray?, acceptAnyway: ByteArray? = null): PadClient.Answer {
+            client.receive(challenge())
+            return client.answer(challenge(), remembered, acceptAnyway).also { if (it is PadClient.Answer.Proof) sent += it.bytes }
+        }
+        fun confirm() { sent += client.confirm() }
+        fun proofOpens() = sent.size == 1 && (sent[0][0].toInt() and 0xFF) == PadProtocol.PROOF &&
+            PadProtocol.command("hello").contentEquals(pc.open.open(sent[0].copyOfRange(5, sent[0].size)))
+    }
+
+    @Test fun firstTimeWaitsForTheCheck() {
+        val t = Tablet()
+        assertEquals(PadClient.Answer.Check("6FC6-6A90"), t.challenged(null))
+        assertEquals(PadClient.Phase.AWAITING_CHECK, t.client.phase)
+        assertTrue("nothing sent after HELLO until the presenter confirms", t.sent.isEmpty())
+        try { t.client.receive(t.pc.sealed(welcome())); fail("nothing sealed is taken before the PROOF") } catch (e: PadProtocolException) {}
+        try { t.client.seal(PadProtocol.ping()); fail("nothing sealed is sent before WELCOME") } catch (e: IllegalStateException) {}
+        assertTrue(t.sent.isEmpty())
+
+        t.confirm()
+        assertTrue("confirmed: the PROOF, opened by the PC", t.proofOpens())
+        assertEquals(PadClient.Phase.PROOF_SENT, t.client.phase)
+        t.client.receive(t.pc.sealed(welcome()))
+        assertEquals(PadClient.Phase.OPEN, t.client.phase)
+        try { t.client.confirm(); fail("one PROOF only") } catch (e: IllegalStateException) {}
+    }
+
+    @Test fun firstTimeDeclinedSendsNothing() {
+        val t = Tablet()
+        assertTrue(t.challenged(null) is PadClient.Answer.Check)
+        t.client.decline()
+        assertEquals(PadClient.Phase.STOPPED, t.client.phase)
+        try { t.confirm(); fail("no PROOF once declined") } catch (e: IllegalStateException) {}
+        assertTrue("nothing sent after HELLO", t.sent.isEmpty())
+    }
+
+    @Test fun rememberedKeyGoesOnAtOnce() {
+        val t = Tablet()
+        assertTrue(t.challenged(pcPublic) is PadClient.Answer.Proof)
+        assertTrue("the PROOF at once", t.proofOpens())
+        assertEquals(PadClient.Phase.PROOF_SENT, t.client.phase)
+    }
+
+    @Test fun changedKeyStopsUntilConnectAnyway() {
+        val t = Tablet()
+        assertEquals(PadClient.Answer.Changed, t.challenged(tabletPublic))
+        assertEquals(PadClient.Phase.STOPPED, t.client.phase)
+        try { t.confirm(); fail("no PROOF for a changed key") } catch (e: IllegalStateException) {}
+        assertTrue("nothing sent after HELLO", t.sent.isEmpty())
+
+        // "Connect anyway" connects again, letting this key through: it shows the check like a first time
+        val again = Tablet()
+        assertEquals(PadClient.Answer.Check("6FC6-6A90"), again.challenged(tabletPublic, acceptAnyway = pcPublic))
+        assertTrue("nothing until the check is confirmed", again.sent.isEmpty())
+        again.confirm()
+        assertTrue("then the PROOF", again.proofOpens())
+    }
+
+    @Test fun aBadKeyIsNeverShownAsACheck() {
+        val client = PadClient("123456", "t")
+        val c = PcMessage.Challenge(ByteArray(65), salt, "LAPTOP")
+        client.receive(c)
+        try { client.answer(c, null); fail("an unreadable key stops the handshake") } catch (e: PadProtocolException) {}
+    }
+
     /** Reading what the tablet sends, as the PC would. */
     private object PadDecoderForPc {
         fun hello(m: ByteArray): ByteArray {

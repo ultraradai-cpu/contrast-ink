@@ -91,6 +91,9 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
     private lateinit var addressField: EditText
     private lateinit var codeField: EditText
     private lateinit var connectButton: Button
+    /** The first time with a PC: "does the PC show this PC check?", over either screen, until answered. */
+    private lateinit var checkPanel: LinearLayout
+    private lateinit var checkText: TextView
 
     // the pad
     private lateinit var padScreen: LinearLayout
@@ -109,8 +112,10 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
     private var acceptAnyway: ByteArray? = null
     private var changedKey: ByteArray? = null
     private var pcName = ""
-    /** The PC check to compare, while this is a PC seen for the first time; null once read. */
-    private var firstCheck: String? = null
+    /** The PC tapped in the list: its address as shown, and its network name (its key is remembered under that name). */
+    private var picked: Pair<String, String>? = null
+    /** The name the presenter chose the PC by, for this connection: the tapped PC's, or null for a typed address. */
+    private var chosenName: String? = null
     private var retries = 0
     private var reconnecting = false
     private val retry = Runnable { if (connection == null && padScreen.visibility == View.VISIBLE) open() }
@@ -149,10 +154,12 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
         super.onCreate(savedInstanceState)
         connectScreen = buildConnectScreen()
         padScreen = buildPadScreen()
+        checkPanel = buildCheckPanel()
         val root = FrameLayout(this).apply {
             setBackgroundColor(ink)
             addView(connectScreen)
             addView(padScreen)
+            addView(checkPanel, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         }
         setContentView(root)
         fullscreen()
@@ -237,13 +244,48 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
         col.addView(connectButton)
         col.addView(space(8))
         col.addView(text("Pictures of the PC's screen come over the Wi-Fi encrypted. For patient images, a private network " +
-            "or the PC's own hotspot is still the safest. The first time you connect to a PC, compare the PC check this " +
-            "tablet shows with the one next to the code on the PC.", 14f).apply { setTextColor(grey) })
+            "or the PC's own hotspot is still the safest. The first time you connect to a PC, this tablet asks you to " +
+            "compare its PC check with the one next to the code on the PC.", 14f).apply { setTextColor(grey) })
         col.addView(button("Back") { finish() })
         return ScrollView(this).apply { addView(col) }
     }
 
+    /** "First time with <PC>: does the PC show the PC check …?" with It matches / It doesn't. */
+    private fun buildCheckPanel(): LinearLayout {
+        checkText = text("", 20f, bold = true).apply { gravity = Gravity.CENTER }
+        val matches = button("It matches") {
+            hideCheck()
+            connection?.confirm()
+            if (connectScreen.visibility == View.VISIBLE) statusText.text = "Connecting to $pcName…"
+        }.apply {
+            background = GradientDrawable().apply { setColor(blue); cornerRadius = 10 * dp }
+            setTextColor(Color.WHITE)
+        }
+        val doesnt = button("It doesn't") {
+            hideCheck()
+            connection?.decline()
+            connection = null
+            showConnect("Don't connect: this may not be your PC.")
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(Color.argb(0xEE, 0x14, 0x1A, 0x22))
+            setPadding((32 * dp).toInt(), (32 * dp).toInt(), (32 * dp).toInt(), (32 * dp).toInt())
+            addView(checkText)
+            addView(space(16))
+            addView(matches, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            addView(space(8))
+            addView(doesnt, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            visibility = View.GONE
+            isClickable = true   // nothing under it is touched while the question is open
+        }
+    }
+
+    private fun hideCheck() { checkPanel.visibility = View.GONE }
+
     private fun showConnect(message: String?, keyChanged: Boolean = false) {
+        hideCheck()
         main.removeCallbacks(retry)
         reconnecting = false
         statusText.text = message ?: ""
@@ -270,9 +312,10 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString("pad.address", address).apply()
         target = t
         code = c
+        // a PC tapped in the list (and its address left as it was) is remembered under its network name
+        chosenName = picked?.takeIf { it.first == address }?.second
         retries = 0
         pcName = ""
-        firstCheck = null
         pad.clearPicture()
         stopDiscovery()
         open()
@@ -290,7 +333,7 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
             connectButton.isEnabled = false
         }
         val name = Build.MODEL?.takeIf { it.isNotBlank() } ?: "Android tablet"
-        connection = PadConnection(host, port, code, name, pins, acceptAnyway, this).also { it.start() }
+        connection = PadConnection(host, port, code, name, pins, chosenName, acceptAnyway, this).also { it.start() }
     }
 
     // ---- the pad ----
@@ -304,7 +347,6 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
             gravity = Gravity.CENTER_VERTICAL
             setSingleLine()
             ellipsize = TextUtils.TruncateAt.END
-            setOnClickListener { firstCheck = null; updateTitle() }   // the check compared: a tap hides it
         }
         val titleRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -345,11 +387,10 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
         val name = pcName.ifEmpty { "the PC" }
         titleText.text = when {
             reconnecting -> "Reconnecting to $name…"
-            firstCheck != null -> "$name · first time: check the PC shows PC check $firstCheck next to its code"
             else -> name
         }
         titleText.contentDescription = titleText.text
-        titleText.setTextColor(if (reconnecting || firstCheck != null) warn else light)
+        titleText.setTextColor(if (reconnecting) warn else light)
     }
 
     private fun disconnect() {
@@ -362,12 +403,17 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
 
     override fun frameShown() { connection?.send(PadProtocol.frameAck()) }
 
-    override fun onPc(c: PadConnection, name: String, pcCheck: String, firstTime: Boolean) {
+    override fun onPc(c: PadConnection, name: String, pcCheck: String, needsCheck: Boolean) {
         if (c !== connection) return
         pcName = name
         acceptAnyway = null   // used once: from now on the new key is the one remembered
-        if (firstTime) firstCheck = pcCheck
         if (connectScreen.visibility == View.VISIBLE) statusText.text = "Connecting to $name (PC check $pcCheck)…"
+        if (needsCheck) {
+            // nothing goes to the PC until the presenter has compared: a machine pretending to be it learns nothing
+            checkText.text = "First time with $name: does the PC show the PC check $pcCheck? (⚙ Settings, beside the code)"
+            checkText.contentDescription = checkText.text
+            checkPanel.visibility = View.VISIBLE
+        }
         updateTitle()
     }
 
@@ -440,8 +486,10 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
         if (c !== connection) return   // an old connection's end: a newer one is already running
         connection = null
         if (isFinishing) return
+        hideCheck()
         val inSession = padScreen.visibility == View.VISIBLE
         when {
+            end.why == PadConnection.Why.CHECK_TIMEOUT -> showConnect(sentence(end))
             end.why == PadConnection.Why.KEY_CHANGED -> {
                 changedKey = end.pcKey
                 val check = end.pcKey?.let { PadCrypto.pcCheck(it) } ?: "?"
@@ -477,6 +525,7 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
         PadConnection.Why.OLD_PC -> "This PC has an older Contrast Ink. Update Contrast Ink on the PC, then connect again."
         PadConnection.Why.BROKEN -> "The PC's answer couldn't be read. Make sure Contrast Ink is up to date on the PC and on this tablet."
         PadConnection.Why.KEY_CHANGED -> "This is not the PC you paired with."
+        PadConnection.Why.CHECK_TIMEOUT -> "Took too long: tap Connect again."
     }
 
     // ---- finding PCs (DNS-SD, "_contrastink._tcp") ----
@@ -539,6 +588,7 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
             val shown = if (host.contains(':')) "[$host]:$port" else "$host:$port"
             foundList.addView(button("$name   ($shown)") {
                 addressField.setText(shown)
+                picked = shown to name
                 // picking a PC fills its address; the presenter then types the code that PC shows now (an old code
                 // sent on its own to whichever PC is tapped would only use up one of its guesses)
                 codeField.setText("")

@@ -47,6 +47,7 @@ import java.util.concurrent.TimeUnit
  * version 2 of docs/pad-protocol.md as the Windows app does): the code is checked through the PROOF, the PC's
  * picture shows, a swipe reaches the PC as a stroke in fractions of the picture, the toolbar's buttons reach it as
  * commands, a dropped link comes back, a wrong code shows the PC's words, and a PC whose key changed is stopped.
+ * The first time with a PC, nothing goes after HELLO until the presenter says its PC check matches.
  * Screenshots of each step are kept.
  */
 @RunWith(AndroidJUnit4::class)
@@ -241,6 +242,13 @@ class PadTest {
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
     }
 
+    /** The first-time question about the PC check: shown, with nothing sent after HELLO while it is open. */
+    private fun firstTimeCheckShows(check: String = "6FC6-6A90") {
+        assertNotNull("the first time, the PC check is asked about before anything else is sent", device.wait(Until.findObject(
+            By.text("First time with TEST-PC: does the PC show the PC check $check? (⚙ Settings, beside the code)")), 8000))
+        assertNull("nothing is sent after HELLO while the check is open", pc.got.poll(2, TimeUnit.SECONDS))
+    }
+
     private fun press(name: String) {
         val b = device.wait(Until.findObject(By.desc(name)), 4000)
         assertNotNull("button \"$name\"", b)
@@ -255,11 +263,13 @@ class PadTest {
         assertNull("HELLO never carries the code", json["code"])
         assertEquals("HELLO carries version 2", 2.0, json["version"])
         assertEquals("and the tablet's 65-byte public key", 65, Base64.getDecoder().decode(json["key"] as String).size)
-        assertNotNull("the tablet proves it knows the code (PROOF)", pc.next(PadProtocol.PROOF))
+        firstTimeCheckShows()
+        shot("19 first time: the PC check")
+        press("It matches")
+        assertNotNull("once it matches, the tablet proves it knows the code (PROOF)", pc.next(PadProtocol.PROOF))
         assertNotNull("the tablet acknowledges the picture once it is on screen (FRAME_ACK)", pc.next(PadProtocol.FRAME_ACK))
         assertNotNull("the toolbar shows", device.wait(Until.findObject(By.desc("Undo")), 4000))
-        assertNotNull("the first time, the PC's name and its PC check show",
-            device.wait(Until.findObject(By.textContains("TEST-PC · first time: check the PC shows PC check 6FC6-6A90")), 4000))
+        assertNotNull("the PC's name shows", device.wait(Until.findObject(By.text("TEST-PC")), 4000))
         assertArrayEquals("the PC's key is remembered under its name", FakePc.VECTOR_PC_KEY,
             Base64.getDecoder().decode(prefs.getString(PadActivity.PIN_PREFIX + "TEST-PC", "")))
         assertNull("the code is never saved", prefs.getString("pad.code", null))
@@ -339,6 +349,8 @@ class PadTest {
     @Test fun aWrongCodeShowsThePcsWords() {
         openPad("000000")
         assertNotNull("the tablet says HELLO", pc.next(PadProtocol.HELLO))
+        firstTimeCheckShows()
+        press("It matches")
         assertNotNull("and tries its PROOF", pc.next(PadProtocol.PROOF))
         assertNotNull("the PC's reason shows, word for word", device.wait(Until.findObject(
             By.text("Wrong code: type the code Contrast Ink shows on the PC (⚙ Settings).")), 8000))
@@ -362,9 +374,34 @@ class PadTest {
 
         // the presenter knows the PC was reinstalled
         press("Connect anyway")
-        assertNotNull("Connect anyway goes on to the PROOF", pc.next(PadProtocol.PROOF))
+        assertNotNull("Connect anyway says HELLO again", pc.next(PadProtocol.HELLO))
+        firstTimeCheckShows(PadCrypto.pcCheck(other.point))
+        press("It matches")
+        assertNotNull("then the PROOF", pc.next(PadProtocol.PROOF))
         assertNotNull("and the pictures", pc.next(PadProtocol.FRAME_ACK))
         assertArrayEquals("the new key is remembered now", other.point,
             Base64.getDecoder().decode(prefs.getString(PadActivity.PIN_PREFIX + "TEST-PC", "")))
+    }
+
+    @Test fun aPcCheckThatDoesntMatchSendsNothing() {
+        openPad("123456")
+        assertNotNull("the tablet says HELLO", pc.next(PadProtocol.HELLO))
+        firstTimeCheckShows()
+        press("It doesn't")
+        assertNotNull("the presenter is told plainly", device.wait(Until.findObject(By.text("Don't connect: this may not be your PC.")), 4000))
+        shot("26 the PC check doesn't match")
+        assertNull("nothing is sent after HELLO, ever", pc.got.poll(3, TimeUnit.SECONDS))
+        assertNotNull("back on the connect screen", device.findObject(By.desc("Connect")))
+        assertNull("the PC isn't remembered", prefs.getString(PadActivity.PIN_PREFIX + "TEST-PC", null))
+    }
+
+    @Test fun aPcCheckLeftUnansweredCloses() {
+        openPad("123456")
+        assertNotNull("the tablet says HELLO", pc.next(PadProtocol.HELLO))
+        firstTimeCheckShows()
+        assertNotNull("after about 25 s the tablet gives up and says so", device.wait(Until.findObject(
+            By.text("Took too long: tap Connect again.")), PadConnection.CHECK_WAIT_MS + 8000))
+        assertNull("nothing was sent after HELLO", pc.got.poll(1, TimeUnit.SECONDS))
+        assertNull("the question is gone", device.findObject(By.desc("It matches")))
     }
 }
