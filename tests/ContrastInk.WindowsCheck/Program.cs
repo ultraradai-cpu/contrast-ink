@@ -501,18 +501,18 @@ static class Program
             {
                 for (int i = 0; i < 2; i++)
                 {
-                    var st = new System.Net.Sockets.TcpClient("127.0.0.1", port);
+                    var waiting = new System.Net.Sockets.TcpClient("127.0.0.1", port);
                     using var k = PadCrypto.NewKey();
-                    st.GetStream().Write(Pad.Message(Pad.Hello, JsonSerializer.Serialize(new { device = "stall", version = 2, key = Convert.ToBase64String(PadCrypto.PublicPoint(k)) })));
-                    PadRead(st.GetStream(), new PadReader(), g => g.Count > 0, 3000);   // its CHALLENGE: it now waits up to 30 s
-                    stalled.Add(st);
+                    waiting.GetStream().Write(Pad.Message(Pad.Hello, JsonSerializer.Serialize(new { device = "stall", version = 2, key = Convert.ToBase64String(PadCrypto.PublicPoint(k)) })));
+                    PadRead(waiting.GetStream(), new PadReader(), g => g.Count > 0, 3000);   // its CHALLENGE: it now waits up to 30 s
+                    stalled.Add(waiting);
                 }
                 using (var third = new System.Net.Sockets.TcpClient("127.0.0.1", port))
                     Check(ClosedByPc(third.GetStream(), 2000), "tablet link: a third waiting connection from one address is turned away", "");
                 using (var cable2 = new TestTablet(Pad.UsbPort))
                     Check(cable2.Pair(""), "tablet link: strangers waiting on the Wi-Fi don't block the cable", cable2.Refused);
             }
-            finally { foreach (var st in stalled) st.Dispose(); }
+            finally { foreach (var w in stalled) w.Dispose(); }
 
             // strangers on the Wi-Fi, without the code: a broken first message once ended the whole app
             foreach (var junk in new[] { new byte[] { 0x01, 0, 0, 0, 1, (byte)'1' }, Pad.Message(Pad.Hello, "{\"version\":2,\"key\":\"\\uD800\"}"), new byte[] { 0x01, 0, 0x10, 0, 0 }, Pad.Message(PadCrypto.Proof, new byte[40]) })
