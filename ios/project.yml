@@ -59,4 +59,6 @@ schemes:
       targets:
         ContrastInk: all
     test:
+      # Debug: the UI tests open pad mode with -padTest, which only Debug builds understand
+      config: Debug
       targets: [ContrastInkUITests]

@@ -3,19 +3,25 @@ import SwiftUI
 import UIKit
 
 /// The app's own UI test opens pad mode straight onto a fake PC: `-padTest 127.0.0.1:47999 123456` (no Bonjour,
-/// which a test runner can't rely on).
+/// which a test runner can't rely on). Only in Debug builds (what the UI test runs): a build for a real iPad has no
+/// way to be pointed at a machine from its launch arguments.
 enum PadLaunch {
     static let test: (address: String, code: String)? = {
+        #if DEBUG
         let a = ProcessInfo.processInfo.arguments
         guard let i = a.firstIndex(of: "-padTest"), i + 2 < a.count else { return nil }
         return (a[i + 1], a[i + 2])
+        #else
+        return nil
+        #endif
     }()
 }
 
 /// Pad mode: this iPad shows a PC's screen and what is drawn on it is drawn by the PC (where OBS records it).
 /// First the list of PCs and the code, then the PC's screen with a toolbar.
 struct PadView: View {
-    static let addressKey = "padAddress", codeKey = "padCode", pcKey = "padPC"
+    /// The address and the PC are remembered for next time; the code never is (the PC makes a new one each run).
+    static let addressKey = "padAddress", pcKey = "padPC"
 
     /// Back to the home screen (nil in the UI test, which only ever shows the pad).
     var close: (() -> Void)?
@@ -27,10 +33,17 @@ struct PadView: View {
         }
         .preferredColorScheme(.dark)
         .onAppear {
+            // a code saved by an older version: the PC has a new one by now, and it isn't kept any more
+            UserDefaults.standard.removeObject(forKey: "padCode")
             if let t = PadLaunch.test, client.phase == .idle { client.connect(address: t.address, code: t.code) }
         }
         .onDisappear { client.disconnect(); client.stopBrowsing() }
     }
+}
+
+/// "Not the PC you paired with": what it says, wherever it shows.
+private func notThePCText(_ name: String, _ check: String) -> String {
+    "This isn't the PC you paired with as \(name): its PC check is now \(check). If you didn't reinstall Contrast Ink on that PC, don't connect."
 }
 
 // MARK: choosing the PC
@@ -40,14 +53,17 @@ struct PadConnectView: View {
     var close: (() -> Void)?
     @State private var chosen: String? = UserDefaults.standard.string(forKey: PadView.pcKey)
     @State private var address = UserDefaults.standard.string(forKey: PadView.addressKey) ?? ""
-    @State private var code = UserDefaults.standard.string(forKey: PadView.codeKey) ?? ""
+    @State private var code = ""
     @State private var problem: String?
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
-                    if client.found.isEmpty {
+                    if let why = client.browseProblem {
+                        Label(why, systemImage: "exclamationmark.triangle").foregroundStyle(Color.noticeText)
+                            .accessibilityIdentifier("padBrowseProblem")
+                    } else if client.found.isEmpty {
                         Label("Looking for PCs running Contrast Ink on this Wi-Fi…", systemImage: "wifi")
                             .foregroundStyle(Color.offText.opacity(0.7))
                     }
@@ -90,7 +106,16 @@ struct PadConnectView: View {
                     }
                     .disabled(!canConnect || client.phase == .connecting)
                     .accessibilityIdentifier("padConnect")
-                    if let why = message { Text(why).foregroundStyle(Color.noticeText) }
+                    if let why = message {
+                        Text(why).foregroundStyle(Color.noticeText).accessibilityIdentifier("padMessage")
+                    }
+                    if case .notThePC = client.phase {
+                        Button("Connect anyway") { client.connectAnyway() }
+                            .foregroundStyle(Color.noticeText)
+                            .accessibilityIdentifier("padConnectAnyway")
+                    }
+                } footer: {
+                    Text("The PC's pictures come to this iPad encrypted, and the code never crosses the network. For patient images, a private network or the PC's own hotspot is still the safest. The first time, check that the PC check this iPad shows matches the one under the code on the PC.")
                 }
             }
             .navigationTitle("Pad for a PC")
@@ -101,7 +126,10 @@ struct PadConnectView: View {
             }
         }
         // the UI test connects straight to its fake PC: no Bonjour (nor its permission prompt) in a test run
-        .onAppear { if PadLaunch.test == nil { client.startBrowsing() } }
+        .onAppear {
+            if code.isEmpty { code = client.lastCode }
+            if PadLaunch.test == nil { client.startBrowsing() }
+        }
     }
 
     /// The chosen PC, if it's (still) on the network.
@@ -119,8 +147,8 @@ struct PadConnectView: View {
     private var message: String? {
         if let problem { return problem }
         switch client.phase {
-        case .rejected(let why): return why
-        case .lost(let why): return why
+        case .rejected(let why), .lost(let why): return why
+        case .notThePC(let name, let check): return notThePCText(name, check)
         default: return nil
         }
     }
@@ -128,7 +156,6 @@ struct PadConnectView: View {
     private func connect() {
         problem = nil
         let d = UserDefaults.standard
-        d.set(code, forKey: PadView.codeKey)
         if let pc = chosenPC, address.isEmpty || PadProtocol.address(address) == nil {
             d.set(pc.name, forKey: PadView.pcKey)
             client.connect(to: pc, code: code)
@@ -149,6 +176,7 @@ struct PadScreen: View {
     var body: some View {
         VStack(spacing: 0) {
             PadToolbar(client: client)
+            if let check = client.newPCCheck { firstTime(check) }
             GeometryReader { geo in
                 let size = pictureSize
                 let fit = Fit.aspect(Size(size.width, size.height), in: Size(geo.size.width, geo.size.height))
@@ -168,7 +196,8 @@ struct PadScreen: View {
                     .frame(width: rect.width, height: rect.height)
                     .position(x: rect.midX, y: rect.midY)
                     .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("The PC's screen")
+                    .accessibilityLabel(client.picture == nil ? "Waiting for the PC's screen" : "The PC's screen")
+                    .accessibilityValue(client.picture == nil ? "" : "shown")
                     .accessibilityIdentifier("padPicture")
                     // the whole area takes the pen (one that slides off the picture draws along its edge)
                     PadSurface(client: client, picture: rect, state: client.state)
@@ -189,30 +218,54 @@ struct PadScreen: View {
         return CGSize(width: w.screenW, height: w.screenH)
     }
 
+    /// The first time with this PC: a machine pretending to be it could only be caught by eye, now.
+    private func firstTime(_ check: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "checkmark.shield")
+            Text("First time with \(client.connectedName): check the PC shows the PC check \(check) next to its code. If it doesn't, disconnect.")
+                .accessibilityIdentifier("padFirstTime")
+            Spacer()
+            Button("It matches") { client.newPCCheck = nil }.bold().accessibilityIdentifier("padCheckMatches")
+        }
+        .font(.callout)
+        .foregroundStyle(Color.offText)
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(Color.contrastBlue.opacity(0.35))
+    }
+
     @ViewBuilder private var lostCard: some View {
         VStack(spacing: 14) {
             switch client.phase {
-            case .connecting:
+            case .connecting, .reconnecting:
                 ProgressView()
-                Text("Connecting to \(client.connectedName)…")
+                Text("Reconnecting to \(client.connectedName)…").accessibilityIdentifier("padReconnecting")
+                if case .reconnecting(let why) = client.phase, !why.isEmpty {
+                    Text(why).font(.callout).multilineTextAlignment(.center).foregroundStyle(Color.offText.opacity(0.8))
+                }
             case .lost(let why), .rejected(let why):
                 Image(systemName: "wifi.exclamationmark").font(.largeTitle)
-                Text(why).multilineTextAlignment(.center)
+                Text(why).multilineTextAlignment(.center).accessibilityIdentifier("padMessage")
                 Button { client.reconnect() } label: { Text("Reconnect").bold().frame(minWidth: 160) }
                     .buttonStyle(.borderedProminent).tint(Color.contrastBlue)
                     .accessibilityIdentifier("padReconnect")
+            case .notThePC(let name, let check):
+                Image(systemName: "exclamationmark.shield").font(.largeTitle).foregroundStyle(Color.noticeText)
+                Text(notThePCText(name, check)).multilineTextAlignment(.center).accessibilityIdentifier("padMessage")
+                Button("Connect anyway") { client.connectAnyway() }.foregroundStyle(Color.noticeText)
+                    .accessibilityIdentifier("padConnectAnyway")
             default: EmptyView()
             }
             Button("Disconnect") { client.disconnect() }
         }
         .foregroundStyle(Color.offText)
+        .frame(maxWidth: 460)
         .padding(24)
         .background(RoundedRectangle(cornerRadius: 14).fill(Color.inkBar.opacity(0.95)))
     }
 }
 
-/// The pad's toolbar, in the look of the presenter's: each button is a COMMAND to the PC, and what is lit up is what
-/// the PC says (STATE), so the iPad never shows a tool the PC isn't using.
+/// The pad's toolbar, in the look of the presenter's (and the same buttons as Android's pad): each button is a
+/// COMMAND to the PC, and what is lit up is what the PC says (STATE), so the iPad never shows a tool the PC isn't using.
 struct PadToolbar: View {
     @ObservedObject var client: PadClient
 
@@ -264,9 +317,23 @@ struct PadToolbar: View {
         }
     }
 
+    /// The widths start the second row: the first is full with the tools and colours on a narrow iPad.
     @ViewBuilder private var actions: some View {
+        ForEach(Settings.widths.indices, id: \.self) { i in
+            Button { client.command(PadProtocol.Command.width(i)) } label: {
+                Circle().frame(width: Settings.widths[i] + 3, height: Settings.widths[i] + 3)
+            }
+            .buttonStyle(BarButton(on: client.state.width == i))
+            .named("\(Settings.widthNames[i]) line")
+        }
+        Button { client.command(client.state.fading ? PadProtocol.Command.fadeOff : PadProtocol.Command.fadeOn) } label: {
+            Image(systemName: "timer")
+        }
+        .buttonStyle(BarButton(on: client.state.fading)).named("Fading ink")
+        // dimmed when the PC says there is nothing to undo (still pressable: its STATE may be a moment behind)
         Button { client.command(PadProtocol.Command.undo) } label: { Image(systemName: "arrow.uturn.backward") }
-            .buttonStyle(BarButton(on: false)).named("Undo").accessibilityIdentifier("padUndo")
+            .buttonStyle(BarButton(on: false)).opacity(client.state.canUndo ? 1 : 0.4)
+            .named("Undo").accessibilityIdentifier("padUndo")
         Button { client.command(PadProtocol.Command.clear) } label: { Image(systemName: "trash") }
             .buttonStyle(BarButton(on: false)).named("Clear all marks")
         bar
@@ -275,9 +342,15 @@ struct PadToolbar: View {
         Button { client.command(PadProtocol.Command.next) } label: { Image(systemName: "chevron.right") }
             .buttonStyle(BarButton(on: false)).named("Next slide")
         bar
-        Label(client.connectedName, systemImage: "desktopcomputer")
-            .font(.callout).foregroundStyle(Color.offText).lineLimit(1).fixedSize()
-            .accessibilityIdentifier("padPCName")
+        VStack(alignment: .leading, spacing: 0) {
+            Label(client.connectedName, systemImage: "desktopcomputer")
+                .font(.callout).foregroundStyle(Color.offText).lineLimit(1).fixedSize()
+                .accessibilityIdentifier("padPCName")
+            if let check = client.pcCheck {
+                Text("PC check \(check)").font(.caption2.monospacedDigit()).foregroundStyle(Color.offText.opacity(0.7))
+                    .fixedSize().accessibilityIdentifier("padPCCheck")
+            }
+        }
     }
 
     private func tool(_ t: Tool, _ symbol: String, _ name: String) -> some View {
@@ -344,14 +417,26 @@ final class PadTouchView: UIView {
 
     // MARK: strokes
 
+    /// Apple Pencil touched the glass since the app started: from then on only the Pencil draws, so a palm that
+    /// lands before the Pencil (resting the hand to write) never starts a stroke.
+    private static var pencilSeen = false
+
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        for t in touches where t.type == .pencil { Self.pencilSeen = true }
         for t in touches {
-            if active == nil, !cancelled {
-                begin(t)
-            } else if let a = active, t !== a {
-                // a palm while Apple Pencil draws is ignored; any other second touch means "not a stroke"
-                if a.type == .pencil, t.type != .pencil { continue }
-                cancel()
+            if let a = active, t !== a {
+                if t.type == .pencil, a.type != .pencil {
+                    // the palm landed first and started a stroke (before any Pencil was seen): drop it, the Pencil draws
+                    drop()
+                    begin(t)
+                } else if a.type == .pencil, t.type != .pencil {
+                    continue   // a palm while Apple Pencil draws is ignored
+                } else {
+                    cancel()   // a second finger means "not a stroke"
+                }
+            } else if active == nil {
+                if t.type == .pencil { cancelled = false; begin(t) }
+                else if !Self.pencilSeen, !cancelled { begin(t) }
             }
         }
     }
@@ -409,13 +494,19 @@ final class PadTouchView: UIView {
         pending = []
     }
 
+    /// A second finger: drop the stroke, and draw nothing more until every finger has lifted.
     private func cancel() {
+        drop()
+        cancelled = true
+    }
+
+    /// The PC forgets the stroke (STROKE_CANCEL) and the iPad's own copy goes.
+    private func drop() {
         client?.strokeCancel()
         live?.removeFromSuperlayer()
         live = nil
         pending = []
         active = nil
-        cancelled = true
         stopLink()
     }
 

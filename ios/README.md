@@ -73,13 +73,22 @@ on a Windows PC on the same Wi-Fi. The iPad shows the PC's screen; what you draw
 OBS on the PC records it.
 
 1. Pick the PC under **PCs on this Wi-Fi** (or type the address the PC shows, like `192.168.1.20` or
-   `192.168.1.20:47820`, if it isn't listed).
-2. Type the 6-digit code the PC shows and press **Connect**. The first time, iPad asks to allow the local network.
-3. Draw with Apple Pencil or a finger. A second finger cancels the stroke. Pencil hover (M2 iPads and later) moves
-   the laser's dot. The toolbar's tools, colours, undo, clear and slide buttons work the PC's Contrast Ink.
+   `192.168.1.20:47820`, if it isn't listed). If the list says to allow Local Network: **Settings → Privacy &
+   Security → Local Network → Contrast Ink**, on.
+2. Type the 6-digit code the PC shows and press **Connect**. The code itself never crosses the network, and the
+   PC's pictures come encrypted.
+3. **The first time** with a PC, the iPad shows its **PC check** (like `6FC6-6A90`): check the PC shows the same
+   next to its code. The iPad remembers that PC; if a machine later answers under its name with another check, the
+   iPad stops and warns (**Connect anyway** only if you reinstalled Contrast Ink on that PC).
+4. Draw with Apple Pencil or a finger. Once the Pencil has touched the glass, only the Pencil draws (a resting palm
+   doesn't). A second finger cancels the stroke. Pencil hover (M2 iPads and later) moves the laser's dot. The
+   toolbar's tools, colours, widths, fading ink, undo, clear and slide buttons work the PC's Contrast Ink.
 
-If the Wi-Fi drops or the PC stops answering for 6 seconds, the iPad says **Lost the PC**, with **Reconnect**.
-The link is written down in `docs/pad-protocol.md`.
+For patient images, a private network or the PC's own hotspot is still the safest choice.
+
+If the Wi-Fi drops or the PC stops answering for 6 seconds, the iPad keeps the last picture and reconnects by
+itself; after two tries it says **Lost the PC**, with **Reconnect**. The address and the PC are remembered for next
+time, the code isn't (the PC makes a new one each time it starts). The link is written down in `docs/pad-protocol.md`.
 
 ## Install
 
@@ -106,7 +115,8 @@ team under Signing & Capabilities, plug in the iPad, press Run. An Apple Develop
 ## For Developers
 
 - `Core`: the rules (shapes, fading, chapters, each slide's marks and undo, keys, video crop), plain Swift with no
-  Apple-only code: `swift test --package-path Core` on any Mac or Linux machine.
+  Apple-only code: `swift test --package-path Core` on any Mac or Linux machine (the pad link's encryption uses
+  CryptoKit, so its tests run only on a Mac).
 - `App`: the iOS app (SwiftUI, PencilKit, PDFKit, ReplayKit).
 - `UITests`: runs the app on a simulated iPad with a sample deck, draws, changes slides, undoes, draws shapes, and
   keeps a screenshot of every step.

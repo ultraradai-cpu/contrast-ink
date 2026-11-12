@@ -10,7 +10,8 @@ public enum PadProtocol {
     public static let serviceType = "_contrastink._tcp"
     /// The PC's port when nothing else is using it (otherwise it advertises the next free one).
     public static let defaultPort: UInt16 = 47820
-    public static let version = 1
+    /// Version 2: the code never crosses the network and everything after the hello is encrypted (PadCrypto).
+    public static let version = 2
     /// A longer message means the stream is broken (or isn't Contrast Ink): the connection closes.
     public static let maxPayload = 16 * 1024 * 1024
     /// How often the iPad says it's still there, and how long a silent PC is given before it counts as lost.
@@ -19,11 +20,13 @@ public enum PadProtocol {
 
     /// The message types. Tablet → PC are below 0x80, PC → tablet from 0x80.
     public enum Kind: UInt8, Sendable {
-        case hello = 0x01, ping = 0x02, frameAck = 0x03
+        case hello = 0x01, ping = 0x02, frameAck = 0x03, proof = 0x04
         case strokeBegin = 0x10, strokePoints = 0x11, strokeEnd = 0x12, strokeCancel = 0x13
         case hover = 0x14, hoverEnd = 0x15
         case command = 0x20
-        case welcome = 0x81, reject = 0x82, frame = 0x83, state = 0x84, pong = 0x85
+        case welcome = 0x81, reject = 0x82, frame = 0x83, state = 0x84, pong = 0x85, challenge = 0x86
+        /// Both ways, after the hello: a whole message inside, encrypted (PadSeal).
+        case sealed = 0x7F
     }
 
     /// Which end of Apple Pencil touched: the PC erases with the eraser end whatever its tool is.
@@ -39,9 +42,12 @@ public enum PadProtocol {
         return d
     }
 
-    /// The first message, always. The keys are written in this order on purpose: the spec's test vector is exact bytes.
-    public static func hello(code: String, device: String) -> Data {
-        let json = "{\"code\":\(jsonString(code)),\"device\":\(jsonString(device)),\"version\":\(version)}"
+    /// The first message, always: who this is and its public key for this connection (65 bytes, 04|X|Y). No code:
+    /// the code only goes into the keys. The keys are written in the spec's order. A long device name is cut, so
+    /// the hello stays well under the PC's 1 KB.
+    public static func hello(device: String, key: Data) -> Data {
+        let name = String(device.prefix(64))
+        let json = "{\"device\":\(jsonString(name)),\"version\":\(version),\"key\":\(jsonString(key.base64EncodedString()))}"
         return message(.hello, Array(json.utf8))
     }
 
@@ -216,11 +222,51 @@ public enum PadMessage: Equatable, Sendable {
     /// The raw STATE JSON: read it with PadState.parse over the last state.
     case state(Data)
     case pong
+    /// Version 2's answer to the hello, in the clear: the PC's public key, the salt, its name (PadChallenge.parse).
+    case challenge(Data)
+    /// A SEALED payload: nonce, ciphertext, tag. Opened with PadLink.open.
+    case sealed(Data)
+
+    /// One message from the PC by its type; nil for a type the iPad doesn't know (or a tablet → PC one): skipped.
+    public static func read(type: UInt8, payload: Data) -> PadMessage? {
+        switch PadProtocol.Kind(rawValue: type) {
+        case .welcome?: return .welcome(PadWelcome.parse(payload))
+        case .reject?: return .reject(String(decoding: payload, as: UTF8.self))
+        case .frame?: return .frame(payload)
+        case .state?: return .state(payload)
+        case .pong?: return .pong
+        case .challenge?: return .challenge(payload)
+        case .sealed?: return .sealed(payload)
+        default: return nil
+        }
+    }
+}
+
+/// The PC's CHALLENGE: its own long-lived public key (the iPad remembers it by the PC's name), the salt for this
+/// connection's keys, and its name.
+public struct PadChallenge: Equatable, Sendable {
+    public var key: Data
+    public var salt: Data
+    public var name: String
+    public init(key: Data, salt: Data, name: String) { self.key = key; self.salt = salt; self.name = name }
+
+    /// Nil when the key isn't 65 bytes starting 04, or the salt isn't 16 bytes: not a PC that speaks version 2.
+    public static func parse(_ payload: Data) -> PadChallenge? {
+        guard let d = FlatJSON.read(payload),
+              let k = d.strings["key"].flatMap({ Data(base64Encoded: $0) }), k.count == 65, k.first == 4,
+              let s = d.strings["salt"].flatMap({ Data(base64Encoded: $0) }), s.count == 16
+        else { return nil }
+        let name = d.strings["name"].map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
+        return PadChallenge(key: k, salt: s, name: name.isEmpty ? "PC" : String(name.prefix(64)))
+    }
 }
 
 public enum PadError: Error, Equatable {
     /// A length over 16 MB: not Contrast Ink, or the stream lost its place. Close the connection.
     case tooLong(UInt32)
+    /// A sealed message that was altered, replayed, sealed with other keys (a wrong code), or isn't one whole
+    /// message inside: close the connection.
+    case refused
 }
 
 /// Turns the bytes from the PC, however TCP splits them, into whole messages. Unknown types are skipped (a newer
@@ -251,14 +297,7 @@ public struct PadDecoder: Sendable {
             guard end <= buffer.endIndex else { break }
             let payload = Data(buffer[start..<end])
             at = end
-            switch PadProtocol.Kind(rawValue: type) {
-            case .welcome?: out.append(.welcome(PadWelcome.parse(payload)))
-            case .reject?: out.append(.reject(String(decoding: payload, as: UTF8.self)))
-            case .frame?: out.append(.frame(payload))
-            case .state?: out.append(.state(payload))
-            case .pong?: out.append(.pong)
-            default: break   // unknown, or a tablet → PC type the PC shouldn't send: skipped
-            }
+            if let m = PadMessage.read(type: type, payload: payload) { out.append(m) }
         }
         buffer = Data(buffer[at...])
         return out

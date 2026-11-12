@@ -7,10 +7,18 @@ import Foundation
 final class PadProtocolTests: XCTestCase {
     private func hex(_ s: String) -> Data { Data(s.split(separator: " ").map { UInt8($0, radix: 16)! }) }
 
-    func testHelloVector() {
-        let json = #"{"code":"123456","device":"t","version":1}"#
-        XCTAssertEqual(json.utf8.count, 42)
-        XCTAssertEqual(PadProtocol.hello(code: "123456", device: "t"), hex("01 00 00 00 2A") + Data(json.utf8))
+    func testHelloVersion2() {
+        // no code in it: the device, version 2 and the key in base64, in the spec's order
+        let key = Data([4] + [UInt8](repeating: 7, count: 64))
+        let json = #"{"device":"t","version":2,"key":""# + key.base64EncodedString() + #""}"#
+        XCTAssertEqual(PadProtocol.hello(device: "t", key: key), Data([1, 0, 0, 0, UInt8(json.utf8.count)]) + Data(json.utf8))
+        XCTAssertFalse(String(decoding: PadProtocol.hello(device: "t", key: key), as: UTF8.self).contains("code"))
+    }
+
+    func testHelloStaysSmall() {
+        // the PC refuses a hello over 1 KB: a very long device name is cut
+        let d = PadProtocol.hello(device: String(repeating: "é", count: 5000), key: Data(count: 65))
+        XCTAssertLessThan(d.count, 1024)
     }
 
     func testStrokeBeginVector() {
@@ -50,7 +58,7 @@ final class PadProtocolTests: XCTestCase {
     }
 
     func testHelloEscapesItsStrings() {
-        let d = PadProtocol.hello(code: "123456", device: "Bob's \"iPad\"")
+        let d = PadProtocol.hello(device: "Bob's \"iPad\"", key: Data(count: 65))
         let json = d.dropFirst(5)
         let obj = try? JSONSerialization.jsonObject(with: Data(json)) as? [String: Any]
         XCTAssertEqual(obj?["device"] as? String, "Bob's \"iPad\"")
@@ -163,6 +171,28 @@ final class PadDecoderTests: XCTestCase {
         guard case .state(let payload)? = try d.feed(msg(0x84, Array(json.utf8))).first else { return XCTFail("no state") }
         XCTAssertEqual(PadState.parse(payload),
                        PadState(tool: .oval, color: 3, width: 2, opacity: 0.5, fading: true, canUndo: true))
+    }
+
+    func testChallengeAndSealedAreKept() throws {
+        var d = PadDecoder()
+        let got = try d.feed(msg(0x86, Array("{}".utf8)) + msg(0x7F, [1, 2, 3]))
+        XCTAssertEqual(got, [.challenge(Data("{}".utf8)), .sealed(Data([1, 2, 3]))])
+    }
+
+    func testChallenge() {
+        let key = Data([4] + [UInt8](repeating: 1, count: 64)), salt = Data(0..<16)
+        let json = #"{"key":""# + key.base64EncodedString() + #"","salt":""# + salt.base64EncodedString() + #"","name":"LAPTOP"}"#
+        XCTAssertEqual(PadChallenge.parse(Data(json.utf8)), PadChallenge(key: key, salt: salt, name: "LAPTOP"))
+        // a short key, a short salt, not base64, not JSON: not a version 2 PC
+        let short = #"{"key":"BAEC","salt":""# + salt.base64EncodedString() + #""}"#
+        XCTAssertNil(PadChallenge.parse(Data(short.utf8)))
+        let badSalt = #"{"key":""# + key.base64EncodedString() + #"","salt":"AAEC"}"#
+        XCTAssertNil(PadChallenge.parse(Data(badSalt.utf8)))
+        XCTAssertNil(PadChallenge.parse(Data(#"{"key":"!!","salt":"??"}"#.utf8)))
+        XCTAssertNil(PadChallenge.parse(Data("nope".utf8)))
+        // no name: still a PC
+        let noName = #"{"key":""# + key.base64EncodedString() + #"","salt":""# + salt.base64EncodedString() + #""}"#
+        XCTAssertEqual(PadChallenge.parse(Data(noName.utf8))?.name, "PC")
     }
 
     func testStateKeepsWhatItDoesNotSay() {
