@@ -15,7 +15,6 @@ final class OverlayPanel: NSPanel {
         level = .screenSaver
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         ignoresMouseEvents = true
-        isFloatingPanel = true
         hidesOnDeactivate = false
         becomesKeyOnlyIfNeeded = false
         isReleasedWhenClosed = false

@@ -13,7 +13,6 @@ class FloatingPanel: NSPanel {
         hasShadow = true
         level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)   // above the drawing layer
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-        isFloatingPanel = true
         hidesOnDeactivate = false
         becomesKeyOnlyIfNeeded = true
         isReleasedWhenClosed = false
