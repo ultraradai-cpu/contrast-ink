@@ -100,7 +100,8 @@ struct PadConnectView: View {
                 }
             }
         }
-        .onAppear { client.startBrowsing() }
+        // the UI test connects straight to its fake PC: no Bonjour (nor its permission prompt) in a test run
+        .onAppear { if PadLaunch.test == nil { client.startBrowsing() } }
     }
 
     /// The chosen PC, if it's (still) on the network.
