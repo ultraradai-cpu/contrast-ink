@@ -15,7 +15,7 @@ struct RootView: View {
     @EnvironmentObject var lecture: Lecture
 
     var body: some View {
-        if PadLaunch.test != nil { PadView() }   // the UI test of pad mode, straight onto its fake PC
+        if PadLaunch.isTest { PadView() }   // the UI test of pad mode, straight onto its fake PC
         else if lecture.deck == nil { HomeView() } else { PresenterView() }
     }
 }

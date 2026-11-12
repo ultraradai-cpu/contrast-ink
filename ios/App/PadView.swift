@@ -15,6 +15,19 @@ enum PadLaunch {
         return nil
         #endif
     }()
+
+    /// `-padCable`: the UI test opens pad mode with nothing typed, for its cable PC to connect to 127.0.0.1:47830
+    /// (the simulator shares the Mac's loopback). Debug builds only, like -padTest.
+    static let cableTest: Bool = {
+        #if DEBUG
+        return ProcessInfo.processInfo.arguments.contains("-padCable")
+        #else
+        return false
+        #endif
+    }()
+
+    /// The app opens straight onto pad mode (a UI test).
+    static var isTest: Bool { test != nil || cableTest }
 }
 
 /// Pad mode: this iPad shows a PC's screen and what is drawn on it is drawn by the PC (where OBS records it).
@@ -35,9 +48,11 @@ struct PadView: View {
         .onAppear {
             // a code saved by an older version: the PC has a new one by now, and it isn't kept any more
             UserDefaults.standard.removeObject(forKey: "padCode")
+            // the USB door: plugging in opens the pad with nothing typed
+            client.startCable()
             if let t = PadLaunch.test, client.phase == .idle { client.connect(address: t.address, code: t.code) }
         }
-        .onDisappear { client.disconnect(); client.stopBrowsing() }
+        .onDisappear { client.disconnect(); client.stopBrowsing(); client.stopCable() }
     }
 }
 
@@ -145,8 +160,19 @@ struct PadConnectView: View {
                             .foregroundStyle(Color.noticeText)
                             .accessibilityIdentifier("padConnectAnyway")
                     }
+                    if let notice = client.cableNotice {
+                        Text(notice).foregroundStyle(Color.noticeText).accessibilityIdentifier("padCableNotice")
+                    }
                 } footer: {
                     Text("The PC's pictures come to this iPad encrypted, and the code never crosses the network. For patient images, a private network or the PC's own hotspot is still the safest. The first time, check that the PC check this iPad shows matches the one under the code on the PC.")
+                }
+                Section {
+                    Label("Or plug this iPad into the PC with its USB cable: the pad opens by itself, no code needed.",
+                          systemImage: "cable.connector")
+                        .foregroundStyle(Color.offText.opacity(0.8))
+                        .accessibilityIdentifier("padCableHint")
+                } footer: {
+                    Text("The PC needs iTunes or Apple Devices installed, and this iPad must trust it (tap Trust when first plugged in).")
                 }
             }
             .navigationTitle("Pad for a PC")
@@ -167,7 +193,7 @@ struct PadConnectView: View {
         // the UI test connects straight to its fake PC: no Bonjour (nor its permission prompt) in a test run
         .onAppear {
             if code.isEmpty { code = client.lastCode }
-            if PadLaunch.test == nil { client.startBrowsing() }
+            if !PadLaunch.isTest { client.startBrowsing() }
         }
     }
 
@@ -251,6 +277,13 @@ struct PadScreen: View {
                 PadCheckPanel(client: client, name: name, check: check)
             } else if client.phase != .connected {
                 lostCard
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if let notice = client.cableNotice {
+                Text(notice).font(.callout).foregroundStyle(Color.noticeText).multilineTextAlignment(.center)
+                    .padding(12).background(RoundedRectangle(cornerRadius: 10).fill(Color.inkBar.opacity(0.95)))
+                    .padding(16).accessibilityIdentifier("padCableNotice")
             }
         }
         .statusBarHidden(true)
@@ -377,6 +410,10 @@ struct PadToolbar: View {
             Label(client.connectedName, systemImage: "desktopcomputer")
                 .font(.callout).foregroundStyle(Color.offText).lineLimit(1).fixedSize()
                 .accessibilityIdentifier("padPCName")
+            if client.byCable {
+                Text("By the USB cable").font(.caption2).foregroundStyle(Color.offText.opacity(0.7))
+                    .fixedSize().accessibilityIdentifier("padByCable")
+            }
             if let check = client.pcCheck {
                 Text("PC check \(check)").font(.caption2.monospacedDigit()).foregroundStyle(Color.offText.opacity(0.7))
                     .fixedSize().accessibilityIdentifier("padPCCheck")
