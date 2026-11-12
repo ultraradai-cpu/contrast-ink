@@ -171,6 +171,10 @@ struct PadConnectView: View {
                           systemImage: "cable.connector")
                         .foregroundStyle(Color.offText.opacity(0.8))
                         .accessibilityIdentifier("padCableHint")
+                    if client.cablePaused {
+                        Button("Use the USB cable again") { client.startCable() }
+                            .accessibilityIdentifier("padCableResume")
+                    }
                 } footer: {
                     Text("The PC needs iTunes or Apple Devices installed, and this iPad must trust it (tap Trust when first plugged in).")
                 }

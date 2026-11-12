@@ -52,6 +52,9 @@ final class PadClient: ObservableObject {
 
     /// The session open now goes through the USB cable, not the Wi-Fi.
     @Published private(set) var byCable = false
+    /// Disconnect was tapped while on the cable: the cable stays off until Connect is tapped or pad mode reopens
+    /// (otherwise the PC, still plugged in, would reopen the pad a few seconds later — as on Android).
+    @Published private(set) var cablePaused = false
     /// A PC on the cable answered with another key than the one remembered for its name, while Wi-Fi was in use.
     @Published private(set) var cableNotice: String?
 
@@ -124,7 +127,7 @@ final class PadClient: ObservableObject {
     }
 
     /// Pad mode is open: listen for the PC on the cable (no code needed, so from the connect screen too).
-    func startCable() { cable.start() }
+    func startCable() { cablePaused = false; cable.start() }
 
     /// Leaving pad mode: no more listening.
     func stopCable() { cable.stop() }
@@ -264,11 +267,15 @@ final class PadClient: ObservableObject {
 
     // MARK: connecting
 
-    func connect(to pc: FoundPC, code: String) { start(Target(endpoint: pc.endpoint, code: code, name: pc.name)) }
+    func connect(to pc: FoundPC, code: String) {
+        if cablePaused { startCable() }
+        start(Target(endpoint: pc.endpoint, code: code, name: pc.name))
+    }
 
     /// A typed address (`192.168.1.20` or `192.168.1.20:47820`). False when it can't be an address.
     @discardableResult
     func connect(address: String, code: String) -> Bool {
+        if cablePaused { startCable() }
         guard let a = PadProtocol.address(address), let port = NWEndpoint.Port(rawValue: a.port) else { return false }
         start(Target(endpoint: .hostPort(host: NWEndpoint.Host(a.host), port: port), code: code, name: nil))
         return true
@@ -315,6 +322,7 @@ final class PadClient: ObservableObject {
 
     /// Leaves the PC: back to the list of PCs.
     func disconnect() {
+        if byCable { cable.stop(); cablePaused = true }
         closeConnection()
         target = nil
         welcome = nil
