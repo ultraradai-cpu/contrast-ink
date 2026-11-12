@@ -50,8 +50,20 @@ final class PadClient: ObservableObject {
     /// The PC's check (XXXX-XXXX), shown in the toolbar.
     @Published private(set) var pcCheck: String?
 
+    /// The session open now goes through the USB cable, not the Wi-Fi.
+    @Published private(set) var byCable = false
+    /// A PC on the cable answered with another key than the one remembered for its name, while Wi-Fi was in use.
+    @Published private(set) var cableNotice: String?
+
     /// The code typed last, kept only while the app runs (the PC makes a new one each time it starts).
     private(set) var lastCode = ""
+
+    /// Wi-Fi or the cable, and what to do when the cable comes or goes (ContrastInkCore's rules, tested there).
+    private var route = PadRoute()
+    /// The USB door: listens on the loopback while pad mode is open.
+    private let cable = PadCable()
+    /// The key of the PC on the cable that "not the PC you paired with" is about (what "Connect anyway" trusts).
+    private var cableWarnedKey: Data?
 
     private var browser: NWBrowser?
     private var connection: NWConnection?
@@ -92,6 +104,109 @@ final class PadClient: ObservableObject {
     static let localNetworkOff = "Allow Local Network for Contrast Ink: Settings → Privacy & Security → Local Network."
 
     var connectedName: String { welcome?.name ?? pending?.name ?? target?.name ?? "PC" }
+
+    init() { cable.client = self }
+
+    // MARK: the USB cable
+
+    static let unplugged = "The USB cable was unplugged. Plug it in again, or connect over Wi-Fi."
+
+    /// A cable session that has just opened (the PC's sealed WELCOME came): everything PadClient needs to carry on
+    /// with it, including any messages that came in the same read after WELCOME.
+    struct CableSession {
+        let connection: NWConnection
+        let decoder: PadDecoder
+        let link: PadLink
+        let handshake: PadHandshake
+        let welcome: PadWelcome
+        let check: String
+        let rest: [PadMessage]
+    }
+
+    /// Pad mode is open: listen for the PC on the cable (no code needed, so from the connect screen too).
+    func startCable() { cable.start() }
+
+    /// Leaving pad mode: no more listening.
+    func stopCable() { cable.stop() }
+
+    /// A connection came through the cable: let it in only when no other cable connection is.
+    func cableMayCome() -> Bool { route.cableArrived() }
+
+    /// The cable connection being let in ended before its session opened.
+    func cableFailed() { route.cableFailed() }
+
+    /// The PC on the cable isn't the one paired with under its name: say so (nothing more was sent to it).
+    func cableWarned(name: String, check: String, key: Data) {
+        route.cableFailed()
+        switch phase {
+        case .idle, .lost, .rejected, .notThePC:
+            if welcome == nil {
+                cableWarnedKey = key
+                phase = .notThePC(name: name, check: check)
+                return
+            }
+        default: break
+        }
+        // Wi-Fi is in use: it carries on, and the warning shows beside it
+        cableNotice = "On the USB cable: this isn't the PC you paired with as \(name) (its PC check is now \(check))."
+    }
+
+    /// The cable's session is open: it replaces Wi-Fi (closed now, and not tried while the cable is in).
+    func cableOpened(_ s: CableSession) {
+        closeConnection()   // the Wi-Fi connection, its retries and its pings
+        route.cableOpened()
+        generation += 1
+        let gen = generation
+        connection = s.connection
+        decoder = s.decoder
+        link = s.link
+        handshake = s.handshake
+        pending = nil
+        heldProof = nil
+        byCable = true
+        cableNotice = nil
+        cableWarnedKey = nil
+        welcome = s.welcome
+        pcCheck = s.check
+        picture = nil
+        state = PadState()
+        retries = 0
+        phase = .connected
+        lastHeard = Date()
+        s.connection.stateUpdateHandler = { [weak self] st in
+            Task { @MainActor [weak self] in self?.connectionChanged(st, gen: gen) }
+        }
+        receive(on: s.connection, gen: gen)
+        pinger = Timer.scheduledTimer(withTimeInterval: PadProtocol.pingInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.tick() }
+        }
+        UIApplication.shared.isIdleTimerDisabled = true
+        for m in s.rest {
+            guard gen == generation else { return }
+            handle(m)
+        }
+    }
+
+    /// The cable's session ended (unplugged, or the PC stopped answering): back to Wi-Fi by itself when a code was
+    /// typed earlier in this visit, otherwise the connect screen.
+    private func cableEnded() {
+        closeConnection()
+        byCable = false
+        let next = route.cableDropped()
+        if next == .wifi, target != nil {
+            retries = 0
+            phase = .reconnecting("The USB cable was unplugged: back to Wi-Fi.")
+            open()
+            return
+        }
+        route.forget()
+        welcome = nil
+        picture = nil
+        state = PadState()
+        pcCheck = nil
+        phase = .lost(Self.unplugged)
+        UIApplication.shared.isIdleTimerDisabled = false
+    }
 
     // MARK: finding PCs
 
@@ -170,6 +285,8 @@ final class PadClient: ObservableObject {
         target = t
         lastCode = t.code
         retries = 0
+        route.wifiChosen()   // held for after the cable, if one comes
+        cableWarnedKey = nil
         open()
     }
 
@@ -183,6 +300,13 @@ final class PadClient: ObservableObject {
     /// After "not the PC you paired with": the presenter knows the PC's Contrast Ink was reinstalled. The next
     /// connection takes that key (and, once the PC lets the iPad in, remembers it instead of the old one).
     func connectAnyway() {
+        if let k = cableWarnedKey {
+            // the warning was about the PC on the cable: its next connection (the PC tries every few seconds) goes on
+            cable.acceptKey = k
+            cableWarnedKey = nil
+            phase = .idle
+            return
+        }
         guard target != nil, let k = seenKey else { return }
         acceptKey = k
         retries = 0
@@ -199,12 +323,17 @@ final class PadClient: ObservableObject {
         pcCheck = nil
         acceptKey = nil
         sessionKey = nil
+        byCable = false
+        cableNotice = nil
+        cableWarnedKey = nil
+        route.forget()
         phase = .idle
         UIApplication.shared.isIdleTimerDisabled = false
     }
 
     private func open() {
-        guard let target else { return }
+        // never Wi-Fi while the cable's session is open
+        guard let target, route.wifiStarting() else { return }
         closeConnection()
         generation += 1
         let gen = generation
@@ -250,7 +379,8 @@ final class PadClient: ObservableObject {
         switch s {
         case .ready:
             // HELLO first, always: nothing else is sent before it, and nothing after it until the CHALLENGE
-            send(link.hello(device: UIDevice.current.name))
+            // (a cable session arrives with its handshake already done)
+            if !byCable, handshake.step == .hello { send(link.hello(device: UIDevice.current.name)) }
         case .failed(let e): dropped(Self.plain(e))
         case .waiting(let e):
             // "waiting": no route or refused. Network.framework would retry by itself; say so instead of hanging
@@ -278,6 +408,7 @@ final class PadClient: ObservableObject {
     /// The connection ended without a REJECT. Once the PC had let this iPad in, try again quietly a couple of times
     /// (the picture stays, the pad stays on screen); before that, say plainly what to check.
     private func dropped(_ why: String) {
+        if byCable { return cableEnded() }
         closeConnection()
         guard welcome != nil else {
             phase = .lost(Self.unreachable)
@@ -298,6 +429,7 @@ final class PadClient: ObservableObject {
 
     /// The PC said why it won't take this iPad: show its words as they are, keep the picture.
     private func rejected(_ why: String) {
+        if byCable { return cableEnded() }
         closeConnection()
         phase = .rejected(why.isEmpty ? "The PC said no." : why)
     }
@@ -346,14 +478,18 @@ final class PadClient: ObservableObject {
         let gen = generation
         for m in messages {
             guard gen == generation else { return }   // an earlier message closed it
-            switch m {
-            case .challenge(let json) where handshake.step == .hello: challenged(json)
-            // REJECT comes in the clear, only before the PC let this iPad in (wrong code, locked out, old tablet)
-            case .reject(let why) where handshake.expectsReject: rejected(why)
-            case .sealed(let p) where handshake.expectsSealed: opened(p)
-            // anything else in the clear is not version 2, or someone else's bytes: never shown, never trusted
-            default: broken()
-            }
+            handle(m)
+        }
+    }
+
+    private func handle(_ m: PadMessage) {
+        switch m {
+        case .challenge(let json) where handshake.step == .hello && !byCable: challenged(json)
+        // REJECT comes in the clear, only before the PC let this iPad in (wrong code, locked out, old tablet)
+        case .reject(let why) where handshake.expectsReject: rejected(why)
+        case .sealed(let p) where handshake.expectsSealed: opened(p)
+        // anything else in the clear is not version 2, or someone else's bytes: never shown, never trusted
+        default: broken()
         }
     }
 
@@ -370,6 +506,7 @@ final class PadClient: ObservableObject {
         if decision == .warnDifferent {
             // not the PC paired with: stop here, sending nothing more (not even the PROOF a guesser could use)
             closeConnection()
+            cableWarnedKey = nil   // "Connect anyway" is about this Wi-Fi PC
             phase = .notThePC(name: name, check: check)
             return
         }
