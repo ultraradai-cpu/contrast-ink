@@ -125,9 +125,15 @@ the PC's screen, and what you draw on it is drawn on the PC.
 4. Draw. The tablet's toolbar has the tools, colours, widths, undo, clear, the laser, and ‹ › to change slides
    (the app in front on the PC turns the page).
 
+**By USB cable** (it switches to the cable by itself when plugged in, and back to Wi-Fi when unplugged):
+- iPad: install iTunes (or Apple Devices) on the PC, plug in, tap Trust on the iPad. No code needed by cable.
+- Android: once, on the tablet, Settings → About → tap Build number 7 times, then Developer options → USB
+  debugging on; on the PC, unzip Google's free platform-tools to `C:\platform-tools`. Plug in and allow the PC on
+  the tablet. No code needed by cable.
+
 Everything between the tablet and the PC is encrypted, and the code itself never crosses the network. Wrong codes
 are limited (five in a row lock pairing for 30 s; twenty make a new code). With patient images on screen, a
-private network or the PC's own hotspot is safer still. Coming next: the USB cable, used by itself when plugged in.
+private network or the PC's own hotspot is safer still.
 
 ## OBS Settings
 

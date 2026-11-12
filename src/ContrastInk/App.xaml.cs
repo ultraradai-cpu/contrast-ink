@@ -255,13 +255,15 @@ public partial class App : Application
         return m.Count == 0 ? default : m[Math.Clamp(settings.Screen, 0, m.Count - 1)].Bounds;
     }
 
+    /// <summary>Three short lines (a long text here once made ⚙ Settings tall enough to cover the slide); the
+    /// details are in the README.</summary>
     void ShowPad() => toolbar.ShowPad(pad == null ? null
-        : pad.Connected != null ? $"Connected: {pad.Connected}" + (pad.OverUsb ? " (by the USB cable)." : " (over Wi-Fi). Plug in its USB cable and it switches to the cable by itself.")
-        : $"On the tablet: Contrast Ink → Use as a pad → {Environment.MachineName}, code {pad.Code}. The first time, the tablet shows a PC check: it must be {pad.PcCheck}."
-          + (PadServer.Addresses() is { Count: > 0 } a ? $" Or type the address {a[0]}" + (pad.Port != Pad.Port ? $":{pad.Port}" : "") + "." : "")
-          + " By USB cable, by itself when plugged in: an iPad needs iTunes or Apple Devices on this PC; an Android tablet needs USB debugging on (its Developer options) and Google's platform-tools on this PC"
-          + (Adb.Find() != null ? " (found)." : " (not found: unzip them to C:\\platform-tools).")
-          + " Windows may ask to let Contrast Ink use the network: allow it (lecture-hall Wi-Fi is often a \"public\" network: tick that too). The pictures sent to the tablet are encrypted; with patient images a private network or your own hotspot is safer still.");
+        : pad.Connected != null ? $"Connected: {pad.Connected}" + (pad.OverUsb ? ", by the USB cable." : ", over Wi-Fi (plug in its cable to switch).")
+        : $"Code {pad.Code}   ·   PC check {pad.PcCheck}"
+          + (PadServer.Addresses() is { Count: > 0 } a ? $"   ·   {a[0]}" + (pad.Port != Pad.Port ? $":{pad.Port}" : "") : "")
+          + $"\nOn the tablet: Use as a pad → {Environment.MachineName} → the code. Encrypted."
+          + "\nUSB cable: iPad needs iTunes; Android needs USB debugging and platform-tools"
+          + (Adb.Find() != null ? " (found)." : " (not found)."));
 
     void OnPad(byte type, byte[] payload)
     {
