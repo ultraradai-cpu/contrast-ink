@@ -40,7 +40,7 @@ public partial class ToolbarWindow : Window
         {
             int n = i;
             var dot = new Ellipse { Width = 18, Height = 18, Fill = (Brush)new BrushConverter().ConvertFromString(Settings.Colors[i])!, Stroke = Brushes.Black, StrokeThickness = 0.5 };
-            var b = new Button { Style = (Style)Resources["Tb"], Width = 30, Content = dot, ToolTip = $"{Settings.ColorNames[i]} ({i + 1})", BorderBrush = On };
+            var b = new Button { Style = (Style)Resources["Tb"], Width = 28, Content = dot, ToolTip = $"{Settings.ColorNames[i]} ({i + 1})", BorderBrush = On };
             if (Settings.ColorNames[i] == "Black") dot.Stroke = OffText;   // visible on the dark bar
             b.Click += (_, _) => ColorClicked?.Invoke(n);
             colorButtons.Add(b);
