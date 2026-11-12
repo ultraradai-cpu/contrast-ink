@@ -21,7 +21,8 @@ struct StageView: UIViewRepresentable {
 
 final class Stage: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate, UIGestureRecognizerDelegate {
     let lecture: Lecture
-    let canvas = PKCanvasView()
+    let canvas = InkCanvas()
+    private var inStroke = false               // the pen is down: the canvas isn't replaced under it
     private let slide = UIImageView()
     private let preview = CAShapeLayer()       // the arrow or oval being dragged
     private let shapePan = UIPanGestureRecognizer()
@@ -103,6 +104,7 @@ final class Stage: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate, UI
     }
 
     private func show(_ d: PKDrawing) {
+        guard !inStroke else { return }   // fading goes on meanwhile: the latest is shown when the pen lifts
         guard d != shownDrawing || d != canvas.drawing else { return }
         shownDrawing = d
         applying = true
@@ -124,7 +126,9 @@ final class Stage: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate, UI
         canvas.contentSize = frame.size
         canvas.contentOffset = .zero
         slide.frame = CGRect(origin: .zero, size: frame.size)
-        slide.image = deck.image(shownPage, pixelWidth: frame.width * (window?.screen.scale ?? 2))
+        let px = frame.width * (window?.screen.scale ?? 2)
+        slide.image = deck.image(shownPage, pixelWidth: px)
+        deck.drawAhead(around: shownPage, pixelWidth: px)
         canvas.sendSubviewToBack(slide)
         if let window { slideRectChanged?(canvas.convert(canvas.bounds, to: window), window) }
     }
@@ -148,7 +152,14 @@ final class Stage: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate, UI
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
         guard !applying, canvasView.drawing != shownDrawing else { return }
         shownDrawing = canvasView.drawing
-        lecture.canvasChanged(canvasView.drawing)
+        lecture.canvasChanged(canvasView.drawing, erasing: canvasView.tool is PKEraserTool)
+    }
+
+    func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) { inStroke = true }
+
+    func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
+        inStroke = false
+        show(lecture.drawing)
     }
 
     // MARK: arrow and oval
@@ -205,4 +216,11 @@ final class Stage: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate, UI
     }
 
     func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+}
+
+/// The canvas, without iPadOS's own undo (three-finger swipe, ⌘Z from the system): that would change the canvas
+/// behind the app's back. Undo is the app's: ↶, Z / ⌘Z, a two-finger tap, the Pencil.
+final class InkCanvas: PKCanvasView {
+    override var undoManager: UndoManager? { nil }
+    override var editingInteractionConfiguration: UIEditingInteractionConfiguration { .none }
 }

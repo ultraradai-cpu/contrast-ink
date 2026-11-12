@@ -83,6 +83,53 @@ final class ChaptersTests: XCTestCase {
 }
 
 final class TimelineTests: XCTestCase {
+    /// A microphone buffer made just before ⏸ often arrives after ▶: written at its stamp, it would land before
+    /// what's already in the video, and the video writer would stop for good (the whole recording lost).
+    func testASampleMadeDuringThePauseIsLeftOutWhenItArrivesAfterResume() {
+        var t = Timeline()
+        t.begin(at: 100)
+        XCTAssertEqual(t.videoTime(110), 10)
+        t.pause(at: 110)
+        t.resume(at: 120)
+        XCTAssertNil(t.videoTime(115), "made during the pause, arrived late")
+        XCTAssertNil(t.videoTime(109.99) .flatMap { $0 > 10 ? $0 : nil }, "nothing lands after the last written")
+        XCTAssertEqual(t.videoTime(120.5)!, 10.5, accuracy: 1e-9)
+    }
+
+    func testEverySampleAfterResumeIsLaterThanEveryOneBefore() {
+        var t = Timeline()
+        t.begin(at: 0)
+        var last = -1.0
+        var forward = Forward()
+        for stamp in stride(from: 0.0, through: 30, by: 0.02) {
+            if stamp >= 10 && t.paused == false && stamp < 10.02 { t.pause(at: stamp) }
+            if stamp >= 15 && t.paused { t.resume(at: stamp) }
+            // a late buffer from the pause, delivered just after resume
+            for s in [stamp, stamp - 3] {
+                guard let v = t.videoTime(s), forward.admit(v) else { continue }
+                XCTAssertGreaterThan(v, last); last = v
+            }
+        }
+        XCTAssertEqual(last, 25, accuracy: 0.05)
+    }
+
+    func testPauseBeforeTheFirstPictureHoldsTheStart() {
+        var t = Timeline()
+        t.pause(at: 5)
+        t.begin(at: 6)
+        XCTAssertFalse(t.started, "paused before any picture: nothing starts")
+        XCTAssertNil(t.videoTime(6))
+        t.resume(at: 8)
+        t.begin(at: 8.5)
+        XCTAssertEqual(t.videoTime(9), 0.5)
+        XCTAssertEqual(t.elapsed(at: 9), 0.5)
+    }
+
+    func testForwardDropsRepeatsAndGoingBack() {
+        var f = Forward()
+        XCTAssertTrue(f.admit(1)); XCTAssertFalse(f.admit(1)); XCTAssertFalse(f.admit(0.5)); XCTAssertTrue(f.admit(1.1))
+    }
+
     func testPausedStretchesAreCutOut() {
         var t = Timeline()
         XCTAssertNil(t.videoTime(5))           // nothing before the first frame
@@ -96,12 +143,13 @@ final class TimelineTests: XCTestCase {
         XCTAssertEqual(t.elapsed(at: 140), 20)
     }
 
-    func testPauseBeforeStartAndDoubleResumeAreIgnored() {
+    func testSecondBeginAndDoubleResumeAreIgnored() {
         var t = Timeline()
-        t.pause(at: 1); XCTAssertFalse(t.paused)
         t.begin(at: 10); t.begin(at: 50)
         XCTAssertEqual(t.start, 10)
         t.resume(at: 20); XCTAssertEqual(t.pausedTotal, 0)
+        t.pause(at: 30); t.resume(at: 35); t.resume(at: 60)
+        XCTAssertEqual(t.pausedTotal, 5)
     }
 }
 

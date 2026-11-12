@@ -1,4 +1,5 @@
 import PDFKit
+import ImageIO
 import UIKit
 
 /// What is being presented: PDF slides (PowerPoint → Export → PDF), pictures (CT/MR screenshots), or a whiteboard.
@@ -16,6 +17,8 @@ final class Deck {
     let source: Source
     private(set) var pageCount: Int
     private let cache = NSCache<NSString, UIImage>()
+    private let rendering = NSLock()                       // one page drawn at a time (PDFKit isn't for two threads)
+    private static let ahead = DispatchQueue(label: "Contrast Ink slides ahead", qos: .utility)
 
     init(title: String, source: Source) {
         self.title = title
@@ -60,6 +63,8 @@ final class Deck {
         let w = max(64, (pixelWidth / 64).rounded(.up) * 64)   // a few sizes only, so the cache is reused
         let key = "\(page)@\(Int(w))" as NSString
         if let hit = cache.object(forKey: key) { return hit }
+        rendering.lock(); defer { rendering.unlock() }
+        if let hit = cache.object(forKey: key) { return hit }   // drawn ahead while this waited
         let size = pageSize(page), px = CGSize(width: w, height: (w * size.height / size.width).rounded())
         let img: UIImage
         switch source {
@@ -72,6 +77,13 @@ final class Deck {
         }
         cache.setObject(img, forKey: key)
         return img
+    }
+
+    /// Draws the slides either side of `page` in the background, so turning to them doesn't hold up the Pencil.
+    func drawAhead(around page: Int, pixelWidth: CGFloat) {
+        for p in [page + 1, page - 1] where p >= 0 && p < pageCount {
+            Deck.ahead.async { [weak self] in _ = self?.image(p, pixelWidth: pixelWidth) }
+        }
     }
 
     static func blank(_ size: CGSize) -> UIImage {
@@ -117,11 +129,19 @@ enum Library {
         try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
     }
 
+    /// The pictures, at most 2560 pixels on the long side (a full camera picture each would fill the memory).
     static func loadImages(_ urls: [URL]) -> [UIImage] {
         urls.compactMap { url in
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            return (try? Data(contentsOf: url)).flatMap(UIImage.init(data:))
+            guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,   // the way the picture was taken
+                kCGImageSourceThumbnailMaxPixelSize: 2560,
+                kCGImageSourceShouldCacheImmediately: true,
+            ]
+            return CGImageSourceCreateThumbnailAtIndex(src, 0, options as CFDictionary).map { UIImage(cgImage: $0) }
         }
     }
 

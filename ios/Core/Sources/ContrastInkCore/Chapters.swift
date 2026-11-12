@@ -29,25 +29,31 @@ public struct Timeline: Equatable, Sendable {
     public private(set) var start: Double?
     public private(set) var pausedTotal: Double = 0
     public private(set) var pausedAt: Double?
+    /// When recording last resumed: a sample stamped before it was made during the pause (it can arrive late).
+    public private(set) var resumedAt: Double?
     public init() {}
 
     public var started: Bool { start != nil }
     public var paused: Bool { pausedAt != nil }
 
-    /// The video begins with the first frame written.
-    public mutating func begin(at t: Double) { if start == nil { start = t } }
+    /// The video begins with the first frame written (not while paused: a pause pressed before any picture arrived
+    /// holds the start back until resume).
+    public mutating func begin(at t: Double) { if start == nil, pausedAt == nil { start = t } }
 
-    public mutating func pause(at t: Double) { if start != nil, pausedAt == nil { pausedAt = t } }
+    public mutating func pause(at t: Double) { if pausedAt == nil { pausedAt = t } }
 
     public mutating func resume(at t: Double) {
         guard let p = pausedAt else { return }
-        pausedTotal += max(0, t - p)
+        if start != nil { pausedTotal += max(0, t - p) }
         pausedAt = nil
+        resumedAt = t
     }
 
-    /// Where a frame stamped `t` goes in the video; nil when it must be left out (before the start, or paused).
+    /// Where a frame stamped `t` goes in the video; nil when it must be left out (before the start, paused, or
+    /// made during a pause and arriving after it).
     public func videoTime(_ t: Double) -> Double? {
         guard let s = start, pausedAt == nil else { return nil }
+        if let r = resumedAt, t < r { return nil }
         let v = t - s - pausedTotal
         return v < 0 ? nil : v
     }
@@ -57,5 +63,17 @@ public struct Timeline: Equatable, Sendable {
         guard let s = start else { return 0 }
         let pausedNow = pausedAt.map { max(0, t - $0) } ?? 0
         return max(0, t - s - pausedTotal - pausedNow)
+    }
+}
+
+/// Keeps one track's times going forward: the video writer stops for good at a sample that isn't later than the last.
+public struct Forward: Sendable {
+    public private(set) var last: Double?
+    public init() {}
+    /// True (and remembered) when `t` is later than every time let through before.
+    public mutating func admit(_ t: Double) -> Bool {
+        if let l = last, t <= l { return false }
+        last = t
+        return true
     }
 }

@@ -53,7 +53,10 @@ Press **⏺** on the toolbar. The first time, iPad asks to allow screen recordin
 - The video is saved to **Photos**, and to **Files → On My iPad → Contrast Ink → Recordings**.
 - Every slide change becomes a chapter: `<video> chapters.txt` is saved beside the video, ready to paste into a
   YouTube description.
-- If Contrast Ink leaves the screen (Home, another app), iPad stops the recording; what was recorded is saved.
+- If Contrast Ink leaves the screen (Home, another app) or the recording is interrupted (a call), it stops;
+  what was recorded is saved.
+- Slides of different shapes, turning the iPad, a toolbar on two rows: the video keeps its first shape and shows
+  each slide whole, centred, with black bars where the shapes differ.
 
 ## Projector or TV
 

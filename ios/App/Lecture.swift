@@ -26,8 +26,8 @@ final class Lecture: ObservableObject {
     private var fading: [Date: (born: Date, color: UIColor)] = [:]
     private var faded: Set<Date> = []
     private var fadeLink: CADisplayLink?
-    /// When the slide showing now came up: a stroke older than this that the slide doesn't already have is not new.
-    private var shownSince = Date()
+    /// Marks that belong to slides other than this one: PencilKit can hand one back with the next stroke.
+    private var otherSlides: Set<Date> = []
 
     private init() {
         settings = Settings.decode(UserDefaults.standard.data(forKey: "settings"))
@@ -44,7 +44,7 @@ final class Lecture: ObservableObject {
         fading = [:]; faded = []
         self.deck = deck
         page = 0
-        shownSince = Date()
+        otherSlides = []
         drawing = marks.drawing
         UIApplication.shared.isIdleTimerDisabled = true   // the screen must not dim mid-lecture
     }
@@ -74,10 +74,16 @@ final class Lecture: ObservableObject {
     func go(to p: Int) {
         guard deck != nil, p != page, p >= 0, p < pageCount else { return }
         // fading marks are not kept for when the slide comes back: they were going anyway
+        let leaving = marks.drawing.strokes.map(\.path.creationDate)
         let kept = PKDrawing(strokes: marks.drawing.strokes.filter { fading[$0.path.creationDate] == nil })
-        if kept.strokes.count != marks.drawing.strokes.count { marks.replaceQuietly(kept) }
+        if kept.strokes.count != marks.drawing.strokes.count {
+            marks.replaceQuietly(kept)
+            // gone for good: undo on this slide later must not bring them back
+            for d in leaving where fading[d] != nil { faded.insert(d); fading[d] = nil }
+        }
+        otherSlides.formUnion(leaving)
         marks.show(page: p)
-        shownSince = Date()
+        otherSlides.subtract(marks.drawing.strokes.map(\.path.creationDate))
         page = p
         drawing = marks.drawing
         slideChanged?(p)
@@ -85,22 +91,27 @@ final class Lecture: ObservableObject {
 
     // MARK: marks
 
-    /// The presenter finished a stroke or erased one on the canvas.
-    func canvasChanged(_ new: PKDrawing) {
-        let known = Set(marks.drawing.strokes.map(\.path.creationDate))
-        // PencilKit can hand back the last slide's marks with the first stroke on a new slide: each slide keeps only
-        // its own (the canvas is then put right, as the drawing below differs from what it shows)
-        var new = new
-        let own = new.strokes.filter { known.contains($0.path.creationDate) || $0.path.creationDate >= shownSince }
-        if own.count != new.strokes.count { new = PKDrawing(strokes: own) }
-        if settings.fadingInk && !Lecture.shiftHeld {
-            for s in new.strokes where !known.contains(s.path.creationDate) {
-                fading[s.path.creationDate] = (Date(), s.ink.color)
-            }
-            if !fading.isEmpty { startFading() }
+    /// The presenter finished a stroke (`new` is the canvas's drawing), or erased marks (`erasing`).
+    ///
+    /// The slide's marks are the app's, not the canvas's: the canvas can be behind (fading went on while the pen was
+    /// down) or hand back marks that aren't this slide's (another slide's, or ones that already faded away). So only
+    /// strokes that are really new are taken from it, and only the eraser can take marks away.
+    func canvasChanged(_ new: PKDrawing, erasing: Bool = false) {
+        let current = marks.drawing.strokes
+        let known = Set(current.map(\.path.creationDate))
+        let onCanvas = Set(new.strokes.map(\.path.creationDate))
+        var strokes = erasing ? current.filter { onCanvas.contains($0.path.creationDate) } : current
+        let added = new.strokes.filter {
+            let d = $0.path.creationDate
+            return !known.contains(d) && !faded.contains(d) && !otherSlides.contains(d)
         }
-        marks.commit(new)
-        drawing = marks.drawing
+        if settings.fadingInk && !Lecture.shiftHeld && !added.isEmpty {
+            for s in added { fading[s.path.creationDate] = (Date(), s.ink.color) }
+            startFading()
+        }
+        strokes += added
+        marks.commit(PKDrawing(strokes: strokes))
+        drawing = marks.drawing   // also puts the canvas right when it showed something else
     }
 
     /// An arrow or oval was drawn: one stroke, like any mark.

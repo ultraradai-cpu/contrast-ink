@@ -30,7 +30,12 @@ final class LectureRecorder: ObservableObject {
                 // iOS stops in-app capture when the app leaves the screen: finish the file so nothing is lost
                 guard let self, self.active else { return }
                 self.notice = "Recording stopped because Contrast Ink left the screen. What was recorded is saved."
+                // iOS gives an app in the background only moments: ask for time to finish the file and save it
+                let app = UIApplication.shared
+                var task = UIBackgroundTaskIdentifier.invalid
+                task = app.beginBackgroundTask(withName: "Saving the recording") { app.endBackgroundTask(task); task = .invalid }
                 await self.stop()
+                if task != .invalid { app.endBackgroundTask(task) }
             }
         }
     }
@@ -71,7 +76,7 @@ final class LectureRecorder: ObservableObject {
         screen.isMicrophoneEnabled = true
         do {
             try await screen.startCapture { [sink] buffer, type, error in
-                guard error == nil else { return }
+                if let error { sink.interrupted(error); return }
                 sink.receive(buffer, type: type)
             }
         } catch {
@@ -92,6 +97,9 @@ final class LectureRecorder: ObservableObject {
     private func tick() {
         elapsed = sink.elapsed(at: CaptureSink.hostNow())
         if let problem = sink.takeProblem() { notice = problem }
+        // capture broke (a phone call, the system took the screen) or the file can't be written: stop and save what
+        // there is, rather than a timer running over nothing
+        if sink.broken, state == .recording || state == .paused { Task { await stop() } }
     }
 
     func stop() async {
@@ -160,6 +168,7 @@ final class CaptureSink: @unchecked Sendable {
     private var stage = CGRect.zero, screen = CGSize.zero
     private var timeline = Timeline()
     private var problem: String?
+    private var isBroken = false
 
     // the capture queue only
     private var url: URL?
@@ -169,6 +178,7 @@ final class CaptureSink: @unchecked Sendable {
     private var adaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var outSize = CGSize.zero
     private var failed = false
+    private var videoForward = Forward(), audioForward = Forward()   // times only go forward in each track
 
     static func hostNow() -> Double { CMClockGetTime(CMClockGetHostTimeClock()).seconds }
 
@@ -180,12 +190,23 @@ final class CaptureSink: @unchecked Sendable {
     func resume(at t: Double) { lock.lock(); timeline.resume(at: t); lock.unlock() }
     func elapsed(at t: Double) -> Double { lock.lock(); defer { lock.unlock() }; return timeline.elapsed(at: t) }
     func takeProblem() -> String? { lock.lock(); defer { problem = nil; lock.unlock() }; return problem }
+    /// Capture or writing stopped working: the recording should be stopped (what was written is kept).
+    var broken: Bool { lock.lock(); defer { lock.unlock() }; return isBroken }
+
+    /// ReplayKit reported an error instead of a frame.
+    func interrupted(_ error: Error) {
+        lock.lock()
+        if !isBroken { problem = "Recording was interrupted (\(error.localizedDescription)). What was recorded is saved." }
+        isBroken = true
+        lock.unlock()
+    }
 
     func prepare(url: URL) {
         queue.sync {
             self.url = url
             writer = nil; video = nil; audio = nil; adaptor = nil; failed = false
-            lock.lock(); timeline = Timeline(); problem = nil; lock.unlock()
+            videoForward = Forward(); audioForward = Forward()
+            lock.lock(); timeline = Timeline(); problem = nil; isBroken = false; lock.unlock()
         }
     }
 
@@ -218,21 +239,30 @@ final class CaptureSink: @unchecked Sendable {
         guard crop.width >= 2, crop.height >= 2 else { return }
 
         let pts = CMSampleBufferGetPresentationTimeStamp(buffer)
+        lock.lock(); timeline.begin(at: pts.seconds); let t = timeline.videoTime(pts.seconds); lock.unlock()
+        guard let t else { return }   // paused, or before the start
         if writer == nil {
             let out = Crop.outputSize(Size(crop.width, crop.height))
             guard start(size: CGSize(width: out.width, height: out.height)) else { return }
-            lock.lock(); timeline.begin(at: pts.seconds); lock.unlock()
         }
-        lock.lock(); let t = timeline.videoTime(pts.seconds); lock.unlock()
-        guard let t, let video, let adaptor, video.isReadyForMoreMediaData, let pool = adaptor.pixelBufferPool else { return }
+        guard let video, let adaptor, video.isReadyForMoreMediaData, let pool = adaptor.pixelBufferPool else { return }
+        guard videoForward.admit(t) else { return }
 
         var out: CVPixelBuffer?
         CVPixelBufferPoolCreatePixelBuffer(nil, pool, &out)
         guard let out else { return }
+        // the slide's shape can change mid-recording (a slide of another shape, the iPad turned, the toolbar on two
+        // rows): each frame's slide is fitted whole into the video, centred, on black
         let cut = image.cropped(to: CGRect(x: crop.x, y: crop.y, width: crop.width, height: crop.height))
-        let s = outSize.width / CGFloat(crop.width)
-        let placed = cut.transformed(by: CGAffineTransform(translationX: -CGFloat(crop.x), y: -CGFloat(crop.y)).concatenating(CGAffineTransform(scaleX: s, y: s)))
-        ci.render(placed, to: out, bounds: CGRect(origin: .zero, size: outSize), colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+        let fit = Fit.aspect(Size(crop.width, crop.height), in: Size(outSize.width, outSize.height))
+        let s = CGFloat(fit.width) / CGFloat(crop.width)
+        let placed = cut
+            .transformed(by: CGAffineTransform(translationX: -CGFloat(crop.x), y: -CGFloat(crop.y)))
+            .transformed(by: CGAffineTransform(scaleX: s, y: s))
+            .transformed(by: CGAffineTransform(translationX: CGFloat(fit.x), y: CGFloat(fit.y)))
+        let frame = CGRect(origin: .zero, size: outSize)
+        let picture = placed.composited(over: CIImage(color: .black).cropped(to: frame))
+        ci.render(picture, to: out, bounds: frame, colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
         if !adaptor.append(out, withPresentationTime: CMTime(seconds: t, preferredTimescale: 600)) { fail() }
     }
 
@@ -240,7 +270,7 @@ final class CaptureSink: @unchecked Sendable {
         guard let audio, audio.isReadyForMoreMediaData else { return }
         let pts = CMSampleBufferGetPresentationTimeStamp(buffer)
         lock.lock(); let t = timeline.videoTime(pts.seconds); lock.unlock()
-        guard let t else { return }   // before the first picture, or paused
+        guard let t, audioForward.admit(t) else { return }   // before the first picture, paused, or out of order
         var timing = CMSampleTimingInfo(duration: CMSampleBufferGetDuration(buffer),
                                         presentationTimeStamp: CMTime(seconds: t, preferredTimescale: 48000),
                                         decodeTimeStamp: .invalid)
@@ -284,7 +314,8 @@ final class CaptureSink: @unchecked Sendable {
     private func fail() {
         guard !failed else { return }
         failed = true
-        report("Recording stopped writing: \(writer?.error?.localizedDescription ?? "unknown error"). Press ⏹ and record again.")
+        lock.lock(); isBroken = true; lock.unlock()
+        report("Recording stopped writing: \(writer?.error?.localizedDescription ?? "unknown error"). Press ⏺ to record again.")
     }
 
     /// Finishes the file. The file's address, or nil when no picture ever arrived.

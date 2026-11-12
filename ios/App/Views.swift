@@ -25,6 +25,7 @@ struct HomeView: View {
     @EnvironmentObject var lecture: Lecture
     @State private var decks: [URL] = []
     @State private var picking: Picking?
+    @State private var importing = Picking.pdf   // what the open picker is for (kept after it closes)
     @State private var problem: String?
 
     enum Picking: Identifiable { case pdf, images; var id: Int { hashValue } }
@@ -33,8 +34,8 @@ struct HomeView: View {
         NavigationStack {
             List {
                 Section {
-                    Button { picking = .pdf } label: { Label("Open slides (PDF)", systemImage: "doc.richtext") }
-                    Button { picking = .images } label: { Label("Open images", systemImage: "photo.on.rectangle") }
+                    Button { importing = .pdf; picking = .pdf } label: { Label("Open slides (PDF)", systemImage: "doc.richtext") }
+                    Button { importing = .images; picking = .images } label: { Label("Open images", systemImage: "photo.on.rectangle") }
                     Button { lecture.open(Deck(title: "Whiteboard", source: .whiteboard)) } label: { Label("Whiteboard", systemImage: "rectangle.and.pencil.and.ellipsis") }
                 } footer: {
                     Text("In PowerPoint: File → Export → PDF, then open the PDF here. Each slide keeps its own marks.")
@@ -55,17 +56,18 @@ struct HomeView: View {
             .navigationTitle("Contrast Ink")
         }
         .onAppear { decks = Library.decks() }
-        .fileImporter(isPresented: Binding(get: { picking == .pdf }, set: { if !$0 { picking = nil } }),
-                      allowedContentTypes: [.pdf]) { result in
-            guard case .success(let url) = result else { return }
-            do { open(try Library.add(url)) } catch { problem = "Couldn't open that PDF: \(error.localizedDescription)" }
-        }
-        .fileImporter(isPresented: Binding(get: { picking == .images }, set: { if !$0 { picking = nil } }),
-                      allowedContentTypes: [.image], allowsMultipleSelection: true) { result in
-            guard case .success(let urls) = result else { return }
-            let images = Library.loadImages(urls)
-            if images.isEmpty { problem = "Those files couldn't be read as pictures."; return }
-            lecture.open(Deck(title: "Images", source: .images(images)))
+        // one picker for both (two .fileImporter on one view: some iOS versions only ever show the last)
+        .fileImporter(isPresented: Binding(get: { picking != nil }, set: { if !$0 { picking = nil } }),
+                      allowedContentTypes: importing == .images ? [.image] : [.pdf],
+                      allowsMultipleSelection: importing == .images) { result in
+            guard case .success(let urls) = result, !urls.isEmpty else { return }
+            if importing == .pdf {
+                do { open(try Library.add(urls[0])) } catch { problem = "Couldn't open that PDF: \(error.localizedDescription)" }
+            } else {
+                let images = Library.loadImages(urls)
+                if images.isEmpty { problem = "Those files couldn't be read as pictures."; return }
+                lecture.open(Deck(title: "Images", source: .images(images)))
+            }
         }
     }
 
@@ -317,6 +319,7 @@ struct SettingsView: View {
 /// What a projector or TV shows: the slide and its marks, filling the screen, nothing else.
 struct ProjectorView: View {
     @EnvironmentObject var lecture: Lecture
+    @Environment(\.displayScale) private var scale   // the projector's own, not the iPad's
 
     var body: some View {
         GeometryReader { geo in
@@ -325,11 +328,10 @@ struct ProjectorView: View {
                 if let deck = lecture.deck {
                     let size = deck.pageSize(lecture.page)
                     let fit = Fit.aspect(Size(size.width, size.height), in: Size(geo.size.width, geo.size.height))
-                    let scale = UIScreen.main.scale
                     ZStack {
                         Image(uiImage: deck.image(lecture.page, pixelWidth: fit.width * scale)).resizable()
-                        Image(uiImage: ProjectorView.ink(lecture.drawing, size: size, scale: fit.width / size.width * scale))
-                            .resizable()
+                        // PencilKit draws the marks itself: only what changed is redrawn (fading ink changes 30 times a second)
+                        ProjectorInk(drawing: lecture.drawing, slideSize: size, viewSize: CGSize(width: fit.width, height: fit.height))
                     }
                     .frame(width: fit.width, height: fit.height)
                     .position(x: fit.x + fit.width / 2, y: fit.y + fit.height / 2)
@@ -339,12 +341,35 @@ struct ProjectorView: View {
         .ignoresSafeArea()
     }
 
-    /// The marks as a picture, with their real colours (PencilKit would swap black and white in dark mode).
-    static func ink(_ d: PKDrawing, size: CGSize, scale: CGFloat) -> UIImage {
-        var img = UIImage()
-        UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
-            img = d.image(from: CGRect(origin: .zero, size: size), scale: scale)
-        }
-        return img
+}
+
+/// The marks on the projector: a canvas nobody draws on, zoomed like the iPad's, in light mode (PencilKit would
+/// swap black and white in dark mode).
+struct ProjectorInk: UIViewRepresentable {
+    let drawing: PKDrawing
+    let slideSize: CGSize
+    let viewSize: CGSize
+
+    func makeUIView(context: Context) -> PKCanvasView {
+        let c = PKCanvasView()
+        c.isUserInteractionEnabled = false
+        c.drawingPolicy = .pencilOnly
+        c.backgroundColor = .clear
+        c.isOpaque = false
+        c.isScrollEnabled = false
+        c.showsVerticalScrollIndicator = false
+        c.showsHorizontalScrollIndicator = false
+        c.contentInsetAdjustmentBehavior = .never
+        c.overrideUserInterfaceStyle = .light
+        return c
+    }
+
+    func updateUIView(_ c: PKCanvasView, context: Context) {
+        guard slideSize.width > 0, viewSize.width > 0 else { return }
+        let zoom = viewSize.width / slideSize.width
+        if c.zoomScale != zoom { c.minimumZoomScale = zoom; c.maximumZoomScale = zoom; c.zoomScale = zoom }
+        c.contentSize = viewSize
+        c.contentOffset = .zero
+        if c.drawing != drawing { c.drawing = drawing }
     }
 }
