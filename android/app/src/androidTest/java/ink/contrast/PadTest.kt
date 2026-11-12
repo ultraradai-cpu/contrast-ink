@@ -264,7 +264,7 @@ class PadTest {
         assertEquals("HELLO carries version 2", 2.0, json["version"])
         assertEquals("and the tablet's 65-byte public key", 65, Base64.getDecoder().decode(json["key"] as String).size)
         firstTimeCheckShows()
-        shot("19 first time: the PC check")
+        shot("19 first time, the PC check")
         press("It matches")
         assertNotNull("once it matches, the tablet proves it knows the code (PROOF)", pc.next(PadProtocol.PROOF))
         assertNotNull("the tablet acknowledges the picture once it is on screen (FRAME_ACK)", pc.next(PadProtocol.FRAME_ACK))
