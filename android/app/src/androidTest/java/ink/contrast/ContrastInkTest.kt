@@ -160,7 +160,7 @@ class ContrastInkTest {
         device.executeShellCommand("input stylus swipe ${w / 6} ${h * 85 / 100} ${w * 5 / 6} ${h * 85 / 100} 300")
         Thread.sleep(600)
         assertEquals("a drawing pad's pen (as a stylus) draws", 4, marks())
-        device.executeShellCommand("input mouse swipe ${w / 6} ${h * 95 / 100} ${w * 5 / 6} ${h * 95 / 100} 300")
+        device.executeShellCommand("input mouse swipe ${w / 6} ${h * 78 / 100} ${w * 5 / 6} ${h * 78 / 100} 300")
         Thread.sleep(600)
         assertEquals("a drawing pad's pen (as a mouse) draws", 5, marks())
         shot("07d drawing pad lines")
