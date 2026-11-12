@@ -71,6 +71,14 @@ with the one next to the code on the PC. If a PC by that name later shows anothe
 (after reinstalling Contrast Ink on the PC, **Connect anyway**). The code is never saved; the pad screen is kept out of
 screenshots and the recent-apps view. For patient images a private network or the PC's own hotspot is still best.
 
+**By USB cable** (steadier than Wi-Fi, and nothing goes over the air): once, turn on **Developer options** on the
+tablet (Settings → About tablet → tap **Build number** seven times) and switch on **USB debugging** in them; the PC
+needs Google's **platform-tools** (`adb`: on the PATH, in `%LOCALAPPDATA%\Android\Sdk\platform-tools`, or in
+`C:\platform-tools`). Then plug the tablet into the PC (allow USB debugging for that PC when the tablet asks): in pad
+mode the pad switches to the cable by itself within a few seconds, with no code to type, and the title says
+**By the USB cable**. Unplug it and the pad goes back to Wi-Fi by itself if you connected over Wi-Fi earlier, or
+shows the connect screen. The PC check isn't asked over the cable, but a PC with another key is still stopped.
+
 ## Not on Android (yet)
 
 - Keyboard keys (Android doesn't let an app watch the keyboard while another app is in front).

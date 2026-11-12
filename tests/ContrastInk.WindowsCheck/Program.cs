@@ -542,8 +542,13 @@ static class Program
                 var c = service.AcceptTcpClient();
                 var s = c.GetStream();
                 s.ReadTimeout = 3000;
-                var head = ReadN(s, 16);
-                var body = System.Text.Encoding.UTF8.GetString(ReadN(s, BitConverter.ToInt32(head, 0) - 16));
+                string body;
+                try
+                {
+                    var head = ReadN(s, 16);
+                    body = System.Text.Encoding.UTF8.GetString(ReadN(s, BitConverter.ToInt32(head, 0) - 16));
+                }
+                catch (IOException) { c.Dispose(); continue; }   // the PC gave up on a connection (its 0.5 s limit): normal
                 string reply;
                 if (body.Contains("<string>ListDevices</string>"))
                     reply = "<plist version=\"1.0\"><dict><key>DeviceList</key><array><dict><key>DeviceID</key><integer>7</integer>"
@@ -678,6 +683,7 @@ static class Program
         if (Press("Settings"))
         {
             Press("Z Key"); Press("Right-Click"); Press("Undo Button Beside");
+            Press("Settings");   // closed again before drawing: the open panel covers the top of a 768-high slide
             Line(3);
             int k0 = slide.Keys.Count;
             Key('Z'); Thread.Sleep(300);
@@ -686,6 +692,7 @@ static class Program
             Check(Red(shot, 3), "settings: with Z and right-click switched off, neither undoes", At(shot, 3));
             Check(slide.Keys.Skip(k0).Contains(Keys.Z), "settings: Z switched off reaches the slides instead", "keys seen: " + string.Join(",", slide.Keys.Skip(k0)));
             Check(!UndoOnScreen(), "settings: the undo button switched off does not appear", "visible " + UndoOnScreen());
+            Press("Settings");
             Press("Z Key"); Press("Right-Click"); Press("Undo Button Beside");
             Press("Settings");
             Key('C'); Thread.Sleep(300);

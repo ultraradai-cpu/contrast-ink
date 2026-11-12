@@ -107,13 +107,69 @@ final class FakePC {
     /// Connections made so far.
     var connectionCount: Int { lock.lock(); defer { lock.unlock() }; return connections }
 
+    /// The cable PC: connects to the app's USB door, 127.0.0.1:`port`, as the PC does through usbmuxd (the simulator
+    /// shares the Mac's loopback), trying again until the app listens. Then it is the PC on that connection: it waits
+    /// for HELLO and answers as on Wi-Fi (with this FakePC's code, "" for the cable). False if it never got through.
+    func dial(port: UInt16 = 47830, timeout: TimeInterval = 20) -> Bool {
+        let end = Date().addingTimeInterval(timeout)
+        while Date() < end {
+            let c = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+            let done = DispatchSemaphore(value: 0)
+            let ready = Flag()
+            c.stateUpdateHandler = { s in
+                switch s {
+                case .ready: ready.set(); done.signal()
+                case .waiting, .failed, .cancelled: done.signal()
+                default: break
+                }
+            }
+            c.start(queue: queue)
+            _ = done.wait(timeout: .now() + 2)
+            if ready.isSet {
+                queue.sync {
+                    c.stateUpdateHandler = nil
+                    self.register(c)
+                }
+                return true
+            }
+            queue.sync { c.stateUpdateHandler = nil; c.cancel() }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        return false
+    }
+
+    /// Waits until the app has closed that connection.
+    func waitClosed(connection: Int, timeout: TimeInterval = 10) -> Bool {
+        let end = Date().addingTimeInterval(timeout)
+        while Date() < end {
+            lock.lock(); let gone = closed.contains(connection); lock.unlock()
+            if gone { return true }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        return false
+    }
+
+    private var closed = Set<Int>()
+
+    /// A yes/no set on the network queue and read on the test's thread.
+    private final class Flag {
+        private let lock = NSLock()
+        private var value = false
+        func set() { lock.lock(); value = true; lock.unlock() }
+        var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+    }
+
     private func accept(_ c: NWConnection) {
+        register(c)
+        c.start(queue: queue)
+    }
+
+    private func register(_ c: NWConnection) {
         // a new connection replaces the one before (the same tablet back after a Wi-Fi drop), as the PC does
         session?.c.cancel()
         lock.lock(); connections += 1; let id = connections; lock.unlock()
         let s = Session(c, id)
         session = s
-        c.start(queue: queue)
         read(s)
     }
 
@@ -121,7 +177,11 @@ final class FakePC {
         s.c.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, done, error in
             guard let self else { return }
             if let data { self.got(data, on: s) }
-            if !done && error == nil && self.session === s { self.read(s) }
+            if done || error != nil {
+                self.lock.lock(); self.closed.insert(s.id); self.lock.unlock()
+                return
+            }
+            if self.session === s { self.read(s) }
         }
     }
 

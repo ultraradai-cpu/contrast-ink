@@ -308,6 +308,118 @@ final class ContrastInkUITests: XCTestCase {
         expectCheck(pc, connection: 2, pc.check)
     }
 
+    // MARK: pad mode by the USB cable
+
+    private var byCable: XCUIElement { app.staticTexts["padByCable"] }
+
+    private func expectCommand(_ pc: FakePC, _ button: XCUIElement, sends word: String, connection: Int) {
+        let n = pc.messages.count
+        button.tap()
+        XCTAssertNotNil(pc.waitFor(0x20, after: n, where: {
+            $0.sealed && $0.connection == connection && String(decoding: $0.payload, as: UTF8.self) == word
+        }), "sends COMMAND \(word), sealed, on connection \(connection)")
+    }
+
+    private func waitGone(_ e: XCUIElement, timeout: TimeInterval = 10) -> Bool {
+        let end = Date().addingTimeInterval(timeout)
+        while Date() < end {
+            if !e.exists { return true }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        return false
+    }
+
+    /// The Wi-Fi PC first (its code typed, its check confirmed), then the cable PC: the app switches to the cable
+    /// and closes the Wi-Fi connection.
+    private func wifiThenCable(_ wifi: FakePC, _ cable: FakePC) throws {
+        XCTAssertTrue(wifi.start(), "the Wi-Fi PC listens")
+        launchPad(wifi)
+        try checkHello(wifi, connection: 1)
+        expectCheck(wifi, connection: 1, wifi.check)
+        app.buttons["padCheckMatches"].tap()
+        XCTAssertTrue(app.buttons["Pen"].waitForExistence(timeout: 10), "on the pad over Wi-Fi")
+        XCTAssertFalse(byCable.exists, "over Wi-Fi, not the cable")
+        shot("U3 over Wi-Fi first")
+
+        XCTAssertTrue(cable.dial(), "the cable PC reaches the app's 127.0.0.1:47830")
+        try checkHello(cable, connection: 1)
+        XCTAssertNotNil(cable.waitFor(0x04, where: { $0.connection == 1 }), "PROOF over the cable, with the empty code")
+        XCTAssertTrue(byCable.waitForExistence(timeout: 10), "says it's by the USB cable")
+        XCTAssertTrue(wifi.waitClosed(connection: 1), "the Wi-Fi connection is closed")
+        Thread.sleep(forTimeInterval: 3)
+        XCTAssertEqual(wifi.connectionCount, 1, "Wi-Fi isn't tried while the cable is in")
+        XCTAssertTrue(app.buttons["Pen"].exists, "still on the pad")
+        expectCommand(cable, app.buttons["padUndo"], sends: "undo", connection: 1)
+        shot("U4 the cable took over from Wi-Fi")
+    }
+
+    /// Pad mode open with nothing typed; the PC connects through the cable: the pad opens by itself, no code, no
+    /// first-time question, and says it's by the cable. A second cable connection is closed; unplugging with no code
+    /// typed goes back to the connect screen.
+    func testPadByCableWithNoCode() throws {
+        app.launchArguments = ["-padCable"]
+        app.launch()
+        XCTAssertTrue(app.textFields["padCode"].waitForExistence(timeout: 10), "the connect screen, nothing typed")
+        let typed = app.textFields["padCode"].value as? String ?? ""
+        XCTAssertTrue(typed.isEmpty || typed == "6 digits", "no code typed: \(typed)")
+        shot("U0 the connect screen, nothing typed")
+
+        let cable = FakePC(name: Self.freshName("CABLE-PC"), code: "")
+        defer { cable.stop() }
+        XCTAssertTrue(cable.dial(), "the cable PC reaches the app's 127.0.0.1:47830")
+        try checkHello(cable, connection: 1)
+        XCTAssertNotNil(cable.waitFor(0x04, where: { $0.connection == 1 }), "PROOF at once, made with the empty code")
+        XCTAssertTrue(app.buttons["Pen"].waitForExistence(timeout: 10), "the pad opens with no typing")
+        XCTAssertFalse(app.staticTexts["padFirstTime"].exists, "no first-time question over the cable")
+        XCTAssertTrue(byCable.waitForExistence(timeout: 5))
+        XCTAssertEqual(byCable.label, "By the USB cable")
+        cable.pace(Self.testScreen())
+        XCTAssertNotNil(cable.waitFor(0x03), "the picture over the cable, acknowledged")
+        Thread.sleep(forTimeInterval: 0.5)
+        shot("U1 the pad by the USB cable")
+        expectCommand(cable, app.buttons["padUndo"], sends: "undo", connection: 1)
+
+        // one cable connection at a time
+        let extra = FakePC(name: Self.freshName("EXTRA-PC"), code: "")
+        defer { extra.stop() }
+        XCTAssertTrue(extra.dial())
+        XCTAssertTrue(extra.waitClosed(connection: 1), "a second cable connection is closed")
+        XCTAssertTrue(extra.messages.isEmpty, "and gets no HELLO")
+        XCTAssertTrue(byCable.exists, "the first carries on")
+
+        // unplugged, and no code was typed in this visit: the connect screen
+        cable.drop()
+        XCTAssertTrue(app.textFields["padCode"].waitForExistence(timeout: 10), "back to the connect screen")
+        XCTAssertFalse(app.buttons["Pen"].exists)
+        shot("U2 unplugged with no code: the connect screen")
+    }
+
+    /// Over Wi-Fi first, then the cable: the app switches to it and closes the Wi-Fi connection.
+    func testPadCableTakesOverFromWifi() throws {
+        let wifi = FakePC(name: Self.freshName("WIFI-PC"))
+        let cable = FakePC(name: Self.freshName("CABLE-PC"), code: "")
+        defer { wifi.stop(); cable.stop() }
+        try wifiThenCable(wifi, cable)
+    }
+
+    /// The cable PC goes (unplugged): the app goes back to the Wi-Fi PC by itself, with the code typed earlier.
+    func testPadBackToWifiWhenUnplugged() throws {
+        let wifi = FakePC(name: Self.freshName("WIFI-PC"))
+        let cable = FakePC(name: Self.freshName("CABLE-PC"), code: "")
+        defer { wifi.stop(); cable.stop() }
+        try wifiThenCable(wifi, cable)
+
+        cable.drop()
+        try checkHello(wifi, connection: 2)
+        XCTAssertNotNil(wifi.waitFor(0x04, where: { $0.connection == 2 }), "PROOF at once: the same PC as before")
+        XCTAssertTrue(waitGone(byCable), "not by the cable any more")
+        XCTAssertTrue(app.buttons["Pen"].waitForExistence(timeout: 10), "still on the pad")
+        XCTAssertFalse(app.staticTexts["padFirstTime"].exists, "the same Wi-Fi PC: no question again")
+        Thread.sleep(forTimeInterval: 1)
+        expectCommand(wifi, app.buttons["padUndo"], sends: "undo", connection: 2)
+        shot("U5 unplugged: back on Wi-Fi by itself")
+    }
+
     /// A stand-in for a PC's screen: a dark slide with a title bar and a grid, 1600 x 900 like a FRAME.
     static func testScreen() -> Data {
         let format = UIGraphicsImageRendererFormat()

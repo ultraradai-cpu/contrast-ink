@@ -292,6 +292,28 @@ class PadCryptoTest {
         try { client.answer(c, null); fail("an unreadable key stops the handshake") } catch (e: PadProtocolException) {}
     }
 
+    /** USB: the code is empty ("contrastink pad v2 " as info), and a new PC gets its PROOF without the check. */
+    @Test fun overTheCable() {
+        try { PadClient("123456", "t", overCable = true); fail("no code over the cable") } catch (e: IllegalArgumentException) {}
+        val client = PadClient("", "t", overCable = true)
+        val point = PadDecoderForPc.hello(client.hello())
+        val pc = Pc("", point)
+        client.receive(challenge())
+        val a = client.answer(challenge(), null)
+        assertTrue("the first time too, the PROOF at once", a is PadClient.Answer.Proof)
+        val proof = (a as PadClient.Answer.Proof).bytes
+        assertArrayEquals("opened with the empty code's keys", PadProtocol.command("hello"), pc.open.open(proof.copyOfRange(5, proof.size)))
+        assertNull("not with a code's", Pc("123456", point).open.open(proof.copyOfRange(5, proof.size)))
+        client.receive(pc.sealed(welcome()))
+        assertEquals(PadClient.Phase.OPEN, client.phase)
+
+        // a remembered key that differs still stops, over the cable too
+        val other = PadClient("", "t", overCable = true)
+        other.receive(challenge())
+        assertEquals(PadClient.Answer.Changed, other.answer(challenge(), tabletPublic))
+        assertEquals(PadClient.Phase.STOPPED, other.phase)
+    }
+
     /** Reading what the tablet sends, as the PC would. */
     private object PadDecoderForPc {
         fun hello(m: ByteArray): ByteArray {
