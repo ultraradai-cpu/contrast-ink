@@ -120,6 +120,17 @@ final class ContrastInkUITests: XCTestCase {
         XCTAssertNotNil(h["device"] as? String)
     }
 
+    /// The first time with a PC: its check is shown and nothing but HELLO has gone until the presenter answers.
+    private func expectCheck(_ pc: FakePC, connection: Int, _ check: String) {
+        let first = app.staticTexts["padFirstTime"]
+        XCTAssertTrue(first.waitForExistence(timeout: 10), "the first time with this PC: its check, to compare")
+        XCTAssertTrue(first.label.contains(check), "the PC check for this key (\(check)): \(first.label)")
+        Thread.sleep(forTimeInterval: 1)
+        XCTAssertEqual(pc.messages.filter { $0.connection == connection }.map(\.type), [0x01],
+                       "no PROOF before the presenter says the check matches")
+        XCTAssertFalse(app.buttons["Pen"].exists, "not on the pad yet")
+    }
+
     private var picture: XCUIElement { app.descendants(matching: .any)["padPicture"] }
     private var pictureShown: Bool { (picture.value as? String) == "shown" }
 
@@ -132,14 +143,13 @@ final class ContrastInkUITests: XCTestCase {
         defer { pc.stop() }
         launchPad(pc)
         try checkHello(pc, connection: 1)
-        XCTAssertNotNil(pc.waitFor(0x04, where: { $0.connection == 1 }), "PROOF after the CHALLENGE")
-        XCTAssertTrue(app.buttons["Pen"].waitForExistence(timeout: 10), "the pad's toolbar, after WELCOME")
-        let first = app.staticTexts["padFirstTime"]
-        XCTAssertTrue(first.waitForExistence(timeout: 5), "the first time with this PC: its check, to compare")
-        XCTAssertTrue(first.label.contains("6FC6-6A90"), "the spec's PC check for this key: \(first.label)")
-        XCTAssertTrue(picture.waitForExistence(timeout: 5))
+        expectCheck(pc, connection: 1, "6FC6-6A90")   // the spec's PC check for this key
         shot("P0 first time with this PC: compare the PC check")
         app.buttons["padCheckMatches"].tap()
+        XCTAssertNotNil(pc.waitFor(0x04, where: { $0.connection == 1 }), "PROOF once the check matches")
+        XCTAssertTrue(app.buttons["Pen"].waitForExistence(timeout: 10), "the pad's toolbar, after WELCOME")
+        XCTAssertTrue(picture.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["padFirstTime"].exists, "the check is gone once answered")
 
         // a FRAME that isn't a picture: not shown, and not acknowledged as shown
         var before = pc.messages.count
@@ -227,6 +237,8 @@ final class ContrastInkUITests: XCTestCase {
         defer { pc.stop() }
         launchPad(pc, code: "654321")
         try checkHello(pc, connection: 1)
+        expectCheck(pc, connection: 1, pc.check)
+        app.buttons["padCheckMatches"].tap()
         let text = app.staticTexts["padMessage"]
         XCTAssertTrue(text.waitForExistence(timeout: 10), "the PC's REJECT text")
         XCTAssertEqual(text.label, FakePC.rejectWrongCode, "word for word")
@@ -242,6 +254,9 @@ final class ContrastInkUITests: XCTestCase {
         XCTAssertTrue(pc.start())
         defer { pc.stop() }
         launchPad(pc)
+        try checkHello(pc, connection: 1)
+        expectCheck(pc, connection: 1, pc.check)
+        app.buttons["padCheckMatches"].tap()
         XCTAssertTrue(app.buttons["Pen"].waitForExistence(timeout: 20), "paired once: its key is remembered")
         Thread.sleep(forTimeInterval: 1)
         app.terminate()
@@ -261,10 +276,36 @@ final class ContrastInkUITests: XCTestCase {
 
         app.buttons["padConnectAnyway"].tap()
         try checkHello(pc, connection: 3)
+        expectCheck(pc, connection: 3, pc.check)   // its new check, to compare, before the PROOF
+        shot("K2 connect anyway: compare the new check")
+        app.buttons["padCheckMatches"].tap()
+        XCTAssertNotNil(pc.waitFor(0x04, where: { $0.connection == 3 }), "PROOF once the new check matches")
         XCTAssertTrue(app.buttons["Pen"].waitForExistence(timeout: 10), "connected when the presenter says so")
-        let first = app.staticTexts["padFirstTime"]
-        XCTAssertTrue(first.waitForExistence(timeout: 5) && first.label.contains(pc.check), "its new check, to compare")
-        shot("K2 connected anyway: compare the new check")
+    }
+
+    /// The first time, a check that doesn't match: nothing after HELLO, the connection closed, nothing remembered.
+    func testPadCheckDoesntMatch() throws {
+        let pc = FakePC(name: Self.freshName("FAKE-PC"))
+        XCTAssertTrue(pc.start())
+        defer { pc.stop() }
+        launchPad(pc)
+        try checkHello(pc, connection: 1)
+        expectCheck(pc, connection: 1, pc.check)
+        app.buttons["padCheckDiffers"].tap()
+        let text = app.staticTexts["padMessage"]
+        XCTAssertTrue(text.waitForExistence(timeout: 5), "says why it stopped")
+        XCTAssertEqual(text.label, "Don't connect: this may not be your PC.")
+        shot("D1 the check doesn't match")
+        Thread.sleep(forTimeInterval: 3)
+        XCTAssertEqual(pc.messages.map(\.type), [0x01], "nothing after HELLO, not even PROOF")
+        XCTAssertEqual(pc.connectionCount, 1, "no quiet retries")
+        XCTAssertFalse(app.buttons["Pen"].exists, "not on the pad")
+
+        // its key wasn't remembered: the next time asks again
+        app.terminate()
+        launchPad(pc)
+        try checkHello(pc, connection: 2)
+        expectCheck(pc, connection: 2, pc.check)
     }
 
     /// A stand-in for a PC's screen: a dark slide with a title bar and a grid, 1600 x 900 like a FRAME.

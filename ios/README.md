@@ -77,9 +77,11 @@ OBS on the PC records it.
    Security → Local Network → Contrast Ink**, on.
 2. Type the 6-digit code the PC shows and press **Connect**. The code itself never crosses the network, and the
    PC's pictures come encrypted.
-3. **The first time** with a PC, the iPad shows its **PC check** (like `6FC6-6A90`): check the PC shows the same
-   next to its code. The iPad remembers that PC; if a machine later answers under its name with another check, the
-   iPad stops and warns (**Connect anyway** only if you reinstalled Contrast Ink on that PC).
+3. **The first time** with a PC, the iPad shows its **PC check** (like `6FC6-6A90`) and waits: compare it with the
+   one the PC shows (⚙ Settings, beside the code) and press **It matches** (within about 25 seconds), or **It
+   doesn't** to stop without sending anything. The iPad remembers that PC; if a machine later answers under its name
+   with another check, the iPad stops and warns (**Connect anyway** only if you reinstalled Contrast Ink on that PC;
+   it shows the new check to compare too).
 4. Draw with Apple Pencil or a finger. Once the Pencil has touched the glass, only the Pencil draws (a resting palm
    doesn't). A second finger cancels the stroke. Pencil hover (M2 iPads and later) moves the laser's dot. The
    toolbar's tools, colours, widths, fading ink, undo, clear and slide buttons work the PC's Contrast Ink.

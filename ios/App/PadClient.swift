@@ -26,6 +26,9 @@ final class PadClient: ObservableObject {
         case rejected(String)
         /// The PC answered with a different key from the one remembered for its name. Nothing more was sent.
         case notThePC(name: String, check: String)
+        /// The first time with this PC (or after "Connect anyway"): its check is on screen and nothing more is sent
+        /// until the presenter says it matches what the PC shows.
+        case confirming(name: String, check: String)
     }
 
     /// A PC that advertised itself on this network.
@@ -46,8 +49,6 @@ final class PadClient: ObservableObject {
     @Published private(set) var picture: UIImage?
     /// The PC's check (XXXX-XXXX), shown in the toolbar.
     @Published private(set) var pcCheck: String?
-    /// Set the first time this iPad pairs with a PC: the presenter compares it with the PC's screen. Nil once seen.
-    @Published var newPCCheck: String?
 
     /// The code typed last, kept only while the app runs (the PC makes a new one each time it starts).
     private(set) var lastCode = ""
@@ -58,10 +59,13 @@ final class PadClient: ObservableObject {
     private var generation = 0
     private var decoder = PadDecoder()
     private var link = PadLink()
-    private var stage = Stage.hello
+    /// Where the handshake is, and what may be sent (ContrastInkCore's rules, tested there).
+    private var handshake = PadHandshake()
     private var target: Target?
     /// What the CHALLENGE said, kept until WELCOME proves the PC knew the code (only then is its key remembered).
-    private var pending: (name: String, key: Data, firstTime: Bool)?
+    private var pending: (name: String, key: Data)?
+    /// The PROOF, held back while the presenter compares the PC check; sent only on "It matches".
+    private var heldProof: Data?
     /// The key the presenter chose to trust with "Connect anyway", for the next connection.
     private var acceptKey: Data?
     /// The key of the PC that let this iPad in during this visit: a reconnect must find the same one.
@@ -74,7 +78,6 @@ final class PadClient: ObservableObject {
     private var pinger: Timer?
     private let queue = DispatchQueue.main
 
-    private enum Stage { case hello, proof, open }
     private struct Target {
         let endpoint: NWEndpoint
         let code: String
@@ -163,7 +166,6 @@ final class PadClient: ObservableObject {
         welcome = nil
         picture = nil
         state = PadState()
-        newPCCheck = nil
         pcCheck = nil
         target = t
         lastCode = t.code
@@ -195,7 +197,6 @@ final class PadClient: ObservableObject {
         picture = nil
         state = PadState()
         pcCheck = nil
-        newPCCheck = nil
         acceptKey = nil
         sessionKey = nil
         phase = .idle
@@ -209,8 +210,9 @@ final class PadClient: ObservableObject {
         let gen = generation
         decoder = PadDecoder()
         link = PadLink()   // a fresh key pair for every connection
-        stage = .hello
+        handshake = PadHandshake()
         pending = nil
+        heldProof = nil
         if welcome == nil { phase = .connecting } else if case .reconnecting = phase {} else { phase = .reconnecting("") }
         lastHeard = Date()   // the 6 s for the PC to answer start now
 
@@ -261,11 +263,16 @@ final class PadClient: ObservableObject {
     /// pictures besides, so 6 s of silence means it's gone even when TCP hasn't noticed).
     private func tick() {
         guard connection != nil else { return }
+        if handshake.isConfirming {
+            // the PC is quiet while it waits for the PROOF (up to 30 s): only the presenter's time counts
+            if handshake.tick() { endCheck() }
+            return
+        }
         if Date().timeIntervalSince(lastHeard) > PadProtocol.silenceLimit {
             dropped("The PC stopped answering.")
             return
         }
-        if stage == .open { sendSealed(PadProtocol.ping()) }   // never before the PC let this iPad in
+        if handshake.step == .open { sendSealed(PadProtocol.ping()) }   // never before the PC let this iPad in
     }
 
     /// The connection ended without a REJECT. Once the PC had let this iPad in, try again quietly a couple of times
@@ -339,36 +346,70 @@ final class PadClient: ObservableObject {
         let gen = generation
         for m in messages {
             guard gen == generation else { return }   // an earlier message closed it
-            switch (stage, m) {
-            case (.hello, .challenge(let json)): challenged(json)
+            switch m {
+            case .challenge(let json) where handshake.step == .hello: challenged(json)
             // REJECT comes in the clear, only before the PC let this iPad in (wrong code, locked out, old tablet)
-            case (.hello, .reject(let why)), (.proof, .reject(let why)): rejected(why)
-            case (.proof, .sealed(let p)), (.open, .sealed(let p)): opened(p)
+            case .reject(let why) where handshake.expectsReject: rejected(why)
+            case .sealed(let p) where handshake.expectsSealed: opened(p)
             // anything else in the clear is not version 2, or someone else's bytes: never shown, never trusted
             default: broken()
             }
         }
     }
 
-    /// The PC's CHALLENGE: is it the PC paired with before? If so (or it's new), prove the code.
+    /// The PC's CHALLENGE: is it the PC paired with before? If so, prove the code at once. The first time (or after
+    /// "Connect anyway"), only once the presenter has seen the PC shows the same check: a machine pretending to be
+    /// the PC never gets a PROOF to try every code against.
     private func challenged(_ json: Data) {
         guard let target, let c = PadChallenge.parse(json) else { return broken() }
         let name = target.name ?? c.name
         let check = PadCrypto.check(c.key)
         seenKey = c.key
-        let remembered = PadPins.key(for: name)
-        let accepted = acceptKey == c.key
-        if !accepted, (sessionKey.map { $0 != c.key } ?? false) || (remembered.map { $0 != c.key } ?? false) {
+        guard let decision = handshake.challenge(received: c.key, remembered: PadPins.key(for: name),
+                                                 session: sessionKey, accepted: acceptKey) else { return broken() }
+        if decision == .warnDifferent {
             // not the PC paired with: stop here, sending nothing more (not even the PROOF a guesser could use)
             closeConnection()
             phase = .notThePC(name: name, check: check)
             return
         }
         guard let proof = link.proof(c, code: target.code) else { return broken() }
-        pending = (name, c.key, remembered == nil || accepted)
+        pending = (name, c.key)
         pcCheck = check
-        stage = .proof
+        if decision == .askToConfirm {
+            heldProof = proof
+            phase = .confirming(name: name, check: check)
+            return
+        }
         send(proof)
+    }
+
+    /// "It matches": the PROOF goes now (unless the presenter took too long).
+    func checkMatches() {
+        guard handshake.isConfirming, let proof = heldProof else { return }
+        guard handshake.confirm() else { return endCheck() }
+        heldProof = nil
+        lastHeard = Date()   // the PC's 6 s to answer start now
+        phase = welcome == nil ? .connecting : .reconnecting("")
+        send(proof)
+    }
+
+    /// "It doesn't": close without sending anything more.
+    func checkDiffers() {
+        guard handshake.isConfirming else { return }
+        handshake.deny()
+        endCheck()
+    }
+
+    /// The check ended without a match (denied, or too long): close, nothing sent, and say why.
+    private func endCheck() {
+        let why: String
+        if case .ended(let w) = handshake.step { why = w } else { why = PadHandshake.tooLongText }
+        closeConnection()
+        heldProof = nil
+        pending = nil
+        acceptKey = nil
+        phase = .rejected(why)
     }
 
     private func opened(_ payload: Data) {
@@ -377,19 +418,17 @@ final class PadClient: ObservableObject {
         guard let m else { return }   // a type this iPad doesn't know: skipped
         switch m {
         case .welcome(let w):
-            guard stage == .proof, let p = pending else { return }
+            guard let p = pending, handshake.welcomed() else { return }
             // the PC opened PROOF and answered with the same keys: it knows the code. Only now is its key remembered.
-            stage = .open
             PadPins.remember(p.key, for: p.name)
             sessionKey = p.key
             acceptKey = nil
-            if p.firstTime { newPCCheck = PadCrypto.check(p.key) }
             welcome = w
             retries = 0
             phase = .connected
         case .reject(let why): rejected(why)
-        case .frame(let jpeg) where stage == .open: show(jpeg)
-        case .state(let json) where stage == .open: state = PadState.parse(json, over: state)
+        case .frame(let jpeg) where handshake.step == .open: show(jpeg)
+        case .state(let json) where handshake.step == .open: state = PadState.parse(json, over: state)
         default: break   // a PONG (lastHeard is already updated), or nothing before WELCOME
         }
     }
@@ -434,7 +473,7 @@ final class PadClient: ObservableObject {
 
     /// Everything after the PC let this iPad in.
     private func sendSealed(_ message: Data) {
-        guard stage == .open, let sealed = link.seal(message) else { return }
+        guard handshake.step == .open, let sealed = link.seal(message) else { return }
         send(sealed)
     }
 

@@ -41,6 +41,37 @@ struct PadView: View {
     }
 }
 
+/// The first time with a PC: its check, to compare with the PC's screen before anything that could reveal the code
+/// is sent. The same panel on the list of PCs and on the pad (after "Connect anyway" while reconnecting).
+struct PadCheckPanel: View {
+    @ObservedObject var client: PadClient
+    let name: String
+    let check: String
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "checkmark.shield").font(.largeTitle).foregroundStyle(Color.contrastBlue)
+            Text("First time with \(name): does the PC show the PC check \(check)? (⚙ Settings, beside the code)")
+                .font(.title3)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("padFirstTime")
+            HStack(spacing: 16) {
+                Button { client.checkDiffers() } label: { Text("It doesn't").frame(minWidth: 120) }
+                    .buttonStyle(.bordered).tint(Color.noticeText)
+                    .accessibilityIdentifier("padCheckDiffers")
+                Button { client.checkMatches() } label: { Text("It matches").bold().frame(minWidth: 120) }
+                    .buttonStyle(.borderedProminent).tint(Color.contrastBlue)
+                    .accessibilityIdentifier("padCheckMatches")
+            }
+        }
+        .foregroundStyle(Color.offText)
+        .frame(maxWidth: 460)
+        .padding(24)
+        .background(RoundedRectangle(cornerRadius: 14).fill(Color.inkBar.opacity(0.97)))
+    }
+}
+
 /// "Not the PC you paired with": what it says, wherever it shows.
 private func notThePCText(_ name: String, _ check: String) -> String {
     "This isn't the PC you paired with as \(name): its PC check is now \(check). If you didn't reinstall Contrast Ink on that PC, don't connect."
@@ -104,7 +135,7 @@ struct PadConnectView: View {
                             if client.phase == .connecting { Spacer(); ProgressView() }
                         }
                     }
-                    .disabled(!canConnect || client.phase == .connecting)
+                    .disabled(!canConnect || client.phase == .connecting || isConfirming)
                     .accessibilityIdentifier("padConnect")
                     if let why = message {
                         Text(why).foregroundStyle(Color.noticeText).accessibilityIdentifier("padMessage")
@@ -125,6 +156,14 @@ struct PadConnectView: View {
                 }
             }
         }
+        .overlay {
+            if case .confirming(let name, let check) = client.phase {
+                ZStack {
+                    Color.black.opacity(0.6).ignoresSafeArea()
+                    PadCheckPanel(client: client, name: name, check: check).padding(16)
+                }
+            }
+        }
         // the UI test connects straight to its fake PC: no Bonjour (nor its permission prompt) in a test run
         .onAppear {
             if code.isEmpty { code = client.lastCode }
@@ -139,6 +178,8 @@ struct PadConnectView: View {
         if address.isEmpty, client.found.count == 1 { return client.found[0] }
         return nil
     }
+
+    private var isConfirming: Bool { if case .confirming = client.phase { return true }; return false }
 
     private var canConnect: Bool {
         PadProtocol.isCode(code) && (chosenPC != nil || PadProtocol.address(address) != nil)
@@ -176,7 +217,6 @@ struct PadScreen: View {
     var body: some View {
         VStack(spacing: 0) {
             PadToolbar(client: client)
-            if let check = client.newPCCheck { firstTime(check) }
             GeometryReader { geo in
                 let size = pictureSize
                 let fit = Fit.aspect(Size(size.width, size.height), in: Size(geo.size.width, geo.size.height))
@@ -206,7 +246,13 @@ struct PadScreen: View {
             .ignoresSafeArea(edges: .bottom)
         }
         .background(Color.black)
-        .overlay { if client.phase != .connected { lostCard } }
+        .overlay {
+            if case .confirming(let name, let check) = client.phase {
+                PadCheckPanel(client: client, name: name, check: check)
+            } else if client.phase != .connected {
+                lostCard
+            }
+        }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
     }
@@ -216,21 +262,6 @@ struct PadScreen: View {
         if let p = client.picture, p.size.width > 0, p.size.height > 0 { return p.size }
         let w = client.welcome ?? PadWelcome()
         return CGSize(width: w.screenW, height: w.screenH)
-    }
-
-    /// The first time with this PC: a machine pretending to be it could only be caught by eye, now.
-    private func firstTime(_ check: String) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: "checkmark.shield")
-            Text("First time with \(client.connectedName): check the PC shows the PC check \(check) next to its code. If it doesn't, disconnect.")
-                .accessibilityIdentifier("padFirstTime")
-            Spacer()
-            Button("It matches") { client.newPCCheck = nil }.bold().accessibilityIdentifier("padCheckMatches")
-        }
-        .font(.callout)
-        .foregroundStyle(Color.offText)
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(Color.contrastBlue.opacity(0.35))
     }
 
     @ViewBuilder private var lostCard: some View {
