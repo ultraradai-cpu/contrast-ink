@@ -56,6 +56,15 @@ Press **⏺**. When Android asks, choose **Entire screen** (recording a single a
 - Hold the phone or tablet the way you'll present **before** pressing ⏺: the video keeps that shape, and turning the
   screen mid-recording shows the new view smaller, with black bars.
 
+## Pad mode: draw on a PC from the tablet
+
+On the setup screen, **Use this tablet as a pad for a PC**. The PC runs Contrast Ink and shows a 6-digit code; both
+must be on the same Wi-Fi. Pick the PC from the list (or type the address it shows under the code, like
+`192.168.1.20`), type the code, **Connect**. The tablet shows the PC's screen; what you draw on it, the PC draws on
+its own drawing layer (so OBS records it). The toolbar picks the PC's tool and colour, undoes, clears and turns
+slides. A second finger cancels a line; a stylus hovering shows the laser's dot. If the Wi-Fi drops, the pad says
+**Lost the PC** with **Reconnect**. The link is written down in `docs/pad-protocol.md`.
+
 ## Not on Android (yet)
 
 - Keyboard keys (Android doesn't let an app watch the keyboard while another app is in front).
@@ -64,9 +73,11 @@ Press **⏺**. When Android asks, choose **Entire screen** (recording a single a
 ## For Developers
 
 - `core`: the rules (shapes, eraser hit test, fading, undo, settings), plain Kotlin: `./gradlew :core:test`.
-- `app`: the Android app (service with overlay windows, drawing view, toolbar, screen recording).
+- `app`: the Android app (service with overlay windows, drawing view, toolbar, screen recording, pad mode).
+- `core/.../PadProtocol.kt`: the pad link's messages, checked byte for byte against the spec's test vectors.
 - `app/src/androidTest`: runs the app on an emulator over a stand-in app (Android's Settings hides other apps' overlays): a tap goes through with drawing
-  off, every tool draws, undo / clear / eraser, with a screenshot of every step.
+  off, every tool draws, undo / clear / eraser, with a screenshot of every step. `PadTest` runs pad mode against a
+  stand-in PC inside the test (picture, strokes, commands, a lost connection, a wrong code).
 - Every push that changes `android/` runs all of this on GitHub (`.github/workflows/android.yml`); on main the APK
   goes to the **android-latest** release.
 - Signing: Android installs an update over the old app only when both carry the same key. Builds are signed with

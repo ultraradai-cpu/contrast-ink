@@ -13,6 +13,12 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Android 8–9 only: recordings go to the shared Movies/Contrast Ink folder (later Androids need no permission) -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+    <!-- pad mode: the tablet talks to Contrast Ink on a PC over the Wi-Fi, and finds it with DNS-SD (mDNS), which
+         many devices only receive while an app holds a multicast lock -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
     <application
         android:label="Contrast Ink"
@@ -30,6 +36,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- pad mode: the tablet as a drawing pad for a PC. Turning the tablet keeps the connection (no restart) -->
+        <activity
+            android:name=".PadActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|density|uiMode" />
 
         <!-- only asks Android for permission to record the screen, then goes away -->
         <activity
