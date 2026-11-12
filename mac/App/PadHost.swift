@@ -5,30 +5,55 @@ import CryptoKit
 import ImageIO
 import ScreenCaptureKit
 import Security
+import SystemConfiguration
 import UniformTypeIdentifiers
 
-/// This Mac's own key for the tablet link, kept between runs in the login Keychain, so a tablet recognises this Mac
-/// next time (and notices a machine pretending to be it). If the Keychain can't be used: a key for this run only
-/// (tablets then see a new PC and show its check again).
+/// This Mac's own key for the tablet link, kept between runs so a tablet recognises this Mac next time (and notices a
+/// machine pretending to be it). It lives in a file only this user can read (PadKeyFile:
+/// ~/Library/Application Support/Contrast Ink/pad-key), not the Keychain: the app is signed ad hoc, and macOS ties a
+/// Keychain item's access list to the build that made it, so after an update the item may not be readable, and a new
+/// key would make every paired tablet warn "not the PC you paired with". A key an earlier version kept in the Keychain
+/// is moved into the file when it can still be read.
 enum PadIdentity {
+    enum Loaded {
+        /// The key, and something for the presenter to know about it (it couldn't be saved), if anything.
+        case key(P256.KeyAgreement.PrivateKey, note: String?)
+        /// The file is there but can't be used: the tablet link stays off, and the presenter is told why.
+        case problem(String)
+    }
+
     private static let service = "Contrast Ink tablet link"
     private static let account = "P-256 key"
 
-    static func load() -> P256.KeyAgreement.PrivateKey {
+    static func load(_ url: URL = PadKeyFile.defaultURL()) -> Loaded {
+        let unusable = "Contrast Ink can't read this Mac's tablet key (~/Library/Application Support/Contrast Ink/pad-key), so the tablet link is off. Tablets know this Mac by that key. Fix the file's permissions, or delete the file to make a new key (paired tablets then warn once and ask you to compare the PC check again)."
+        switch PadKeyFile.load(url) {
+        case .key(let d):
+            if let k = try? P256.KeyAgreement.PrivateKey(rawRepresentation: d) { return .key(k, note: nil) }
+            Log.write("tablet link: \(url.path) is not a P-256 key")
+            return .problem(unusable)
+        case .unreadable(let why):
+            Log.write("tablet link: can't read \(url.path): \(why)")
+            return .problem(unusable)
+        case .missing:
+            let old = keychainKey()
+            let k = old ?? P256.KeyAgreement.PrivateKey()
+            if let why = PadKeyFile.save(k.rawRepresentation, to: url) {
+                Log.write("tablet link: the key wasn't saved: \(why)")
+                return .key(k, note: "Contrast Ink couldn't save this Mac's tablet key, so tablets will see a new PC next time. Check that your Library folder can be written to.")
+            }
+            Log.write(old != nil ? "tablet link: moved this Mac's key from the Keychain to \(url.path)" : "tablet link: made this Mac's key in \(url.path)")
+            return .key(k, note: nil)
+        }
+    }
+
+    /// The key an earlier version kept in the login Keychain, if it can still be read.
+    private static func keychainKey() -> P256.KeyAgreement.PrivateKey? {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                     kSecAttrAccount as String: account, kSecReturnData as String: true]
         var out: CFTypeRef?
-        if SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess, let d = out as? Data,
-           let k = try? P256.KeyAgreement.PrivateKey(rawRepresentation: d) {
-            return k
-        }
-        let k = P256.KeyAgreement.PrivateKey()
-        let add: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-                                  kSecAttrAccount as String: account, kSecValueData as String: k.rawRepresentation,
-                                  kSecAttrLabel as String: "Contrast Ink tablet link (this Mac's key)"]
-        let status = SecItemAdd(add as CFDictionary, nil)
-        if status != errSecSuccess { Log.write("tablet link: the Keychain kept no key (\(status)): tablets will see a new PC next time") }
-        return k
+        guard SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess, let d = out as? Data else { return nil }
+        return try? P256.KeyAgreement.PrivateKey(rawRepresentation: d)
     }
 }
 
@@ -122,13 +147,19 @@ final class PadHost {
     private var target = ScreenGrabber.Target(display: CGMainDisplayID(), pixelWidth: 1920, pixelHeight: 1080, exclude: [])
     private var running = true
     private var usbBusy = Set<Int>()
-    private var adbDone = Set<String>()
-    private(set) var adbFound = false
+    private var reversals = AdbReversals()   // the USB watch thread's only
+    private var _adbFound = false
+    var adbFound: Bool { lock.lock(); defer { lock.unlock() }; return _adbFound }
 
-    static var macName: String { Host.current().localizedName ?? ProcessInfo.processInfo.hostName }
+    /// The computer's name (System Settings → General → Sharing), read once: from configd, never a DNS lookup that
+    /// could hold up the main thread.
+    static let macName: String = {
+        if let n = SCDynamicStoreCopyComputerName(nil, nil) as String?, !n.isEmpty { return n }
+        return "Mac"
+    }()
 
-    init(code: String? = nil) {
-        server = PadServer(key: PadIdentity.load(), config: PadServer.Config(name: Self.macName), code: code)
+    init(key: P256.KeyAgreement.PrivateKey, code: String? = nil) {
+        server = PadServer(key: key, config: PadServer.Config(name: Self.macName), code: code)
         server.screenSize = { [weak self] in
             guard let self else { return (1920, 1080) }
             self.lock.lock(); defer { self.lock.unlock() }
@@ -177,15 +208,20 @@ final class PadHost {
         }
     }
 
+    /// adb found: `adb reverse` for each Android tablet newly plugged in. The USB door (127.0.0.1:47830, which any
+    /// program on this Mac could reach) is open only while at least one tablet is reversed.
     private func adb() {
         let fm = FileManager.default
         let env = ProcessInfo.processInfo.environment
-        guard let path = Adb.candidates(path: env["PATH"], home: fm.homeDirectoryForCurrentUser.path).first(where: { fm.isExecutableFile(atPath: $0) })
-        else { adbFound = false; return }
-        adbFound = true
-        let now = Set(Adb.devices(run(path, ["devices"]) ?? ""))
-        for serial in now.subtracting(adbDone) where run(path, Adb.reverseArguments(serial: serial)) != nil { adbDone.insert(serial) }
-        adbDone.formIntersection(now)   // unplugged: set up again when it comes back
+        let path = Adb.candidates(path: env["PATH"], home: fm.homeDirectoryForCurrentUser.path).first(where: { fm.isExecutableFile(atPath: $0) })
+        lock.lock(); _adbFound = path != nil; lock.unlock()
+        if let path {
+            let devices = Adb.devices(run(path, ["devices"]) ?? "")
+            for serial in reversals.seen(devices) where run(path, Adb.reverseArguments(serial: serial)) != nil { reversals.didReverse(serial) }
+        } else {
+            reversals.adbMissing()
+        }
+        if isRunning { server.setUsbDoor(open: reversals.doorOpen) }
     }
 
     /// Runs adb (at most 5 s); its output, or nil when it failed.

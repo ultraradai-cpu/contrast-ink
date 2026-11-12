@@ -118,4 +118,74 @@ final class MacRulesTests: XCTestCase {
                        ["/usr/bin/adb", "/opt/homebrew/bin/adb", "/Users/x/Library/Android/sdk/platform-tools/adb", "/usr/local/bin/adb"])
         XCTAssertEqual(Adb.reverseArguments(serial: "R58"), ["-s", "R58", "reverse", "tcp:47830", "tcp:47830"])
     }
+
+    /// The USB door is open only while adb is found and at least one tablet has been reversed.
+    func testUsbDoorFollowsAdbReverse() {
+        var r = AdbReversals()
+        XCTAssertFalse(r.doorOpen, "closed at first")
+        XCTAssertEqual(r.seen([]), [])
+        XCTAssertFalse(r.doorOpen, "no tablet: closed")
+        XCTAssertEqual(r.seen(["A", "B", "A"]), ["A", "B"])
+        XCTAssertFalse(r.doorOpen, "listed but not reversed yet: closed")
+        r.didReverse("A")
+        XCTAssertTrue(r.doorOpen, "one tablet reversed: open")
+        XCTAssertEqual(r.seen(["A", "B"]), ["B"], "only the ones not done yet")
+        XCTAssertEqual(r.seen(["B"]), ["B"], "A unplugged")
+        XCTAssertFalse(r.doorOpen, "the reversed tablet unplugged: closed")
+        r.didReverse("B")
+        XCTAssertTrue(r.doorOpen)
+        r.adbMissing()
+        XCTAssertFalse(r.doorOpen, "adb gone: closed")
+        XCTAssertEqual(r.seen(["B"]), ["B"], "set up again when adb is back")
+    }
+
+    func testPadProblemsAreInstructions() {
+        XCTAssertEqual(PadProblem.wifiPort.instruction, "Another program is using the tablet port: close Contrast Ink and open it again.")
+        XCTAssertTrue(PadProblem.usbDoor.instruction.contains("close Contrast Ink and open it again"))
+        XCTAssertFalse(PadProblem.usbDoor.instruction.contains("Error"))
+    }
+
+    func testPadGuardLockoutCanBeShortened() {
+        var g = PadGuard(lockout: 0)
+        let t = Date()
+        for _ in 0..<PadGuard.inARow { _ = g.wrong(t) }
+        XCTAssertFalse(g.locked(t.addingTimeInterval(0.001)))
+        var normal = PadGuard()
+        for _ in 0..<PadGuard.inARow { _ = normal.wrong(t) }
+        XCTAssertTrue(normal.locked(t.addingTimeInterval(29)))
+        XCTAssertFalse(normal.locked(t.addingTimeInterval(31)))
+    }
+
+    /// The Mac's key in its own file: 0600 in a 0700 folder, raw 32 bytes; a file that can't be used is never
+    /// silently replaced.
+    func testPadKeyFile() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("pad-key-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+        try FileManager.default.createDirectory(at: home.appendingPathComponent("Library/Application Support"), withIntermediateDirectories: true)
+        let url = PadKeyFile.defaultURL(home: home)
+        XCTAssertTrue(url.path.hasSuffix("Library/Application Support/Contrast Ink/pad-key"))
+        XCTAssertEqual(PadKeyFile.load(url), .missing)
+        let key = Data((0..<32).map { UInt8($0) })
+        XCTAssertNil(PadKeyFile.save(key, to: url))
+        XCTAssertEqual(PadKeyFile.load(url), .key(key))
+        let fileMode = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(fileMode?.intValue, 0o600)
+        let dirMode = try FileManager.default.attributesOfItem(atPath: url.deletingLastPathComponent().path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(dirMode?.intValue, 0o700)
+        // saved again: replaced, still 0600, no stray files
+        let other = Data(repeating: 7, count: 32)
+        XCTAssertNil(PadKeyFile.save(other, to: url))
+        XCTAssertEqual(PadKeyFile.load(url), .key(other))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path), ["pad-key"])
+        // the wrong length: unreadable, not missing
+        try Data(repeating: 1, count: 31).write(to: url)
+        guard case .unreadable = PadKeyFile.load(url) else { return XCTFail("a short file is unreadable") }
+        try Data(repeating: 1, count: 33).write(to: url)
+        guard case .unreadable = PadKeyFile.load(url) else { return XCTFail("a long file is unreadable") }
+        XCTAssertNotNil(PadKeyFile.save(Data([1, 2]), to: url), "only 32-byte keys are kept")
+        // a folder in its place: unreadable
+        try FileManager.default.removeItem(at: url)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+        guard case .unreadable = PadKeyFile.load(url) else { return XCTFail("a folder is unreadable") }
+    }
 }

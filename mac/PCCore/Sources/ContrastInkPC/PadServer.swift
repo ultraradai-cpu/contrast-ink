@@ -1,8 +1,9 @@
 // The tablet link's server on the Mac (docs/pad-protocol.md): the Mac is the PC. It listens on TCP 47820 (or the next
-// free port) advertised with Bonjour as _contrastink._tcp, and on its USB door 127.0.0.1:47830 (code ""), lets in one
-// tablet that proves it knows the code, sends it pictures of the screen (one at a time, paced by FRAME_ACK) and hands
-// what it draws to the app. The same rules and limits as the Windows app's PadServer.cs. Everything runs on one
-// serial queue; the app's handlers are called on `deliver` (the main queue).
+// free port) advertised with Bonjour as _contrastink._tcp, and, only while an Android tablet has been set up with
+// `adb reverse`, on its USB door 127.0.0.1:47830 (code ""); iPads on the cable come through usbmuxd (attachUsb). It
+// lets in one tablet that proves it knows the code, sends it pictures of the screen (one at a time, paced by
+// FRAME_ACK) and hands what it draws to the app. The same rules and limits as the Windows app's PadServer.cs. Everything
+// runs on one serial queue; the app's handlers are called on `deliver` (the main queue).
 #if canImport(Network) && canImport(CryptoKit)
 import ContrastInkCore
 import CryptoKit
@@ -13,7 +14,7 @@ import Network
 protocol PadPipe: AnyObject {
     /// Starts reading: `received` gets each block of bytes, then nil once (closed or failed). Called on `queue`.
     func start(queue: DispatchQueue, received: @escaping (Data?) -> Void)
-    /// Writes; `done` (on the queue) says whether it went.
+    /// Writes; `done` (on any queue) says whether it went.
     func send(_ data: Data, done: @escaping (Bool) -> Void)
     func cancel()
 }
@@ -61,13 +62,16 @@ final class NWPipe: PadPipe {
     func cancel() { connection.cancel() }
 }
 
-/// A connected socket (an iPad through usbmuxd): read on its own thread, written on a serial queue with a 3-second
-/// send timeout (a stalled tablet fails the write and is dropped).
+/// A connected socket (an iPad through usbmuxd): read on its own thread, written with a 3-second send timeout (a
+/// stalled tablet fails the write and is dropped). The fd number has one owner, the `io` queue: every write, the
+/// shutdown on cancel and the one close happen there, and the close only once both the reader has ended and cancel
+/// has happened, so nothing ever touches the number after it is closed (when it may already be another socket's).
 final class FDPipe: PadPipe {
     private let fd: Int32
-    private let writes = DispatchQueue(label: "pad usb write")
-    private let lock = NSLock()
-    private var cancelled = false
+    private let io = DispatchQueue(label: "pad usb io")
+    // on io only
+    private var readerEnded = false, cancelled = false, closed = false
+
     init(fd: Int32) {
         self.fd = fd
         var tv = timeval(tv_sec: Int(PadPC.writeStall), tv_usec: 0)
@@ -76,9 +80,15 @@ final class FDPipe: PadPipe {
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
     }
 
+    deinit {
+        // nothing else holds the pipe any more (the reader and every io block are done): no one can race this
+        if !closed { Darwin.close(fd) }
+    }
+
     func start(queue: DispatchQueue, received: @escaping (Data?) -> Void) {
         let fd = self.fd
         let t = Thread { [self] in
+            // the fd stays open while this reads: it is closed only after readerEnded is set below
             var buf = [UInt8](repeating: 0, count: 64 * 1024)
             while true {
                 let n = buf.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
@@ -87,21 +97,19 @@ final class FDPipe: PadPipe {
                 queue.async { received(d) }
             }
             queue.async { received(nil) }
-            self.writes.async { Darwin.close(fd) }   // after the last write
+            self.io.async { self.readerEnded = true; self.closeWhenDone() }
         }
         t.name = "pad usb read"
         t.start()
     }
 
     func send(_ data: Data, done: @escaping (Bool) -> Void) {
-        let fd = self.fd
-        writes.async { [self] in
+        io.async { [self] in
+            guard !cancelled, !closed else { done(false); return }
             var ok = true
             data.withUnsafeBytes { raw in
                 var at = 0
                 while at < raw.count {
-                    lock.lock(); let gone = cancelled; lock.unlock()
-                    if gone { ok = false; return }
                     let n = Darwin.write(fd, raw.baseAddress! + at, raw.count - at)
                     if n <= 0 { ok = false; return }
                     at += n
@@ -112,8 +120,18 @@ final class FDPipe: PadPipe {
     }
 
     func cancel() {
-        lock.lock(); let was = cancelled; cancelled = true; lock.unlock()
-        if !was { shutdown(fd, SHUT_RDWR) }
+        io.async { [self] in
+            guard !cancelled else { return }
+            cancelled = true
+            if !closed { shutdown(fd, SHUT_RDWR) }   // wakes the reader; the fd is still ours here
+            closeWhenDone()
+        }
+    }
+
+    private func closeWhenDone() {
+        guard readerEnded, cancelled, !closed else { return }
+        closed = true
+        Darwin.close(fd)
     }
 }
 
@@ -123,11 +141,30 @@ public final class PadServer {
         public var name: String
         /// The first Wi-Fi port tried; up to 9 more after it. 0: any free port (tests).
         public var port: UInt16 = PadProtocol.defaultPort
-        /// The USB door on 127.0.0.1; 0: any free port (tests); nil: none.
-        public var usbPort: UInt16? = PadPC.usbPort
+        /// The USB door's port on 127.0.0.1 (opened with setUsbDoor); 0: any free port (tests).
+        public var usbPort: UInt16 = PadPC.usbPort
         /// Advertise with Bonjour (off in tests).
         public var advertise = true
+        /// How long a stranger has for its PROOF after the CHALLENGE (and, on the USB door, for the presenter to
+        /// allow it). Shorter only in tests.
+        public var proofWithin: TimeInterval = PadPC.proofWithin
+        /// A tablet that can't take messages this long is dropped.
+        public var writeStall: TimeInterval = PadPC.writeStall
+        /// How long five wrong codes in a row lock everyone out. Shorter only in tests.
+        public var lockout: TimeInterval = PadGuard.lockout
         public init(name: String) { self.name = name }
+    }
+
+    /// Where a connection came from.
+    enum Door: Equatable {
+        /// The Wi-Fi port, from this address.
+        case wifi(String)
+        /// The loopback USB door (Android's `adb reverse`, or any program on this Mac).
+        case usbDoor
+        /// A connection this Mac opened itself through usbmuxd to an iPad on the cable.
+        case usbmux
+
+        var isWifi: Bool { if case .wifi = self { return true }; return false }
     }
 
     // the app's handlers, called on `deliver`
@@ -137,9 +174,14 @@ public final class PadServer {
     public var onCodeChanged: ((String) -> Void)?
     /// A message from the tablet (strokes, hover, commands), in order.
     public var onMessage: ((UInt8, Data) -> Void)?
-    /// The listeners are up (Wi-Fi port, USB port), or one failed (its error, for the log).
+    /// The listeners changed (Wi-Fi port, USB door's port or nil when it is closed).
     public var onReady: ((UInt16, UInt16?) -> Void)?
-    public var onError: ((String) -> Void)?
+    /// A listener couldn't be opened: what to tell the presenter, and the raw error for the log.
+    public var onError: ((PadProblem, String) -> Void)?
+    /// A tablet on the USB door (any program on this Mac can reach it) knows the empty code: may it draw? Asked with
+    /// the tablet's name; answer once, on any queue. The tablet waits meanwhile, up to the PROOF deadline. Nil: no.
+    /// The app asks the presenter the first time in each run and lets later ones in by itself.
+    public var allowUsbDoor: ((String, @escaping (Bool) -> Void) -> Void)?
     /// The screen's size in pixels, for WELCOME. Called on the server's queue.
     public var screenSize: () -> (Int, Int) = { (1920, 1080) }
     /// Makes a picture of the screen (a JPEG) and calls back with it, or nil. Called on the server's queue, never
@@ -151,13 +193,13 @@ public final class PadServer {
     private let config: Config
     private let deliver: DispatchQueue
     private let q = DispatchQueue(label: "pad server")
-    private var guardian = PadGuard()
+    private var guardian: PadGuard
     private var _code: String
     private var wifi: NWListener?, usb: NWListener?
     private var wifiPort: UInt16 = 0, usbDoor: UInt16?
+    private var usbDoorWanted = false, usbDoorReported = false
     private var peers: [ObjectIdentifier: Peer] = [:]
     private var current: Peer?
-    private var pending = 0
     private var timer: DispatchSourceTimer?
     private var running = false
     private var capturing = false
@@ -166,10 +208,13 @@ public final class PadServer {
 
     final class Peer {
         let pipe: PadPipe
-        let usb: Bool
+        let door: Door
+        var usb: Bool { !door.isWifi }
         var accept: PadAccept
         var frames = PadFrames(maxLength: PadPC.helloMax)
-        var step = 0          // 0: waiting for HELLO, 1: CHALLENGE sent, waiting for PROOF, 2: in
+        /// 0: waiting for HELLO, 1: CHALLENGE sent, waiting for PROOF, 2: in, 3: refused (the REJECT on its way),
+        /// 4: right PROOF on the USB door, waiting for the presenter to allow it
+        var step = 0
         var deadline: Date
         var heard = Date()
         var counted = true    // among the strangers not yet in
@@ -179,8 +224,8 @@ public final class PadServer {
         var outbox: [Date] = []   // when each unfinished write began
         var name = ""
         var ended: (() -> Void)?
-        init(pipe: PadPipe, usb: Bool, accept: PadAccept) {
-            self.pipe = pipe; self.usb = usb; self.accept = accept
+        init(pipe: PadPipe, door: Door, accept: PadAccept) {
+            self.pipe = pipe; self.door = door; self.accept = accept
             deadline = Date().addingTimeInterval(PadPC.helloWithin)
         }
     }
@@ -189,6 +234,7 @@ public final class PadServer {
         pcKey = key
         self.config = config
         self.deliver = deliver
+        guardian = PadGuard(lockout: config.lockout)
         pcCheck = PadCrypto.check(key.publicKey.x963Representation)
         _code = code ?? PadPC.newCode()
     }
@@ -205,7 +251,7 @@ public final class PadServer {
             guard !running else { return }
             running = true
             listen(port: config.port, tries: config.port == 0 ? 1 : 10)
-            if let p = config.usbPort { openUsbDoor(p) }
+            if usbDoorWanted { openUsbDoor() }
             let t = DispatchSource.makeTimerSource(queue: q)
             t.schedule(deadline: .now() + 0.05, repeating: 0.05)
             t.setEventHandler { [weak self] in self?.tick() }
@@ -219,8 +265,18 @@ public final class PadServer {
             running = false
             timer?.cancel(); timer = nil
             wifi?.cancel(); wifi = nil
-            usb?.cancel(); usb = nil
+            closeUsbDoor()
             for p in Array(peers.values) { close(p) }
+        }
+    }
+
+    /// Opens or closes the USB door (127.0.0.1, Android tablets through `adb reverse`). Any program on this Mac can
+    /// reach a loopback port, so the app opens it only while adb has set up at least one tablet.
+    public func setUsbDoor(open: Bool) {
+        q.async { [self] in
+            usbDoorWanted = open
+            guard running else { return }
+            if open { if usb == nil { openUsbDoor() } } else { closeUsbDoor() }
         }
     }
 
@@ -230,12 +286,20 @@ public final class PadServer {
     /// To the connected tablet, if any, sealed. From any thread; never blocks.
     public func send(_ message: Data) { q.async { [self] in if let c = current { send(c, message) } } }
 
-    /// An iPad's connection opened through usbmuxd (a socket that is now a pipe to the iPad's port 47830).
-    /// `ended` is called (on any queue) once that connection is over.
+    /// An iPad's connection this Mac opened through usbmuxd (a socket that is now a pipe to the iPad's port 47830).
+    /// No limit beyond the app's one per iPad. `ended` is called (on any queue) once that connection is over.
     public func attachUsb(fd: Int32, ended: @escaping () -> Void = {}) {
         q.async { [self] in
-            guard running, pending < PadPC.maxPending else { Darwin.close(fd); ended(); return }
-            accept(FDPipe(fd: fd), usb: true, ended: ended)
+            guard running else { Darwin.close(fd); ended(); return }
+            accept(FDPipe(fd: fd), door: .usbmux, ended: ended)
+        }
+    }
+
+    /// Any pipe, as if it had come in by `door` (tests).
+    func attach(_ pipe: PadPipe, door: Door, ended: @escaping () -> Void = {}) {
+        q.async { [self] in
+            guard running else { pipe.cancel(); ended(); return }
+            accept(pipe, door: door, ended: ended)
         }
     }
 
@@ -249,7 +313,7 @@ public final class PadServer {
             params.allowLocalEndpointReuse = true
             l = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port) ?? .any)
         } catch {
-            report("tablet link: can't listen on port \(port): \(error)")
+            report(.wifiPort, "tablet link: can't listen on port \(port): \(error)")
             return
         }
         if config.advertise {
@@ -259,16 +323,16 @@ public final class PadServer {
         }
         l.newConnectionHandler = { [weak self] c in self?.incoming(c, usb: false) }
         l.stateUpdateHandler = { [weak self, weak l] s in
-            guard let self, let l else { return }
+            guard let self, let l, self.wifi === l else { return }
             switch s {
             case .ready:
                 self.wifiPort = l.port?.rawValue ?? port
-                self.deliver.async { self.onReady?(self.wifiPort, self.usbDoor) }
+                self.ready()
             case .failed(let e):
                 l.cancel()
-                if self.wifi === l { self.wifi = nil }
+                self.wifi = nil
                 if tries > 1, port != 0 { self.listen(port: port + 1, tries: tries - 1) }
-                else { self.report("tablet link: no free network port (\(e))") }
+                else { self.report(.wifiPort, "tablet link: no free network port (\(e))") }
             default: break
             }
         }
@@ -276,7 +340,8 @@ public final class PadServer {
         l.start(queue: q)
     }
 
-    private func openUsbDoor(_ port: UInt16) {
+    private func openUsbDoor() {
+        let port = config.usbPort
         do {
             let params = NWParameters.tcp
             params.allowLocalEndpointReuse = true
@@ -285,34 +350,65 @@ public final class PadServer {
             let l = try NWListener(using: params)
             l.newConnectionHandler = { [weak self] c in self?.incoming(c, usb: true) }
             l.stateUpdateHandler = { [weak self, weak l] s in
-                guard let self, let l else { return }
+                guard let self, let l, self.usb === l else { return }
                 switch s {
                 case .ready:
                     self.usbDoor = l.port?.rawValue ?? port
-                    self.deliver.async { self.onReady?(self.wifiPort, self.usbDoor) }
+                    self.usbDoorReported = false
+                    self.ready()
                 case .failed(let e):
                     l.cancel()
-                    if self.usb === l { self.usb = nil; self.usbDoor = nil }
-                    self.report("tablet link: USB door 127.0.0.1:\(port) unavailable (\(e))")
+                    self.usb = nil
+                    self.usbDoor = nil
+                    self.ready()
+                    // tried again on the app's next setUsbDoor (every few seconds): said once
+                    if !self.usbDoorReported {
+                        self.usbDoorReported = true
+                        self.report(.usbDoor, "tablet link: USB door 127.0.0.1:\(port) unavailable (\(e))")
+                    }
                 default: break
                 }
             }
             usb = l
             l.start(queue: q)
         } catch {
-            report("tablet link: USB door: \(error)")
+            if !usbDoorReported { usbDoorReported = true; report(.usbDoor, "tablet link: USB door: \(error)") }
         }
     }
 
-    private func report(_ text: String) { deliver.async { [weak self] in self?.onError?(text) } }
+    private func closeUsbDoor() {
+        guard let l = usb else { return }
+        usb = nil
+        l.cancel()
+        if usbDoor != nil { usbDoor = nil; ready() }
+    }
+
+    private func ready() {
+        let w = wifiPort, u = usbDoor
+        deliver.async { [weak self] in self?.onReady?(w, u) }
+    }
+
+    private func report(_ problem: PadProblem, _ raw: String) { deliver.async { [weak self] in self?.onError?(problem, raw) } }
+
+    /// Strangers not yet past the code (or not yet allowed in) whose door matches.
+    private func strangers(_ match: (Door) -> Bool) -> Int { peers.values.reduce(0) { $0 + ($1.counted && match($1.door) ? 1 : 0) } }
 
     private func incoming(_ c: NWConnection, usb: Bool) {
-        guard running, pending < PadPC.maxPending else { c.cancel(); return }
+        guard running else { c.cancel(); return }
+        let door: Door
         if usb {
-            // the USB door only ever hears this Mac itself
-            guard case .hostPort(let host, _) = c.endpoint, Self.isLoopback(host) else { c.cancel(); return }
+            // the USB door only ever hears this Mac itself, and only a few strangers at once
+            guard case .hostPort(let host, _) = c.endpoint, Self.isLoopback(host),
+                  strangers({ $0 == .usbDoor }) < PadPC.maxPendingUsbDoor else { c.cancel(); return }
+            door = .usbDoor
+        } else {
+            // a few strangers on the Wi-Fi in all, and fewer from any one address: they can't fill every place
+            let from = Self.address(c.endpoint)
+            guard strangers({ $0.isWifi }) < PadPC.maxPending,
+                  strangers({ $0 == .wifi(from) }) < PadPC.maxPendingPerAddress else { c.cancel(); return }
+            door = .wifi(from)
         }
-        accept(NWPipe(c), usb: usb)
+        accept(NWPipe(c), door: door)
     }
 
     static func isLoopback(_ h: NWEndpoint.Host) -> Bool {
@@ -324,9 +420,21 @@ public final class PadServer {
         }
     }
 
-    private func accept(_ pipe: PadPipe, usb: Bool, ended: (() -> Void)? = nil) {
-        pending += 1
-        let p = Peer(pipe: pipe, usb: usb, accept: PadAccept(pcKey: pcKey, name: config.name))
+    /// The remote address a connection came from (an IPv4 address mapped into IPv6 as the IPv4 one; no zone).
+    static func address(_ e: NWEndpoint) -> String {
+        guard case .hostPort(let h, _) = e else { return "\(e)" }
+        switch h {
+        case .ipv4(let a): return "\(a)"
+        case .ipv6(let a):
+            if a.isIPv4Mapped, let v4 = a.asIPv4 { return "\(v4)" }
+            return String("\(a)".split(separator: "%").first ?? "")
+        case .name(let n, _): return n
+        @unknown default: return "\(h)"
+        }
+    }
+
+    private func accept(_ pipe: PadPipe, door: Door, ended: (() -> Void)? = nil) {
+        let p = Peer(pipe: pipe, door: door, accept: PadAccept(pcKey: pcKey, name: config.name))
         p.ended = ended
         peers[ObjectIdentifier(p)] = p
         pipe.start(queue: q) { [weak self, weak p] data in
@@ -348,6 +456,7 @@ public final class PadServer {
             switch p.step {
             case 0: hello(p, type, payload)
             case 1: proof(p, type, payload)
+            case 4: break   // waiting for the presenter: a tablet sends nothing before WELCOME
             default: session(p, type, payload)
             }
         }
@@ -360,12 +469,13 @@ public final class PadServer {
             if !p.usb && guardian.locked(Date()) { refuse(p, PadPC.tooManyWrong); return }
             write(p, m)
             p.step = 1
-            p.deadline = Date().addingTimeInterval(PadPC.proofWithin)
+            p.deadline = Date().addingTimeInterval(config.proofWithin)
         }
     }
 
     /// The PROOF: opened, the tablet knows the code (it never crossed the network) and the session starts, replacing
     /// a connected tablet. Not opened: a wrong code, counted against guessing (not over the cable: no code there).
+    /// On the USB door the presenter must allow it first (any program on this Mac could be knocking).
     private func proof(_ p: Peer, _ type: UInt8, _ payload: Data) {
         let right = p.accept.proof(type: type, payload: payload, code: p.usb ? "" : _code)
         let now = Date()
@@ -380,11 +490,33 @@ public final class PadServer {
             return
         }
         if !p.usb { guardian.right() }
+        if p.door == .usbDoor {
+            p.step = 4   // until the presenter answers, or the PROOF deadline passes
+            let device = p.accept.device
+            deliver.async { [weak self, weak p] in
+                guard let self else { return }
+                let answered: (Bool) -> Void = { [weak self, weak p] yes in
+                    guard let self else { return }
+                    self.q.async { if let p { self.allowed(p, yes) } }
+                }
+                if let ask = self.allowUsbDoor, p != nil { ask(device, answered) } else { answered(false) }
+            }
+            return
+        }
+        letIn(p)
+    }
+
+    private func allowed(_ p: Peer, _ yes: Bool) {
+        guard !p.closed, p.step == 4 else { return }   // gone, or past its deadline
+        if yes { letIn(p) } else { refuse(p, PadPC.denied) }
+    }
+
+    private func letIn(_ p: Peer) {
         p.step = 2
         p.frames.maxLength = PadProtocol.maxPayload
         p.name = p.accept.device
-        p.heard = now
-        if p.counted { p.counted = false; pending -= 1 }
+        p.heard = Date()
+        p.counted = false
         let old = current
         current = p
         if let old { close(old) }   // the same tablet back after a drop, or another one the presenter chose
@@ -447,10 +579,10 @@ public final class PadServer {
     private func close(_ p: Peer) {
         guard !p.closed else { return }
         p.closed = true
+        p.counted = false
         p.pipe.cancel()
         p.ended?()
         p.ended = nil
-        if p.counted { p.counted = false; pending -= 1 }
         peers[ObjectIdentifier(p)] = nil
         if current === p {
             current = nil
@@ -465,7 +597,7 @@ public final class PadServer {
         for p in Array(peers.values) {
             if p.step != 2 && now > p.deadline { close(p); continue }   // a byte now and then keeps no stranger in
             if p.step == 2 && now.timeIntervalSince(p.heard) > PadPC.silence { close(p); continue }
-            if let first = p.outbox.first, now.timeIntervalSince(first) > PadPC.writeStall { close(p); continue }
+            if let first = p.outbox.first, now.timeIntervalSince(first) > config.writeStall { close(p); continue }
         }
         // pictures of the screen, one at a time: the next only after the tablet says it showed the last
         guard let c = current, !capturing, let source = frameSource else { return }
@@ -486,6 +618,7 @@ public final class PadServer {
         }
     }
 }
+
 
 /// Asks usbmuxd (Apple's USB service, /var/run/usbmuxd) which iPhones and iPads are plugged in, and opens a
 /// connection to a port on one of them through the cable. Blocking: call it off the main thread.

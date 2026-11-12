@@ -72,6 +72,13 @@ enum SmokeTest {
         c.clear()
         check(c.ink.board.marks.isEmpty && c.ink.board.canUndo, "clear, and undo can bring it back")
 
+        // the USB door's question (Allow / Deny) on the toolbar
+        var answered: Bool?
+        c.toolbar.ask("An Android tablet on the USB cable wants to draw:") { answered = $0 }
+        check(c.toolbar.asking, "the toolbar asks Allow / Deny")
+        c.toolbar.cancelAsk()
+        check(!c.toolbar.asking && answered == false, "a question taken away unanswered is a Deny")
+
         // the tablet's pictures: only the encoding (no Screen Recording permission on GitHub's Macs)
         let jpeg = ScreenGrabber.encode(testImage())
         check(jpeg.map { $0.starts(with: [0xFF, 0xD8]) } ?? false, "a picture encodes as JPEG")

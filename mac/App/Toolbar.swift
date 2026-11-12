@@ -182,6 +182,10 @@ final class Toolbar {
     private let opacity = FirstMouseSlider(value: 1, minValue: Settings.minOpacity, maxValue: 1, target: nil, action: nil)
     private var noticeText: String?, warningText: String?
     private var showNames = true
+    // a question for the presenter, with Allow / Deny
+    private let askRow = NSStackView()
+    private let askLabel = NSTextField(labelWithString: "")
+    private var askAnswer: ((Bool) -> Void)?
 
     // settings
     private let settingsStack = NSStackView()
@@ -237,6 +241,17 @@ final class Toolbar {
         hint.clicked = { [weak self] in self?.hintClicked() }
         column.addArrangedSubview(hint)
         column.setCustomSpacing(2, after: row)
+        askRow.orientation = .horizontal
+        askRow.spacing = 6
+        askRow.alignment = .centerY
+        askRow.edgeInsets = NSEdgeInsets(top: 2, left: 6, bottom: 2, right: 6)
+        askLabel.font = NSFont.systemFont(ofSize: 12)
+        askLabel.textColor = Look.warning
+        askRow.addArrangedSubview(askLabel)
+        askRow.addArrangedSubview(FirstMouseTextButton("Allow") { [weak self] in self?.answerAsk(true) })
+        askRow.addArrangedSubview(FirstMouseTextButton("Deny") { [weak self] in self?.answerAsk(false) })
+        askRow.isHidden = true
+        column.addArrangedSubview(askRow)
 
         let c = controller
         row.addArrangedSubview(Grip(toolbar: self).also { g in
@@ -426,6 +441,33 @@ final class Toolbar {
     func notice(_ text: String?) {
         noticeText = text
         standing()
+    }
+
+    /// A question under the buttons with Allow and Deny; `answer` gets the choice once. A new question (or
+    /// cancelAsk) answers the one before it with Deny.
+    func ask(_ text: String, answer: @escaping (Bool) -> Void) {
+        let old = askAnswer
+        askAnswer = answer
+        askLabel.stringValue = text
+        askRow.isHidden = false
+        fit()
+        old?(false)
+    }
+
+    /// Takes the question away, answering Deny if it is still open.
+    func cancelAsk() {
+        guard !askRow.isHidden || askAnswer != nil else { return }
+        answerAsk(false)
+    }
+
+    var asking: Bool { !askRow.isHidden }
+
+    private func answerAsk(_ yes: Bool) {
+        let a = askAnswer
+        askAnswer = nil
+        askRow.isHidden = true
+        fit()
+        a?(yes)
     }
 
     /// A problem about this Mac that stays: the dots beside the mark turn red and the line stays under the buttons.

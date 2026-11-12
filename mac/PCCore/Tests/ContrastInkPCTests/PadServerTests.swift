@@ -18,8 +18,8 @@ final class TestTablet {
     private let lock = NSCondition()
     var link = PadLink()
 
-    init(port: UInt16) {
-        c = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+    init(port: UInt16, host: NWEndpoint.Host = "127.0.0.1") {
+        c = NWConnection(host: host, port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
         c.stateUpdateHandler = { [weak self] s in
             if case .failed = s { self?.end() }
             if case .cancelled = s { self?.end() }
@@ -88,7 +88,77 @@ final class TestTablet {
 
     func sealed(_ m: Data) { send(link.seal(m)!) }
 
+    /// HELLO, and the CHALLENGE back; then nothing (a stranger holding a place). False when no CHALLENGE came.
+    func stall() -> Bool {
+        send(link.hello(device: "Stranger"))
+        guard let (t, _) = next() else { return false }
+        return t == PadProtocol.Kind.challenge.rawValue
+    }
+
     func close() { c.cancel() }
+}
+
+/// A connection with no socket (the server's PadPipe), driven by the test: what the server writes is kept, and its
+/// writes can be made to never finish (a tablet that stopped reading).
+final class FakePipe: PadPipe {
+    private let lock = NSCondition()
+    private var queue: DispatchQueue?
+    private var received: ((Data?) -> Void)?
+    private var out: [Data] = []
+    private var stalled = false
+    private var cancelled = false
+    var link = PadLink()
+
+    func start(queue: DispatchQueue, received: @escaping (Data?) -> Void) {
+        lock.lock(); self.queue = queue; self.received = received; lock.broadcast(); lock.unlock()
+    }
+
+    func send(_ data: Data, done: @escaping (Bool) -> Void) {
+        lock.lock(); out.append(data); let s = stalled; lock.broadcast(); lock.unlock()
+        if !s { done(true) }   // stalled: never done, as a socket the tablet doesn't read
+    }
+
+    func cancel() { lock.lock(); cancelled = true; lock.broadcast(); lock.unlock() }
+
+    func stall() { lock.lock(); stalled = true; lock.unlock() }
+
+    /// Bytes from the tablet (once the server has started reading).
+    func feed(_ d: Data) {
+        lock.lock()
+        let until = Date().addingTimeInterval(5)
+        while received == nil, lock.wait(until: until) {}
+        let q = queue, r = received
+        lock.unlock()
+        q?.async { r?(d) }
+    }
+
+    /// The next message the server wrote (each write is one whole message).
+    func next(timeout: TimeInterval = 5) -> (UInt8, Data)? {
+        let until = Date().addingTimeInterval(timeout)
+        lock.lock(); defer { lock.unlock() }
+        while out.isEmpty { if !lock.wait(until: until) { break } }
+        guard !out.isEmpty else { return nil }
+        let m = out.removeFirst()
+        return (m[m.startIndex], Data(m.dropFirst(5)))
+    }
+
+    func waitCancelled(timeout: TimeInterval) -> Bool {
+        let until = Date().addingTimeInterval(timeout)
+        lock.lock(); defer { lock.unlock() }
+        while !cancelled { if !lock.wait(until: until) { return cancelled } }
+        return true
+    }
+
+    /// HELLO → CHALLENGE → PROOF; the first answer after the PROOF, opened.
+    func pair(code: String) throws -> PadMessage? {
+        feed(link.hello(device: "Fake tablet"))
+        guard let (t, p) = next(), t == PadProtocol.Kind.challenge.rawValue, let ch = PadChallenge.parse(p),
+              let proof = link.proof(ch, code: code) else { return nil }
+        feed(proof)
+        guard let (t2, p2) = next() else { return nil }
+        if t2 == PadProtocol.Kind.sealed.rawValue { return try link.open(p2) }
+        return PadMessage.read(type: t2, payload: p2)
+    }
 }
 
 final class PadServerTests: XCTestCase {
@@ -99,24 +169,34 @@ final class PadServerTests: XCTestCase {
     private var received: [(UInt8, Data)] = []
     private var connections: [String?] = []
 
-    override func setUpWithError() throws {
+    override func setUpWithError() throws { restart() }
+
+    /// A new server (the last one stopped) with these settings, the USB door open (unless `door` is false) and every
+    /// tablet on it allowed (tests of the gate set their own).
+    private func restart(door: Bool = true, _ change: (inout PadServer.Config) -> Void = { _ in }) {
+        server?.stop()
         var config = PadServer.Config(name: "Test Mac")
         config.port = 0
         config.usbPort = 0
         config.advertise = false
+        change(&config)
+        wifi = 0; usb = 0
+        events.sync { received = []; connections = [] }
         server = PadServer(key: P256.KeyAgreement.PrivateKey(), config: config, code: "123456", deliver: events)
         server.screenSize = { (2880, 1800) }
         server.onMessage = { [unowned self] t, p in self.received.append((t, p)) }
         server.onConnection = { [unowned self] name, _ in self.connections.append(name) }
+        server.allowUsbDoor = { _, answer in answer(true) }
         server.start()
+        if door { server.setUsbDoor(open: true) }
         let until = Date().addingTimeInterval(10)
         while Date() < until {
             let p = server.ports
-            if p.wifi != 0, let u = p.usb { wifi = p.wifi; usb = u; break }
+            if p.wifi != 0, !door || p.usb != nil { wifi = p.wifi; usb = p.usb ?? 0; break }
             Thread.sleep(forTimeInterval: 0.02)
         }
         XCTAssertNotEqual(wifi, 0, "the Wi-Fi port is listening")
-        XCTAssertNotEqual(usb, 0, "the USB door is listening")
+        if door { XCTAssertNotEqual(usb, 0, "the USB door is listening") }
     }
 
     override func tearDown() { server?.stop(); server = nil }
@@ -235,6 +315,160 @@ final class PadServerTests: XCTestCase {
     func testSilentStrangerIsDropped() {
         let t = TestTablet(port: wifi)
         XCTAssertTrue(t.waitClosed(timeout: PadPC.helloWithin + 3), "no HELLO within 3 s: closed")
+    }
+
+    // MARK: strangers holding places
+
+    func testStalledWiFiStrangersDontStopACableSession() throws {
+        // four strangers on the Wi-Fi, two from each of two addresses, each with a CHALLENGE and never a PROOF
+        let strangers = [TestTablet(port: wifi), TestTablet(port: wifi), TestTablet(port: wifi, host: "::1"), TestTablet(port: wifi, host: "::1")]
+        defer { strangers.forEach { $0.close() } }
+        for s in strangers { XCTAssertTrue(s.stall(), "a stranger gets its CHALLENGE") }
+        // the Wi-Fi is full: a fifth is closed at once
+        let fifth = TestTablet(port: wifi, host: "::1")
+        XCTAssertTrue(fifth.waitClosed(timeout: 2), "a fifth stranger on the Wi-Fi is closed")
+        // the cable still works: the USB door and an iPad through usbmuxd
+        let cable = TestTablet(port: usb)
+        defer { cable.close() }
+        guard case .welcome? = try cable.pair(code: "") else { return XCTFail("the USB door was full of Wi-Fi strangers") }
+        let ipad = FakePipe()
+        server.attach(ipad, door: .usbmux)
+        guard case .welcome? = try ipad.pair(code: "") else { return XCTFail("usbmuxd's connection was refused") }
+    }
+
+    func testAThirdStalledStrangerFromOneAddressIsClosed() {
+        let a = TestTablet(port: wifi), b = TestTablet(port: wifi)
+        defer { a.close(); b.close() }
+        XCTAssertTrue(a.stall())
+        XCTAssertTrue(b.stall())
+        let c = TestTablet(port: wifi)
+        XCTAssertTrue(c.waitClosed(timeout: 2), "a third from the same address is closed")
+        // another address still gets in line
+        let d = TestTablet(port: wifi, host: "::1")
+        defer { d.close() }
+        XCTAssertTrue(d.stall(), "a stranger from another address is still answered")
+    }
+
+    func testNoProofWithinTheDeadlineCloses() {
+        restart { $0.proofWithin = 1 }
+        let t = TestTablet(port: wifi)
+        XCTAssertTrue(t.stall())
+        XCTAssertFalse(t.waitClosed(timeout: 0.5), "still waiting for the PROOF")
+        XCTAssertTrue(t.waitClosed(timeout: 3), "no PROOF by the deadline: closed")
+        // the place is free again
+        let u = TestTablet(port: wifi)
+        defer { u.close() }
+        guard case .welcome? = try? u.pair(code: "123456") else { return XCTFail() }
+    }
+
+    func testATabletThatStopsReadingForThreeSecondsIsDropped() throws {
+        let f = FakePipe()
+        server.attach(f, door: .wifi("192.0.2.1"))
+        guard case .welcome? = try f.pair(code: "123456") else { return XCTFail() }
+        settle()
+        XCTAssertNotNil(server.connected)
+        f.stall()
+        server.send(PadPC.pong())
+        XCTAssertFalse(f.waitCancelled(timeout: 2), "kept while under 3 s")
+        XCTAssertTrue(f.waitCancelled(timeout: 3), "a write stalled over 3 s: dropped")
+        settle()
+        XCTAssertNil(server.connected)
+        XCTAssertEqual(events.sync { connections }, ["Fake tablet", nil])
+    }
+
+    func testTwentyWrongCodesMakeANewCode() throws {
+        restart { $0.lockout = 0 }   // five in a row would otherwise lock out for 30 s
+        var changed: [String] = []
+        server.onCodeChanged = { changed.append($0) }   // on `events`
+        for i in 0..<PadGuard.beforeNewCode {
+            let t = TestTablet(port: wifi)
+            XCTAssertEqual(try t.pair(code: "000000"), .reject(PadPC.wrongCode), "wrong code \(i + 1)")
+            XCTAssertTrue(t.waitClosed())
+        }
+        settle()
+        let now = server.code
+        XCTAssertEqual(events.sync { changed }, [now])
+        XCTAssertNotEqual(now, "123456")
+        let old = TestTablet(port: wifi)
+        XCTAssertEqual(try old.pair(code: "123456"), .reject(PadPC.wrongCode), "the old code no longer works")
+        _ = old.waitClosed()
+        let t = TestTablet(port: wifi)
+        defer { t.close() }
+        guard case .welcome? = try t.pair(code: now) else { return XCTFail("the new code works") }
+    }
+
+    // MARK: the USB door
+
+    func testTheUsbDoorIsOpenOnlyWhenAsked() {
+        restart(door: false)
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertNil(server.ports.usb, "closed until the app opens it (adb set up a tablet)")
+        server.setUsbDoor(open: true)
+        var port: UInt16?
+        let until = Date().addingTimeInterval(5)
+        while port == nil, Date() < until { port = server.ports.usb; Thread.sleep(forTimeInterval: 0.02) }
+        guard let doorPort = port else { return XCTFail("the door opens") }
+        let t = TestTablet(port: doorPort)
+        XCTAssertTrue(t.stall(), "answered while open")
+        t.close()
+        server.setUsbDoor(open: false)
+        let gone = Date().addingTimeInterval(5)
+        while server.ports.usb != nil, Date() < gone { Thread.sleep(forTimeInterval: 0.02) }
+        XCTAssertNil(server.ports.usb, "closed again (no tablet reversed)")
+        let late = TestTablet(port: doorPort)
+        XCTAssertFalse(late.stall(), "nothing answers on a closed door")
+    }
+
+    func testTheUsbDoorAsksThePresenter() throws {
+        var asked: [String] = []
+        var answers: [(Bool) -> Void] = []
+        server.allowUsbDoor = { device, answer in asked.append(device); answers.append(answer) }   // on `events`
+        // waiting for the presenter: nothing comes
+        let t = TestTablet(port: usb)
+        defer { t.close() }
+        t.send(t.link.hello(device: "Pixel Tablet"))
+        guard let (ct, cp) = t.next(), ct == PadProtocol.Kind.challenge.rawValue, let ch = PadChallenge.parse(cp),
+              let proof = t.link.proof(ch, code: "") else { return XCTFail("no CHALLENGE") }
+        t.send(proof)
+        XCTAssertNil(t.next(timeout: 0.5), "no WELCOME before the presenter allows it")
+        XCTAssertEqual(events.sync { asked }, ["Pixel Tablet"])
+        events.sync { answers[0](true) }
+        guard case .welcome? = try t.nextOpened() else { return XCTFail("allowed: let in") }
+        // Deny: refused and closed
+        let d = TestTablet(port: usb)
+        events.sync { answers = [] }
+        d.send(d.link.hello(device: "Other"))
+        guard let (dt, dp) = d.next(), dt == PadProtocol.Kind.challenge.rawValue, let dch = PadChallenge.parse(dp),
+              let dproof = d.link.proof(dch, code: "") else { return XCTFail("no CHALLENGE") }
+        d.send(dproof)
+        let until = Date().addingTimeInterval(5)
+        while events.sync(execute: { answers.isEmpty }), Date() < until { Thread.sleep(forTimeInterval: 0.02) }
+        events.sync { answers.first?(false) }
+        XCTAssertEqual(try d.nextOpened(), .reject(PadPC.denied))
+        XCTAssertTrue(d.waitClosed())
+        // Wi-Fi and usbmuxd's iPads are never asked
+        let ipad = FakePipe()
+        server.attach(ipad, door: .usbmux)
+        guard case .welcome? = try ipad.pair(code: "") else { return XCTFail() }
+        XCTAssertEqual(events.sync { asked }, ["Pixel Tablet", "Other"])
+    }
+
+    func testNoAnswerFromThePresenterClosesAtTheDeadline() {
+        restart { $0.proofWithin = 1 }
+        server.allowUsbDoor = { _, _ in }   // never answered
+        let t = TestTablet(port: usb)
+        t.send(t.link.hello(device: "x"))
+        guard let (ct, cp) = t.next(), let ch = PadChallenge.parse(cp), ct == PadProtocol.Kind.challenge.rawValue,
+              let proof = t.link.proof(ch, code: "") else { return XCTFail() }
+        t.send(proof)
+        XCTAssertTrue(t.waitClosed(timeout: 3))
+        XCTAssertNil(server.connected)
+    }
+
+    func testNoGateMeansNo() throws {
+        server.allowUsbDoor = nil
+        let t = TestTablet(port: usb)
+        XCTAssertEqual(try t.pair(code: ""), .reject(PadPC.denied))
     }
 }
 #endif

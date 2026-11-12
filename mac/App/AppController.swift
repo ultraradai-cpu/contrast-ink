@@ -1,6 +1,7 @@
 import AppKit
 import ContrastInkCore
 import ContrastInkPC
+import CryptoKit
 
 /// Contrast Ink on the Mac: the drawing layer, the toolbar, the keys, OBS, and the tablet link, tied together. The
 /// same behaviour as the Windows app (App.xaml.cs) as far as macOS allows.
@@ -14,7 +15,9 @@ final class AppController {
     private(set) var toolbar: Toolbar!
     private(set) var recorder: Recorder!
     private(set) var pad: PadHost?
-    private var padNotice: String?
+    /// A listener that couldn't open (shown as what to do), and a key file that couldn't be read (the link stays off).
+    private var padProblem: PadProblem?
+    private var padKeyProblem: String?
     private let control = ControlWatcher()
     private var keyMonitor: Any?
     private let save: Bool
@@ -59,13 +62,15 @@ final class AppController {
 
     // MARK: the drawing layer
 
-    private var screen: NSScreen {
+    /// The chosen screen; nil for the moment macOS lists none (a display being swapped): then nothing moves.
+    private var screen: NSScreen? {
         let all = NSScreen.screens
-        return all.indices.contains(settings.screen) ? all[settings.screen] : (NSScreen.main ?? all[0])
+        return all.indices.contains(settings.screen) ? all[settings.screen] : (NSScreen.main ?? all.first)
     }
 
     /// Covers the chosen screen (a projector plugged in or out mid-lecture: the layer follows by itself).
     private func cover() {
+        guard let screen else { return }   // the screens-changed notice that follows brings it back
         overlay.setFrame(screen.frame, display: true)
         let scale = screen.backingScaleFactor
         let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? CGMainDisplayID()
@@ -201,8 +206,21 @@ final class AppController {
     /// Listens for a tablet (switched on in ⚙ Settings). Screen Recording is asked for here: the tablet's picture needs it.
     func startPad(code: String? = nil) {
         guard pad == nil else { return }
+        padKeyProblem = nil
+        let key: P256.KeyAgreement.PrivateKey
+        switch PadIdentity.load() {
+        case .problem(let text):
+            // never a new key behind the presenter's back: every paired tablet would warn "not the PC you paired with"
+            padKeyProblem = text
+            toolbar.notice(text)
+            showPad()
+            return
+        case .key(let k, let note):
+            key = k
+            if let note { toolbar.notice(note) }
+        }
         if !Permissions.screenRecording { Permissions.requestScreenRecording() }
-        let p = PadHost(code: code)
+        let p = PadHost(key: key, code: code)
         pad = p
         p.server.onMessage = { [weak self] t, m in self?.padMessage(t, m) }
         p.server.onConnection = { [weak self] name, _ in
@@ -214,23 +232,58 @@ final class AppController {
             self?.showPad()
             self?.toolbar.notice("Someone kept typing wrong tablet codes: there is a new code (⚙ Settings).")
         }
-        p.server.onReady = { [weak self] _, _ in self?.showPad() }
-        p.server.onError = { [weak self] text in Log.write(text); self?.padNotice = text; self?.showPad() }
+        p.server.onReady = { [weak self] _, usb in
+            guard let self else { return }
+            if usb != nil, self.padProblem == .usbDoor { self.padProblem = nil }   // it opened after all
+            self.showPad()
+        }
+        p.server.onError = { [weak self] problem, raw in
+            Log.write(raw)   // the details for the log; the toolbar says what to do
+            self?.padProblem = problem
+            self?.showPad()
+        }
+        p.server.allowUsbDoor = { [weak self, weak p] device, answer in
+            guard let self, let p, self.pad === p else { answer(false); return }
+            if Self.usbDoorAllowed { answer(true); return }
+            Log.write("tablet link: \"\(device)\" on the USB door is waiting to be allowed")
+            self.askUsbDoor(answer)
+        }
         cover()
         p.start()
         showPad()
     }
 
+    /// The USB door can be reached by any program on this Mac, not only an Android tablet through adb: the first
+    /// tablet there in each run of the app waits for the presenter's Allow (until its 30-second PROOF deadline).
+    private static var usbDoorAllowed = false
+    private var askNumber = 0
+
+    private func askUsbDoor(_ answer: @escaping (Bool) -> Void) {
+        askNumber += 1
+        let n = askNumber
+        toolbar.ask("An Android tablet on the USB cable wants to draw:") { yes in
+            if yes { AppController.usbDoorAllowed = true }
+            answer(yes)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + PadPC.proofWithin) { [weak self] in
+            guard let self, self.askNumber == n else { return }
+            self.toolbar.cancelAsk()   // the tablet has given up by now
+        }
+    }
+
     func stopPad() {
         pad?.stop()
         pad = nil
-        padNotice = nil
+        padProblem = nil
+        padKeyProblem = nil
+        askNumber += 1
+        toolbar.cancelAsk()
         ink.remoteCancel()
         showPad()
     }
 
     private func showPad() {
-        guard let p = pad else { toolbar.showPad(nil); return }
+        guard let p = pad else { toolbar.showPad(settings.tabletPad ? padKeyProblem : nil); return }
         var lines: [String] = []
         if let c = p.server.connected {
             lines.append("Connected: \(c.name)" + (c.usb ? " (by the USB cable)." : " (over Wi-Fi). Plug in its USB cable and it switches to the cable by itself."))
@@ -242,12 +295,14 @@ final class AppController {
             }
             lines.append("By USB cable, by itself when plugged in: an iPad in pad mode just needs the cable; an Android tablet needs USB debugging on and Google's platform-tools (adb) on this Mac"
                          + (p.adbFound ? " (found)." : " (not found yet: brew install android-platform-tools)."))
-            lines.append(ports.usb != nil ? "USB door: open (127.0.0.1:\(PadPC.usbPort))." : "USB door: not open (another app uses port \(PadPC.usbPort)?).")
+            if ports.usb != nil {
+                lines.append("An Android tablet is set up for the cable: it connects by itself. The first time, allow it on this toolbar.")
+            }
         }
         if !Permissions.screenRecording {
             lines.append("The tablet's picture needs Screen Recording: System Settings → Privacy & Security → Screen Recording → Contrast Ink, then quit and reopen it.")
         }
-        if let padNotice { lines.append(padNotice) }
+        if let padProblem { lines.append(padProblem.instruction) }
         toolbar.showPad(lines.joined(separator: "\n"))
     }
 

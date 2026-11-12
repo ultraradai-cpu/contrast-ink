@@ -8,8 +8,12 @@ public enum PadPC {
     public static let usbPort: UInt16 = 47830
     /// The longest HELLO accepted (a stranger's first message: small, so it can't be used to fill memory).
     public static let helloMax = 1024
-    /// Strangers not yet past the code, at once.
+    /// Strangers not yet past the code, at once, over Wi-Fi: at most 4 in all and 2 from any one address, so a few
+    /// strangers on the network can't keep the presenter's own tablet out. The USB door (Android's `adb reverse`) has
+    /// its own small limit; an iPad's connection through usbmuxd (the Mac opens it itself, one per iPad) has none.
     public static let maxPending = 4
+    public static let maxPendingPerAddress = 2
+    public static let maxPendingUsbDoor = 2
     /// The hello within 3 s of connecting; the proof within 30 s (the presenter may be comparing the PC check).
     public static let helloWithin: TimeInterval = 3
     public static let proofWithin: TimeInterval = 30
@@ -32,6 +36,8 @@ public enum PadPC {
     public static let updateTablet = "Please update Contrast Ink on the tablet."
     public static let tooManyWrong = "Too many wrong codes: wait 30 seconds, then try again."
     public static let wrongCode = "Wrong code: type the code Contrast Ink shows on the PC (⚙ Settings)."
+    /// The presenter chose Deny on the Mac for a tablet on the USB cable.
+    public static let denied = "The presenter chose Deny on the Mac."
 
     // MARK: writing
 
@@ -226,7 +232,9 @@ public struct PadGuard: Sendable {
     public static let lockout: TimeInterval = 30
     private var wrongInARow = 0, wrongForThisCode = 0
     private var lockedUntil = Date.distantPast
-    public init() {}
+    private let lockoutFor: TimeInterval
+    /// `lockout`: how long five wrong in a row lock everyone out (shorter only in tests).
+    public init(lockout: TimeInterval = PadGuard.lockout) { lockoutFor = lockout }
 
     /// Whether codes may be tried at all right now.
     public func locked(_ now: Date) -> Bool { now < lockedUntil }
@@ -235,7 +243,7 @@ public struct PadGuard: Sendable {
     public mutating func wrong(_ now: Date) -> Bool {
         wrongForThisCode += 1
         wrongInARow += 1
-        if wrongInARow >= Self.inARow { wrongInARow = 0; lockedUntil = now.addingTimeInterval(Self.lockout) }
+        if wrongInARow >= Self.inARow { wrongInARow = 0; lockedUntil = now.addingTimeInterval(lockoutFor) }
         guard wrongForThisCode >= Self.beforeNewCode else { return false }
         wrongForThisCode = 0
         return true
@@ -243,6 +251,24 @@ public struct PadGuard: Sendable {
 
     /// The right code: the count of guesses in a row starts again.
     public mutating func right() { wrongInARow = 0 }
+}
+
+/// What went wrong with the tablet link's listening, said as what the presenter can do about it (the raw error goes
+/// to the log, not the toolbar).
+public enum PadProblem: Equatable, Sendable {
+    /// No network port could be opened for tablets over Wi-Fi.
+    case wifiPort
+    /// The USB door (127.0.0.1:47830, Android tablets by cable) couldn't be opened.
+    case usbDoor
+
+    public var instruction: String {
+        switch self {
+        case .wifiPort:
+            return "Another program is using the tablet port: close Contrast Ink and open it again."
+        case .usbDoor:
+            return "Another program is using the tablet's USB cable port (\(PadPC.usbPort)), so an Android tablet can't connect by cable: close Contrast Ink and open it again."
+        }
+    }
 }
 
 /// A flat JSON object read key by key, each value a string, a number or a true/false (a number is never read as

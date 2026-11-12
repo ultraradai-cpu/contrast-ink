@@ -28,6 +28,12 @@ toolbar shows which are given, with buttons to the right page.
 | **Accessibility** | Sending → and ← to the app in front: the tablet's ‹ › buttons, and slide keys pressed while drawing is on. | The first time the tablet sends ‹ or ›, or you press a slide key while drawing. |
 | **Local Network** (macOS 15) | Letting a tablet on the Wi-Fi find this Mac and connect. | When you switch on the tablet link. |
 
+**After updating Contrast Ink** (a new ContrastInk.app in place of the old one): in **System Settings → Privacy &
+Security**, open **Screen Recording** and **Accessibility**, select Contrast Ink, remove it with **−**, then add it
+again with **+** (or switch it on when it asks), and quit and reopen Contrast Ink. The app isn't signed by Apple, so
+macOS ties each permission to the exact build you allowed: the switch can still show as on while the new build is
+refused (the tablet then sees only the desktop picture, and ‹ › don't change slides).
+
 Drawing, the toolbar, F9 and recording with OBS need none of these. Holding Control to draw needs none either
 (Contrast Ink only reads whether Control is down, not what you type). macOS's firewall, if switched on, may ask
 whether Contrast Ink may accept incoming connections: allow it for the tablet link.
@@ -105,16 +111,27 @@ what you draw on it is drawn on the Mac, so OBS records it.
 4. Draw. The tablet's toolbar has the tools, colours, widths, undo, clear, the laser, and ‹ › to change slides
    (the first ‹ or › asks for Accessibility on the Mac: it sends → and ← to the app in front).
 
-**By USB cable**, used by itself when plugged in (no code needed, the cable is the proof):
-- **iPad** in pad mode: just plug it in. The Mac reaches it through Apple's own USB service.
+**By USB cable**, used by itself when plugged in (no code needed):
+- **iPad** in pad mode: just plug it in. The Mac itself opens the connection to the iPad through Apple's own USB
+  service, which only reaches devices on the cable, so nothing more is asked.
 - **Android**: switch on USB debugging (Developer options) and install Google's platform-tools on the Mac
   (`brew install android-platform-tools`, or Android Studio). Contrast Ink finds `adb` on the PATH, in
   `~/Library/Android/sdk/platform-tools` or in `/opt/homebrew/bin`, and runs `adb reverse tcp:47830 tcp:47830`.
+  The tablet then reaches the Mac at 127.0.0.1:47830, a port on the Mac that any program running on this Mac
+  could also reach, so the cable alone doesn't prove who is connecting. Contrast Ink therefore opens that port only
+  while `adb` has set up a tablet, and the first time a tablet connects there after Contrast Ink starts, the
+  toolbar asks **"An Android tablet on the USB cable wants to draw: Allow / Deny"**. Choose **Allow** only if you
+  have just plugged in your tablet (it waits up to 30 seconds). Later connections in the same run are let in by
+  themselves.
 
 Everything between the tablet and the Mac is encrypted, and the code never crosses the network. Wrong codes are
-limited (five in a row lock pairing for 30 s; twenty make a new code). The Mac's own key (behind the PC check) is
-kept in your login Keychain as "Contrast Ink tablet link". With patient images on screen, a private network or the
-Mac's own hotspot is safer still. The link itself is described in [docs/pad-protocol.md](../docs/pad-protocol.md).
+limited (five in a row lock pairing for 30 s; twenty make a new code), and a few strangers on the Wi-Fi can't keep
+your tablet out (at most four waiting at once, two from any one address; the cable has its own places). The Mac's
+own key (behind the PC check) is kept in `~/Library/Application Support/Contrast Ink/pad-key`, readable only by
+you. Earlier versions kept it in the login Keychain; it is moved to that file by itself. If the file is there but
+can't be read, the toolbar says so and the tablet link stays off (rather than making a new key, which would make
+your tablets warn that this is "not the PC you paired with"). With patient images on screen, a private network or
+the Mac's own hotspot is safer still. The link itself is described in [docs/pad-protocol.md](../docs/pad-protocol.md).
 
 ## Limits (Compared With Windows)
 
@@ -130,7 +147,7 @@ Mac's own hotspot is safer still. The link itself is described in [docs/pad-prot
 
 - Nothing happens on F9: another app may own F9 (the toolbar then says so); use ✏ or hold Control.
 - The tablet sees only the desktop picture: Screen Recording isn't allowed yet (⚙ shows it). Allow it, then quit
-  and reopen Contrast Ink.
+  and reopen Contrast Ink. Just after an update, remove Contrast Ink from the list and add it again (above).
 - The tablet doesn't find the Mac: type the address shown in ⚙ into the tablet instead (some networks hide names),
   and check macOS 15's Local Network permission and the firewall.
 

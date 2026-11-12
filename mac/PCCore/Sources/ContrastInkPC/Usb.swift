@@ -81,3 +81,29 @@ public enum Adb {
         ["-s", serial, "reverse", "tcp:\(port)", "tcp:\(port)"]
     }
 }
+
+/// Which Android tablets `adb reverse` has been set up for, and so whether the USB door (127.0.0.1:47830) should be
+/// open: only while adb is found and at least one tablet is reversed. Any program on this Mac can reach a loopback
+/// port, so the door is not left open when no tablet needs it.
+public struct AdbReversals: Equatable, Sendable {
+    public private(set) var reversed = Set<String>()
+    public init() {}
+
+    /// The devices `adb devices` lists now: those unplugged are forgotten (set up again when they come back), and the
+    /// ones returned still need `adb reverse`.
+    public mutating func seen(_ devices: [String]) -> [String] {
+        reversed.formIntersection(devices)
+        var out: [String] = []
+        for d in devices where !reversed.contains(d) && !out.contains(d) { out.append(d) }
+        return out
+    }
+
+    /// `adb reverse` worked for this device.
+    public mutating func didReverse(_ serial: String) { reversed.insert(serial) }
+
+    /// adb isn't found (any more): nothing is reversed.
+    public mutating func adbMissing() { reversed = [] }
+
+    /// Whether the USB door should be open now.
+    public var doorOpen: Bool { !reversed.isEmpty }
+}
