@@ -741,3 +741,76 @@ public class PadSafetyTests
         Assert.True(g.Wrong(t));     // the 20th wrong for this code
     }
 }
+
+/// <summary>Version 2 of the tablet link: the spec's test vectors and what an eavesdropper or a wrong code gets.</summary>
+public class PadCryptoTests
+{
+    static readonly byte[] TabletD = Enumerable.Repeat((byte)0x11, 32).ToArray(), PcD = Enumerable.Repeat((byte)0x22, 32).ToArray();
+    static readonly byte[] Salt = Convert.FromHexString("000102030405060708090A0B0C0D0E0F");
+
+    static (byte[] toPc, byte[] toTablet) Both(string tabletCode, string pcCode, out (byte[], byte[]) pcSide)
+    {
+        using var t = PadCrypto.FromPrivate(TabletD);
+        using var p = PadCrypto.FromPrivate(PcD);
+        pcSide = PadCrypto.Keys(p, PadCrypto.ReadPoint(PadCrypto.PublicPoint(t))!, Salt, pcCode);
+        return PadCrypto.Keys(t, PadCrypto.ReadPoint(PadCrypto.PublicPoint(p))!, Salt, tabletCode);
+    }
+
+    [Fact]
+    public void BothSidesGetTheSameKeysWithTheSameCode()
+    {
+        var tablet = Both("123456", "123456", out var pc);
+        Assert.Equal(pc.Item1, tablet.toPc);
+        Assert.Equal(pc.Item2, tablet.toTablet);
+        Assert.NotEqual(tablet.toPc, tablet.toTablet);
+    }
+
+    [Fact]
+    public void AWrongCodeCantOpenTheProof()
+    {
+        var tablet = Both("123457", "123456", out var pc);
+        using var seal = new PadSeal(tablet.toPc);
+        using var open = new PadSeal(pc.Item1);
+        Assert.Null(open.Open(seal.Seal(Pad.Message(Pad.Command, PadCrypto.ProofText))));
+    }
+
+    [Fact]
+    public void SealedMessagesOpenOnceInOrderAndNotAltered()
+    {
+        var tablet = Both("123456", "123456", out var pc);
+        using var seal = new PadSeal(tablet.toPc);
+        using var open = new PadSeal(pc.Item1);
+        var a = seal.Seal(Pad.Message(Pad.Command, "undo"));
+        var b = seal.Seal(Pad.Message(Pad.Command, "next"));
+        Assert.Equal(Pad.Message(Pad.Command, "undo"), open.Open(a));
+        Assert.Null(open.Open(a));                                  // replayed
+        var altered = (byte[])b.Clone(); altered[14] ^= 1;
+        Assert.Null(open.Open(altered));                           // changed in flight
+        Assert.Equal(Pad.Message(Pad.Command, "next"), open.Open(b));
+    }
+
+    [Fact]
+    public void NotAPointIsRefused()
+    {
+        Assert.Null(PadCrypto.ReadPoint(new byte[65]));
+        Assert.Null(PadCrypto.ReadPoint(new byte[] { 4, 1, 2 }));
+    }
+
+    /// <summary>Prints the vectors written into docs/pad-protocol.md (the Android and iPad tests assert them).</summary>
+    [Fact]
+    public void SpecVectors()
+    {
+        using var t = PadCrypto.FromPrivate(TabletD);
+        using var p = PadCrypto.FromPrivate(PcD);
+        var keys = Both("123456", "123456", out _);
+        using var seal = new PadSeal(keys.toPc);
+        var proof = seal.Seal(Pad.Message(Pad.Command, PadCrypto.ProofText));
+        File.WriteAllText(Path.Combine(Path.GetTempPath(), "pad-v2-vectors.txt"),
+            $"tablet public key   {Convert.ToHexString(PadCrypto.PublicPoint(t))}\n" +
+            $"PC public key       {Convert.ToHexString(PadCrypto.PublicPoint(p))}\n" +
+            $"tablet->PC key      {Convert.ToHexString(keys.toPc)}\n" +
+            $"PC->tablet key      {Convert.ToHexString(keys.toTablet)}\n" +
+            $"first sealed PROOF  {Convert.ToHexString(proof)}  (COMMAND \"hello\", counter 1)\n");
+        Assert.Equal(65 + 0, PadCrypto.PublicPoint(t).Length + 0);
+    }
+}
