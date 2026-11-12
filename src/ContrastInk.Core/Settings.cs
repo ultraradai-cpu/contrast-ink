@@ -43,6 +43,12 @@ public sealed class Settings
     public bool MarksPerSlide { get; set; } = true;
     /// <summary>Resting the mouse or pen on a toolbar button shows its name ("Pen (P)") under the buttons.</summary>
     public bool ShowButtonNames { get; set; } = true;
+    /// <summary>
+    /// A pen tablet beside the keyboard (XP-Pen, Wacom Intuos, Huion...): its pen is used like a mouse. Its marks and
+    /// clicks land where the cursor is (as a pen, Windows can place them as if the tablet covered every screen), and
+    /// hovering it doesn't switch drawing on (use ✏, F9 or Ctrl). Takes effect when Contrast Ink starts.
+    /// </summary>
+    public bool PenTablet { get; set; }
 
     /// <summary>Keeps every value in range, so a hand-edited or old file can't break the app.</summary>
     public Settings Clean(int screens)

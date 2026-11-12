@@ -567,3 +567,21 @@ public class LaserAndOpacityTests
         finally { File.Delete(path); }
     }
 }
+
+public class PenTabletSettingTests
+{
+    [Fact]
+    public void OffUnlessChosenAndRemembered()
+    {
+        Assert.False(new Settings().PenTablet);
+        var path = Path.Combine(Path.GetTempPath(), $"ci-{Guid.NewGuid():N}.json");
+        try
+        {
+            new Settings { PenTablet = true }.Save(path);
+            Assert.True(Settings.Load(path, 1).PenTablet);
+            File.WriteAllText(path, "{\"Color\": 2}");   // saved by an older version
+            Assert.False(Settings.Load(path, 1).PenTablet);
+        }
+        finally { File.Delete(path); }
+    }
+}

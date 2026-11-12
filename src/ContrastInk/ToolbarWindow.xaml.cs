@@ -210,7 +210,7 @@ public partial class ToolbarWindow : Window
     {
         (OptZ, nameof(Settings.UndoWithZ)), (OptRightClick, nameof(Settings.UndoWithRightClick)), (OptButton, nameof(Settings.UndoButtonByPen)),
         (OptEraserEnd, nameof(Settings.PenEraserEnd)), (OptSlides, nameof(Settings.MarksPerSlide)),
-        (OptNames, nameof(Settings.ShowButtonNames)),
+        (OptNames, nameof(Settings.ShowButtonNames)), (OptTablet, nameof(Settings.PenTablet)),
     };
 
     static void Mark(Button b, bool on)
@@ -243,6 +243,7 @@ public partial class ToolbarWindow : Window
             OptZ.IsChecked = s.UndoWithZ; OptRightClick.IsChecked = s.UndoWithRightClick; OptButton.IsChecked = s.UndoButtonByPen;
             OptEraserEnd.IsChecked = s.PenEraserEnd; OptSlides.IsChecked = s.MarksPerSlide;
             OptNames.IsChecked = s.ShowButtonNames;
+            OptTablet.IsChecked = s.PenTablet;
             if (Math.Abs(OpacitySlider.Value - s.Opacity) > 0.001) OpacitySlider.Value = s.Opacity;
             ShowOpacity(s.Opacity);
         }

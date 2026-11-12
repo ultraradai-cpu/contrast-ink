@@ -59,6 +59,12 @@ The 🖥 button moves the drawing layer to your other screen.
 
 Any of these removes the last mark. Each one can be switched off under **⚙ Settings** on the toolbar.
 
+**Pen tablet beside the keyboard** (XP-Pen, Wacom Intuos, Huion: you write on the pad, not the screen): if its pen
+can't click or draw, open **⚙ Settings** with the mouse, tick **Pen Tablet Beside the Keyboard**, then close
+Contrast Ink (✕) and open it again. Its pen then works like the mouse: switch drawing on with ✏, F9 or Ctrl.
+(Or, in the tablet's own settings, untick **Windows Ink**.) A pen display, where you write on the screen itself,
+needs none of this.
+
 Resting the mouse or pen on a button shows its name ("Pen (P)", "Highlighter (H)") under the buttons. To stop
 that: **⚙ Settings → Toolbar → Show Button Names**, off. Warnings still show.
 

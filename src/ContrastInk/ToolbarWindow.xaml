@@ -115,6 +115,7 @@
       <TextBlock Text="Pen and Slides" Foreground="#8A95A6" FontSize="12" Margin="0,8,0,2"/>
       <CheckBox x:Name="OptEraserEnd" Content="Pen's Eraser End Erases"/>
       <CheckBox x:Name="OptSlides" Content="Each PowerPoint Slide Keeps Its Own Marks"/>
+      <CheckBox x:Name="OptTablet" Content="Pen Tablet Beside the Keyboard (XP-Pen, Wacom Intuos, Huion): Its Pen Works Like a Mouse"/>
       <TextBlock Text="Toolbar" Foreground="#8A95A6" FontSize="12" Margin="0,8,0,2"/>
       <CheckBox x:Name="OptNames" Content="Show Button Names When the Mouse or Pen Rests on One"/>
     </StackPanel>
