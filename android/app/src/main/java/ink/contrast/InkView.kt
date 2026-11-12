@@ -114,8 +114,11 @@ class InkView(context: Context, private val host: Host) : View(context) {
         if (e.actionMasked == MotionEvent.ACTION_DOWN) {
             ignoreGesture = false
             if (type == MotionEvent.TOOL_TYPE_FINGER && !s.fingerDraws) { host.fingerTouched(); return false }
-            // the stylus's side button, pressed as the pen touches: undo (one press, one undo)
-            if (s.stylusButtonUndoes && (e.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0) {
+            // the stylus's side button, pressed as the pen touches: undo (one press, one undo). A drawing pad
+            // (Wacom One, XP-Pen, Huion on USB or Bluetooth) is often a mouse to Android, its pen button a right-click:
+            // that undoes too (left to Android, it would go Back)
+            val button = MotionEvent.BUTTON_STYLUS_PRIMARY or MotionEvent.BUTTON_SECONDARY
+            if (s.stylusButtonUndoes && (e.buttonState and button) != 0) {
                 ignoreGesture = true
                 undo()
                 return true

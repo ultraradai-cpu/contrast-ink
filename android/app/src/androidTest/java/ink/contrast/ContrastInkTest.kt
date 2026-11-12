@@ -154,6 +154,19 @@ class ContrastInkTest {
         assertEquals("opacity 50%: the new line is half see-through", 0.5f, alpha ?: -1f, 0.02f)
         inst.runOnMainSync { InkService.running?.update { it.copy(opacity = 1f) } }
 
+        // a drawing pad on USB or Bluetooth (Wacom One, XP-Pen, Huion): Android gets a stylus, or a mouse
+        val w = device.displayWidth
+        val h = device.displayHeight
+        device.executeShellCommand("input stylus swipe ${w / 6} ${h * 85 / 100} ${w * 5 / 6} ${h * 85 / 100} 300")
+        Thread.sleep(600)
+        assertEquals("a drawing pad's pen (as a stylus) draws", 4, marks())
+        device.executeShellCommand("input mouse swipe ${w / 6} ${h * 95 / 100} ${w * 5 / 6} ${h * 95 / 100} 300")
+        Thread.sleep(600)
+        assertEquals("a drawing pad's pen (as a mouse) draws", 5, marks())
+        shot("07d drawing pad lines")
+        press("Undo"); press("Undo")
+        assertEquals("undo takes the pad's lines back", 3, marks())
+
         press("Draw on / off")
         assertTrue("✎ again switches drawing off", !drawing())
         assertEquals("marks stay when drawing goes off", 3, marks())
