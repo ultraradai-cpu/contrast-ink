@@ -1,0 +1,80 @@
+name: Mac
+
+# Every push that changes the Mac app (or the shared rules it uses): test the rules (Core's and the Mac's own,
+# including the tablet link's server paired with on loopback ports), build the app, start it once to check it comes
+# up (a smoke test: drawing layer, toolbar, a mark drawn and seen), and zip it as ContrastInk-Mac.zip (unsigned).
+# On main it goes to the "mac-latest" release: one download link.
+on:
+  push:
+    paths: ["mac/**", "ios/Core/**", ".github/workflows/mac.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mac:
+    runs-on: macos-15
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: mac
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test the shared rules (ios/Core)
+        run: swift test --package-path ../ios/Core
+      - name: Test the Mac's rules and the tablet link's server
+        run: swift test --package-path PCCore
+      - name: Make the Xcode project
+        if: hashFiles('mac/project.yml') != ''
+        run: |
+          brew install xcodegen
+          xcodegen
+      - name: Build (Release, unsigned)
+        if: hashFiles('mac/project.yml') != ''
+        run: |
+          set -o pipefail
+          xcodebuild build -project ContrastInk.xcodeproj -scheme ContrastInk -configuration Release \
+            -destination 'generic/platform=macOS' -derivedDataPath build \
+            CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO | tail -60
+          ls -la build/Build/Products/Release/
+      - name: Start the app once (smoke test)
+        if: hashFiles('mac/project.yml') != ''
+        run: |
+          # No screen-recording permission on GitHub's Macs: the smoke test skips taking pictures of the screen.
+          app=build/Build/Products/Release/ContrastInk.app/Contents/MacOS/ContrastInk
+          "$app" --smoke-test > smoke.log 2>&1 &
+          pid=$!
+          for i in $(seq 1 60); do
+            if ! kill -0 $pid 2>/dev/null; then break; fi
+            sleep 1
+          done
+          if kill -0 $pid 2>/dev/null; then kill -9 $pid; echo "smoke test hung"; cat smoke.log; exit 1; fi
+          code=0; wait $pid || code=$?
+          cat smoke.log
+          test $code -eq 0
+          grep -q "SMOKE OK" smoke.log
+      - name: Zip ContrastInk-Mac.zip
+        if: hashFiles('mac/project.yml') != ''
+        run: |
+          cd build/Build/Products/Release
+          ditto -c -k --sequesterRsrc --keepParent ContrastInk.app "$GITHUB_WORKSPACE/mac/ContrastInk-Mac.zip"
+          ls -la "$GITHUB_WORKSPACE/mac/ContrastInk-Mac.zip"
+      - uses: actions/upload-artifact@v4
+        if: hashFiles('mac/project.yml') != ''
+        with:
+          name: ContrastInk-Mac
+          path: mac/ContrastInk-Mac.zip
+      - name: Update the mac-latest release (main only)
+        if: github.ref == 'refs/heads/main' && hashFiles('mac/project.yml') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="Built from ${GITHUB_SHA::7}, passed the rules' tests and the start-up check. Unsigned: unzip it, then right-click ContrastInk.app → Open the first time (see mac/README.md)."
+          if gh release view mac-latest >/dev/null 2>&1; then
+            git tag -f mac-latest "$GITHUB_SHA" && git push -f origin refs/tags/mac-latest
+            gh release upload mac-latest ContrastInk-Mac.zip --clobber
+            gh release edit mac-latest --notes "$notes"
+          else
+            gh release create mac-latest ContrastInk-Mac.zip --title "Mac (latest)" --target "$GITHUB_SHA" --notes "$notes"
+          fi
