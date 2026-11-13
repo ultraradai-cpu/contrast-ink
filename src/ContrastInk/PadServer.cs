@@ -521,8 +521,15 @@ sealed class PadServer : IDisposable
             SetBrushOrgEx(memDc, 0, 0, IntPtr.Zero);
             StretchBlt(memDc, 0, 0, ow, oh, screenDc, r.Left, r.Top, w, h, SRCCOPY);
             SelectObject(memDc, old);
-            picture = System.Windows.Interop.Imaging.CreateBitmapSourceFromHBitmap(
+            var copy = System.Windows.Interop.Imaging.CreateBitmapSourceFromHBitmap(
                 bmp, IntPtr.Zero, System.Windows.Int32Rect.Empty, System.Windows.Media.Imaging.BitmapSizeOptions.FromEmptyOptions());
+            // The screen's copy can come back marked fully transparent (its alpha byte 0). Encoded on its own the JPEG
+            // ignores that, but laid under the marks it vanishes and the tablet's picture turns black as soon as
+            // anything is drawn (reported). So: the same pixels, read as an opaque picture (Bgr32 ignores that byte).
+            int stride = ow * 4;
+            var pixels = new byte[stride * oh];
+            copy.CopyPixels(pixels, stride, 0);
+            picture = System.Windows.Media.Imaging.BitmapSource.Create(ow, oh, 96, 96, System.Windows.Media.PixelFormats.Bgr32, null, pixels, stride);
         }
         finally
         {

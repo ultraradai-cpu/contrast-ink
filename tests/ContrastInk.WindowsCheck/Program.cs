@@ -546,14 +546,20 @@ static class Program
             t.Read(g => g.Any(x => x.type == Pad.Frame), 3000);   // the one already on its way
             t.Send(Pad.FrameAck, Array.Empty<byte>());
             var withLine = t.Read(g => g.Any(x => x.type == Pad.Frame), 3000).LastOrDefault(x => x.type == Pad.Frame);
-            Color inPicture = Color.Black;
+            Color inPicture = Color.Black, around = Color.Black, onScreen = Color.White;
             if (withLine.payload != null)
                 using (var img = new Bitmap(new MemoryStream(withLine.payload)))
                 {
                     double k = (double)img.Width / screen.Width;
                     inPicture = Closest(img, (int)((mx - screen.Left) * k), (int)((Row(5) - screen.Top) * k), red, 4);
+                    // and the slide is still there around the marks (it once turned black as soon as anything was drawn:
+                    // checking only the line's colour missed it)
+                    around = img.GetPixel((int)((mx - screen.Left) * k), (int)((Row(5) - 40 - screen.Top) * k));
                 }
+            using (var now = Shot("40b-around-the-line")) onScreen = now.GetPixel(mx, Row(5) - 40);
             Check(Diff(inPicture, red) <= 60, "tablet link: the tablet's picture shows the marks", Hex(inPicture));
+            Check(Diff(around, onScreen) <= 40, "tablet link: with marks, the tablet's picture still shows the slide around them (not black)",
+                  $"picture {Hex(around)}, screen {Hex(onScreen)}");
 
             t.Send(Pad.Command, "undo");
             Thread.Sleep(500);
