@@ -34,6 +34,7 @@ enum SmokeTest {
     }
 
     static func run(_ c: AppController) {
+        print("     macOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
         let o = c.overlay
         check(o.isVisible, "the drawing layer is on screen")
         check(o.level.rawValue >= NSWindow.Level.statusBar.rawValue, "the drawing layer is above normal windows (level \(o.level.rawValue))")
@@ -42,7 +43,7 @@ enum SmokeTest {
         check(o.ignoresMouseEvents, "drawing off: clicks go through to the app below")
         let t = c.toolbar.panel
         check(t.isVisible, "the toolbar is on screen")
-        // a flag only: ScreenCaptureKit ignores it (mac/README.md), so the live capture check below is the real one
+        // a flag only (whether a capture honours it depends on the macOS version): the live capture below is the real check
         check(t.sharingType == .none, "flag check: the toolbar's sharingType is .none (asks to be left out of screen capture)")
         check(t.level.rawValue > o.level.rawValue, "the toolbar is above the drawing layer")
         check(t.styleMask.contains(.nonactivatingPanel) && !t.canBecomeKey, "the toolbar never takes the keyboard")
@@ -83,6 +84,15 @@ enum SmokeTest {
         check(p3 == nil, "on a P3 display the red ink is the swatch's sRGB red \(Settings.colors[0]) (\(p3 ?? "it is"))")
         let empty = pixel(c.ink, 0.8, 0.2)
         check(empty.map { $0.alphaComponent < 0.05 } ?? false, "the rest of the layer is see-through")
+
+        // a live stroke (not ended yet) is drawn by its own path: the same sRGB colour on a P3 display
+        c.setColor(2)   // green #34C759: far from sRGB's corner, so device RGB would shift it plainly
+        send(PadProtocol.strokeBegin(x: 0.7, y: 0.2))
+        send(PadProtocol.strokePoints([(x: 0.9, y: 0.2)]))
+        let liveP3 = inkOnP3(c.ink, 0.8, 0.2, Settings.colors[2])
+        check(liveP3 == nil, "on a P3 display a live stroke is the swatch's sRGB green \(Settings.colors[2]) (\(liveP3 ?? "it is"))")
+        send(PadProtocol.strokeCancel())
+        c.setColor(0)
 
         // a stroke being drawn redraws only its own part of the layer, never the finished marks
         let drawnBefore = c.ink.marksDrawn
@@ -143,7 +153,7 @@ enum SmokeTest {
     }
 
     /// The tablet's picture, taken for real by ScreenGrabber (ScreenCaptureKit, the toolbar's windows left out by
-    /// number, as the tablet link does). sharingType .none alone isn't relied on (ScreenCaptureKit may ignore it), so
+    /// number, as the tablet link does). sharingType .none alone isn't relied on (honoured or not by macOS version), so
     /// for these captures the toolbar is made capturable: the capture leaving nothing out must show it (the check can
     /// fail), the tablet's capture must not. What .none alone does is logged. The pictures are kept as
     /// smoke-capture-*.jpg. Without Screen Recording permission this says so and checks nothing more.

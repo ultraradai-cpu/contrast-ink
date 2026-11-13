@@ -185,22 +185,52 @@ final class PadPCTests: XCTestCase {
             let c = PadPC.newCode()
             XCTAssertTrue(PadProtocol.isCode(c), c)
         }
-        XCTAssertEqual(PadPC.usableAddresses([("lo0", "127.0.0.1"), ("en0", "192.168.1.20"), ("en0", "fe80::1"),
-                                              ("en5", "169.254.3.3"), ("en1", "192.168.1.20"), ("bridge100", "10.0.0.1")]),
-                       ["192.168.1.20", "10.0.0.1"])
+        typealias I = PadPC.Interface
+        XCTAssertEqual(PadPC.padAddresses([I("lo0", "127.0.0.1"), I("en0", "192.168.1.20", wifi: true), I("en0", "fe80::1"),
+                                           I("en5", "169.254.3.3"), I("en1", "192.168.1.20"), I("bridge100", "10.0.0.1")]),
+                       [PadAddress(address: "192.168.1.20", kind: .wifi), PadAddress(address: "10.0.0.1", kind: .internetSharing)])
     }
 
     /// Internet Sharing on: the Mac is 192.168.2.1 on bridge100, and a tablet on that shared Wi-Fi needs that address.
     func testAddressListKeepsInternetSharingsBridge() {
-        let all = PadPC.usableAddresses([("lo0", "127.0.0.1"), ("en0", "10.20.30.40"), ("bridge100", "192.168.2.1"),
-                                         ("bridge100", "fe80::1"), ("awdl0", "169.254.9.9")])
-        XCTAssertEqual(all, ["10.20.30.40", "192.168.2.1"])
-        XCTAssertEqual(PadPC.addressLine(all, port: PadProtocol.defaultPort), "Or type the address 10.20.30.40 or 192.168.2.1.")
-        XCTAssertEqual(PadPC.addressLine(all, port: 47900), "Or type the address 10.20.30.40:47900 or 192.168.2.1:47900.")
-        XCTAssertEqual(PadPC.addressLine(["192.168.2.1"], port: 0), "Or type the address 192.168.2.1.")
+        typealias I = PadPC.Interface
+        let all = PadPC.padAddresses([I("lo0", "127.0.0.1"), I("en0", "10.20.30.40", wifi: true), I("bridge100", "192.168.2.1"),
+                                      I("bridge100", "fe80::1"), I("awdl0", "169.254.9.9")])
+        XCTAssertEqual(all, [PadAddress(address: "10.20.30.40", kind: .wifi), PadAddress(address: "192.168.2.1", kind: .internetSharing)])
+        XCTAssertEqual(PadPC.addressLine(all, port: PadProtocol.defaultPort),
+                       "Or type the address 10.20.30.40 (Wi-Fi) or 192.168.2.1 (Internet Sharing).")
+        XCTAssertEqual(PadPC.addressLine(all, port: 47900),
+                       "Or type the address 10.20.30.40:47900 (Wi-Fi) or 192.168.2.1:47900 (Internet Sharing).")
+        XCTAssertEqual(PadPC.addressLine([PadAddress(address: "192.168.2.1", kind: .internetSharing)], port: 0),
+                       "Or type the address 192.168.2.1 (Internet Sharing).")
         XCTAssertNil(PadPC.addressLine([], port: 0))
-        // only Internet Sharing's network: still listed
-        XCTAssertEqual(PadPC.usableAddresses([("bridge100", "192.168.2.1")]), ["192.168.2.1"])
-        XCTAssertEqual(MacTexts.noSharedWifi, "No shared Wi-Fi? Turn on Internet Sharing to Wi-Fi, or use a phone hotspot or the USB cable.")
+        XCTAssertEqual(PadPC.padAddresses([I("bridge100", "192.168.2.1")]), [PadAddress(address: "192.168.2.1", kind: .internetSharing)])
+        XCTAssertEqual(MacTexts.noSharedWifi,
+                       "No shared Wi-Fi? Internet Sharing needs Ethernet or iPhone USB as its source; otherwise use a phone hotspot or the USB cable.")
+    }
+
+    /// Only addresses a tablet can reach: no VPN tunnel, no AirDrop link, no virtual machine's network, nothing down.
+    func testAddressListLeavesOutUnreachableInterfaces() {
+        typealias I = PadPC.Interface
+        let all = PadPC.padAddresses([
+            I("utun3", "100.64.0.7"),                       // a VPN (Tailscale, a company VPN)
+            I("utun0", "10.8.0.2"),
+            I("awdl0", "169.254.1.1"), I("llw0", "169.254.1.2"),
+            I("bridge101", "192.168.64.1"),                 // UTM / Apple Virtualization (vmnet)
+            I("bridge102", "10.211.55.2"),                  // Parallels' shared network
+            I("vnic0", "10.211.55.3"), I("vmnet8", "172.16.5.1"), I("vboxnet0", "192.168.56.1"),
+            I("docker0", "172.17.0.1"),
+            I("en7", "192.168.0.50", running: false),      // an Ethernet adapter with no cable
+            I("en8", "192.168.9.9", up: false),
+            I("en1", "192.168.1.30"),                       // Ethernet
+            I("en0", "10.1.2.3", wifi: true),               // Wi-Fi
+            I("bridge100", "192.168.2.1"),                  // Internet Sharing
+            I("en10", "172.20.10.2"),                       // iPhone USB
+        ])
+        XCTAssertEqual(all, [PadAddress(address: "192.168.1.30", kind: .ethernet), PadAddress(address: "10.1.2.3", kind: .wifi),
+                             PadAddress(address: "192.168.2.1", kind: .internetSharing), PadAddress(address: "172.20.10.2", kind: .ethernet)])
+        XCTAssertFalse(PadPC.numbered("enx", "en"))
+        XCTAssertFalse(PadPC.numbered("en", "en"))
+        XCTAssertTrue(PadPC.numbered("bridge100", "bridge"))
     }
 }

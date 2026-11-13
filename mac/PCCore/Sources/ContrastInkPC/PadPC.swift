@@ -143,26 +143,50 @@ public enum PadPC {
         return String(format: "%06d", n)
     }
 
-    /// The pad panel's line with every usable address (Wi-Fi, Ethernet, and bridge100 when Internet Sharing is on: the
-    /// tablet may be on any of them), with the port when it isn't the usual one. Nil when there is none.
-    public static func addressLine(_ addresses: [String], port: UInt16) -> String? {
+    /// The pad panel's line: every address a tablet can reach, each with its network ("Wi-Fi", "Ethernet",
+    /// "Internet Sharing"), with the port when it isn't the usual one. Nil when there is none.
+    public static func addressLine(_ addresses: [PadAddress], port: UInt16) -> String? {
         guard !addresses.isEmpty else { return nil }
         let suffix = port != 0 && port != PadProtocol.defaultPort ? ":\(port)" : ""
-        let all = addresses.map { $0 + suffix }
+        let all = addresses.map { "\($0.address)\(suffix) (\($0.kind.rawValue))" }
         let list = all.count == 1 ? all[0] : all.dropLast().joined(separator: ", ") + " or " + all.last!
         return "Or type the address \(list)."
     }
 
-    /// The Mac's addresses a tablet can be given by hand, from interface names and addresses (IPv4, not loopback,
-    /// not self-assigned 169.254).
-    public static func usableAddresses(_ all: [(interface: String, address: String)]) -> [String] {
-        var seen = Set<String>()
-        return all.compactMap { a in
-            let s = a.address
-            guard s.contains("."), !s.hasPrefix("127."), !s.hasPrefix("169.254."), !a.interface.hasPrefix("lo"),
-                  seen.insert(s).inserted else { return nil }
-            return s
+    /// One of the Mac's network interfaces with an address, as getifaddrs and SystemConfiguration describe it.
+    public struct Interface: Equatable, Sendable {
+        public var name: String, address: String, up: Bool, running: Bool, wifi: Bool
+        public init(_ name: String, _ address: String, up: Bool = true, running: Bool = true, wifi: Bool = false) {
+            self.name = name; self.address = address; self.up = up; self.running = running; self.wifi = wifi
         }
+    }
+
+    /// Subnets of virtual machines' own bridges (UTM / Apple Virtualization's vmnet, Parallels): not where a tablet is.
+    static let vmSubnets = ["192.168.64.", "10.211.55.", "10.37.129."]
+
+    /// The addresses a tablet can be given by hand: IPv4 on a network interface (en*: Wi-Fi, Ethernet, iPhone USB)
+    /// or Internet Sharing's bridge (bridge*), up and running. Left out: loopback, self-assigned 169.254, VPN
+    /// tunnels (utun), AirDrop's awdl/llw, and virtual machines' bridges and adapters (vmnet, vnic, a VM subnet).
+    public static func padAddresses(_ all: [Interface]) -> [PadAddress] {
+        var seen = Set<String>()
+        return all.compactMap { i in
+            let a = i.address
+            guard i.up, i.running, a.contains("."), !a.contains(":"), !a.hasPrefix("127."), !a.hasPrefix("169.254."),
+                  !seen.contains(a) else { return nil }
+            let kind: PadAddress.Kind
+            if Self.numbered(i.name, "en") { kind = i.wifi ? .wifi : .ethernet }
+            else if Self.numbered(i.name, "bridge"), !vmSubnets.contains(where: { a.hasPrefix($0) }) { kind = .internetSharing }
+            else { return nil }
+            seen.insert(a)
+            return PadAddress(address: a, kind: kind)
+        }
+    }
+
+    /// "en0", "bridge100": the prefix followed by digits only.
+    static func numbered(_ name: String, _ prefix: String) -> Bool {
+        guard name.hasPrefix(prefix) else { return false }
+        let rest = name.dropFirst(prefix.count)
+        return !rest.isEmpty && rest.allSatisfy(\.isNumber)
     }
 
     // MARK: bytes
@@ -346,4 +370,12 @@ struct FlatJSON: Decodable {
         guard let d = numbers[key], d.isFinite, d.rounded() == d, abs(d) < 1e9 else { return nil }
         return Int(d)
     }
+}
+
+/// An address of this Mac a tablet can connect to, and the network it is on.
+public struct PadAddress: Equatable, Sendable {
+    public enum Kind: String, Sendable { case wifi = "Wi-Fi", ethernet = "Ethernet", internetSharing = "Internet Sharing" }
+    public var address: String
+    public var kind: Kind
+    public init(address: String, kind: Kind) { self.address = address; self.kind = kind }
 }

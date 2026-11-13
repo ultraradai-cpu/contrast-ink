@@ -20,7 +20,13 @@ concurrency:
 
 jobs:
   mac:
-    runs-on: macos-15
+    name: Mac (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # 15: the full check and the zip; 14: the app's smoke test there too (ScreenCaptureKit differs by version)
+        os: [macos-15, macos-14]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     defaults:
       run:
@@ -53,6 +59,7 @@ jobs:
         run: |
           # GitHub's Macs allow Screen Recording: the smoke test captures the screen as the tablet does (ScreenCaptureKit)
           # and checks the toolbar is left out. Where it isn't allowed, the log says "LIVE CAPTURE NOT TESTED".
+          sw_vers
           app=build/Build/Products/Release/ContrastInk.app/Contents/MacOS/ContrastInk
           "$app" --smoke-test > smoke.log 2>&1 &
           pid=$!
@@ -65,29 +72,47 @@ jobs:
           cat smoke.log
           test $code -eq 0
           grep -q "SMOKE OK" smoke.log
+          # the toolbar left out of the tablet's picture is only proven by a live capture: none is a failure
+          if grep -q "LIVE CAPTURE NOT TESTED" smoke.log; then echo "::error::the live capture check didn't run"; exit 1; fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: mac-smoke-captures
+          name: mac-smoke-captures-${{ matrix.os }}
           path: mac/smoke-capture-*.jpg
           if-no-files-found: ignore
       - name: Zip ContrastInk-Mac.zip
+        if: matrix.os == 'macos-15'
         run: |
           cd build/Build/Products/Release
           ditto -c -k --sequesterRsrc --keepParent ContrastInk.app "$GITHUB_WORKSPACE/mac/ContrastInk-Mac.zip"
           ls -la "$GITHUB_WORKSPACE/mac/ContrastInk-Mac.zip"
       - uses: actions/upload-artifact@v4
+        if: matrix.os == 'macos-15'
         with:
           name: ContrastInk-Mac
           path: mac/ContrastInk-Mac.zip
-      - name: Update the mac-latest release (main only)
-        if: github.ref == 'refs/heads/main'
+
+  # The release is its own job: only after every Mac job (15 and 14) passed, on main.
+  release:
+    name: Update the mac-latest release (main only)
+    needs: mac
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ContrastInk-Mac
+      - name: Update the mac-latest release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # an older build that finished late: main has a newer commit, whose own run publishes it
-          tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha || true)
-          if ! sh ci/still-tip.sh "$GITHUB_SHA" "$tip"; then exit 0; fi
+          # an older build that finished late: main has a newer commit, whose own run publishes it. A failed lookup
+          # fails the job (it is not taken for "not the tip")
+          if ! tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha) || [ -z "$tip" ]; then
+            echo "::error::couldn't look up main's tip: not publishing"; exit 1
+          fi
+          if ! sh mac/ci/still-tip.sh "$GITHUB_SHA" "$tip"; then echo "::notice::not main's tip: not published"; exit 0; fi
           notes="Built from ${GITHUB_SHA::7}, passed the rules' tests and the start-up check. Unsigned: unzip it, then right-click ContrastInk.app → Open the first time (see mac/README.md)."
           if gh release view mac-latest >/dev/null 2>&1; then
             git tag -f mac-latest "$GITHUB_SHA" && git push -f origin refs/tags/mac-latest

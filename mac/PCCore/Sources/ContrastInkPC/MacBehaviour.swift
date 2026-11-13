@@ -150,7 +150,7 @@ public enum MacTexts {
     /// Without Screen Recording, macOS 14 and later give no picture at all (13 gives the desktop picture only).
     public static let screenRecordingMissing = "Screen Recording: not allowed yet (the tablet then shows no picture of the screen)."
     /// Under the pad's addresses while no tablet is connected: networks that keep devices apart (hospital Wi-Fi).
-    public static let noSharedWifi = "No shared Wi-Fi? Turn on Internet Sharing to Wi-Fi, or use a phone hotspot or the USB cable."
+    public static let noSharedWifi = "No shared Wi-Fi? Internet Sharing needs Ethernet or iPhone USB as its source; otherwise use a phone hotspot or the USB cable."
     public static let screenRecordingForTablet = "The tablet's picture of the screen needs Screen Recording: System Settings → Privacy & Security → Screen Recording → Contrast Ink, then quit and reopen it. Until then the tablet shows no picture."
 }
 

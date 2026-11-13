@@ -254,20 +254,30 @@ final class PadHost {
         return p.terminationStatus == 0 ? String(decoding: data, as: UTF8.self) : nil
     }
 
-    /// This Mac's IPv4 addresses on its networks, for typing into a tablet when the network hides names.
-    static func addresses() -> [String] {
-        var list: [(String, String)] = []
+    /// This Mac's addresses a tablet can reach (Wi-Fi, Ethernet, Internet Sharing; see PadPC.padAddresses), for
+    /// typing into a tablet when the network hides names.
+    static func addresses() -> [PadAddress] {
+        // which interfaces are Wi-Fi (en0 is Wi-Fi on a MacBook, Ethernet on many desktop Macs)
+        var wifi = Set<String>()
+        if let all = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] {
+            for i in all where SCNetworkInterfaceGetInterfaceType(i) == kSCNetworkInterfaceTypeIEEE80211 {
+                if let bsd = SCNetworkInterfaceGetBSDName(i) { wifi.insert(bsd as String) }
+            }
+        }
+        var list: [PadPC.Interface] = []
         var ifap: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifap) == 0, let first = ifap else { return [] }
         defer { freeifaddrs(ifap) }
         for p in sequence(first: first, next: { $0.pointee.ifa_next }) {
-            guard let a = p.pointee.ifa_addr, a.pointee.sa_family == UInt8(AF_INET),
-                  p.pointee.ifa_flags & UInt32(IFF_UP) != 0 else { continue }
+            guard let a = p.pointee.ifa_addr, a.pointee.sa_family == UInt8(AF_INET) else { continue }
             var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
             if getnameinfo(a, socklen_t(a.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
-                list.append((String(cString: p.pointee.ifa_name), String(cString: host)))
+                let name = String(cString: p.pointee.ifa_name)
+                let flags = p.pointee.ifa_flags
+                list.append(PadPC.Interface(name, String(cString: host), up: flags & UInt32(IFF_UP) != 0,
+                                            running: flags & UInt32(IFF_RUNNING) != 0, wifi: wifi.contains(name)))
             }
         }
-        return PadPC.usableAddresses(list.map { (interface: $0.0, address: $0.1) })
+        return PadPC.padAddresses(list)
     }
 }
