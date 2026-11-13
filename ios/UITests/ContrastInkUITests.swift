@@ -320,7 +320,7 @@ final class ContrastInkUITests: XCTestCase {
     func testExpiryWarning() {
         app.launchArguments = ["-expiresIn", "7200"]
         app.launch()
-        let warning = app.descendants(matching: .any)["expiryWarning"]
+        let warning = app.staticTexts["expiryWarning"]
         XCTAssertTrue(warning.waitForExistence(timeout: 10), "warned on the home screen")
         XCTAssertTrue(warning.label.contains("in 2 hours"), warning.label)
         shot("E1 the copy expires soon")
@@ -328,7 +328,7 @@ final class ContrastInkUITests: XCTestCase {
         app.launchArguments = ["-expiresIn", "\(5 * 24 * 3600)"]
         app.launch()
         XCTAssertTrue(app.buttons["Open slides (PDF)"].waitForExistence(timeout: 10))
-        XCTAssertFalse(app.descendants(matching: .any)["expiryWarning"].exists, "not days ahead")
+        XCTAssertFalse(app.staticTexts["expiryWarning"].exists, "not days ahead")
     }
 
     // MARK: pad mode
