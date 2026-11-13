@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- The test package carries a stand-in "other app" for Contrast Ink to draw over. (Android's own Settings hides
-     every other app's overlay windows, to protect itself, so it can't be used for this.) -->
+     every other app's overlay windows, to protect itself, so it can't be used for this.) Its label, "Other app", is
+     what Android's app picker shows when the recording test chooses "A single app". -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <application>
+    <application android:label="Other app">
         <activity
             android:name="ink.contrast.OtherAppActivity"
             android:exported="true"

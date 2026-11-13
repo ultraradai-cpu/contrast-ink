@@ -190,7 +190,8 @@ class InkService : Service(), InkView.Host {
         runCatching { wm.updateViewLayout(bar, barParams) }
     }
 
-    private fun screenSize(): Pair<Int, Int> {
+    /** The screen's size in pixels, as it is turned now. */
+    fun screenSize(): Pair<Int, Int> {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             val b = wm.currentWindowMetrics.bounds
             return b.width() to b.height()
@@ -199,6 +200,20 @@ class InkService : Service(), InkView.Host {
         @Suppress("DEPRECATION") wm.defaultDisplay.getRealMetrics(m)
         return m.widthPixels to m.heightPixels
     }
+
+    /**
+     * The toolbar's rectangle on the screen, in pixels, or null when it isn't showing. The recorder looks there in the
+     * first video frames to tell a recording of the entire screen (the toolbar is in it) from one of a single app.
+     */
+    fun toolbarOnScreen(): android.graphics.Rect? {
+        if (!::bar.isInitialized || !bar.isAttachedToWindow || bar.width == 0) return null
+        val at = IntArray(2)
+        bar.getLocationOnScreen(at)
+        return android.graphics.Rect(at[0], at[1], at[0] + bar.width, at[1] + bar.height)
+    }
+
+    /** A message on the toolbar (from any thread). */
+    fun notice(text: String) = main.post { if (!destroyed && ::bar.isInitialized) bar.notice(text) }
 
     fun barMoved() { prefs().edit().putInt("barX", barParams.x).putInt("barY", barParams.y).apply() }
 
@@ -209,6 +224,8 @@ class InkService : Service(), InkView.Host {
     fun recordTapped() {
         if (recorder.active) { recorder.stop(saveToGallery = true); return }
         if (recorder.saving) { bar.notice("Still saving the last recording to the Gallery: one moment."); return }
+        // Android 14+ asks "A single app" or "Entire screen": say which one keeps the toolbar out, before it asks
+        if (recorder.clean) bar.notice("When Android asks, choose \"A single app\" and pick your slides app: the toolbar then stays out of the video.")
         // Android asks the presenter first, in its own window: a small invisible screen asks for us
         startActivity(Intent(this, RecordActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }

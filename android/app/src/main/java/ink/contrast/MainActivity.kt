@@ -79,8 +79,13 @@ class MainActivity : Activity() {
         col.addView(text(
             "• ✎ Off / On on the toolbar: drawing on or off. Off, every tap goes to the app below.\n" +
             "• Picking a tool switches drawing on.\n" +
-            "• Drag the toolbar by the blue Contrast mark. ‹ makes it small (do this while recording: the toolbar is in the video).\n" +
-            "• ⏺ records the whole screen with your voice. When Android asks, choose \"Entire screen\" (a single app would leave out your marks). " +
+            "• Drag the toolbar by the blue Contrast mark. ‹ makes it small.\n" +
+            (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+                "• ⏺ records with your voice. When Android asks, choose \"A single app\" and pick your slides app: the " +
+                    "video then has the app and your marks, without the toolbar. (\"Entire screen\" records the toolbar too.) "
+            else
+                "• ⏺ records the whole screen with your voice. When Android asks, choose \"Entire screen\". The toolbar is " +
+                    "in the video: make it small with ‹ while recording. ") +
             "Videos go to Movies/Contrast Ink in the Gallery.\n" +
             "• Quit from the toolbar (✕) or the notification.", 15f))
         setContentView(ScrollView(this).apply { setBackgroundColor(ink); addView(col) })

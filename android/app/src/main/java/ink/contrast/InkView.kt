@@ -256,9 +256,22 @@ class InkView(context: Context, private val host: Host) : View(context) {
 
     // ---------- drawing ----------
 
+    /**
+     * Called after every redraw of the layer (marks, the line being drawn, the laser). A recording of one app doesn't
+     * have this layer in it, so the recorder listens here and draws the marks into the video itself.
+     */
+    var onDrawn: (() -> Unit)? = null
+
     override fun onDraw(canvas: Canvas) {
         val now = SystemClock.uptimeMillis()
         tickFading(now)
+        paintMarks(canvas, now)
+        if (fading.keys.any { id -> marks.drawing.any { it.id == id } }) postInvalidateOnAnimation()
+        onDrawn?.invoke()
+    }
+
+    /** Paints what the layer shows now onto [canvas]: the screen's own drawing, or a copy of it for a video frame. */
+    fun paintMarks(canvas: Canvas, now: Long = SystemClock.uptimeMillis()) {
         for (m in marks.drawing) {
             val o = fading[m.id]?.let { Fade.opacity(now - it) } ?: 1f
             draw(canvas, m.points, m.color, m.width, m.highlighter, m.smooth, o)
@@ -269,7 +282,6 @@ class InkView(context: Context, private val host: Host) : View(context) {
         val b = shapeEnd
         if (a != null && b != null) draw(canvas, shapePoints(a, b, s), inkColor(s), width(s), false, false, 1f)
         drawLaser(canvas, now)
-        if (fading.keys.any { id -> marks.drawing.any { it.id == id } }) postInvalidateOnAnimation()
     }
 
     private fun liveWidth(s: Settings) =

@@ -14,6 +14,13 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import android.content.ContentUris
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.Rect
+import android.net.Uri
+import android.os.Build
+import ink.contrast.core.CleanRecording
+import org.junit.Assume.assumeTrue
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
@@ -176,29 +183,165 @@ class ContrastInkTest {
         press("Make the toolbar big")
     }
 
-    /** Android's "start recording?" question: the whole screen, then start (its wording differs between versions). */
-    private fun answerRecordingQuestion() {
-        val single = device.wait(Until.findObject(By.text(Pattern.compile("(?i)a single app|one app"))), 3000)
-        if (single != null) {
-            single.click()
-            device.wait(Until.findObject(By.text(Pattern.compile("(?i)entire screen|full screen"))), 3000)?.click()
+    // ---------- recording ----------
+
+    private val oneApp = Pattern.compile("(?i)(a )?single app|one app|(record|share) (a single|one) app")
+    private val entireScreen = Pattern.compile("(?i)(the )?(entire|full|whole) screen|(record|share) (the )?(entire|full|whole) screen")
+
+    /**
+     * Android's "start recording?" question (its wording differs between versions). Android 14+ asks "A single app" or
+     * "Entire screen" first; [singleApp] picks which, and for one app, the stand-in "Other app" in Android's app picker.
+     */
+    private fun answerRecordingQuestion(singleApp: Boolean, shotName: String) {
+        val want = if (singleApp) oneApp else entireScreen
+        val choice = device.wait(Until.findObject(By.text(Pattern.compile("${oneApp.pattern()}|${entireScreen.pattern().removePrefix("(?i)")}"))), 5000)
+        shot("$shotName a: Android asks")
+        if (singleApp) assertNotNull("Android offers \"A single app\" (Android 14+)", choice)
+        if (choice != null && !want.matcher(choice.text).matches()) {
+            choice.click()   // opens the list of the two
+            val option = device.wait(Until.findObject(By.text(want)), 3000)
+            assertNotNull("Android's list has \"${if (singleApp) "A single app" else "Entire screen"}\"", option)
+            option.click()
+            device.waitForIdle()
         }
-        val start = device.wait(Until.findObject(By.text(Pattern.compile("(?i)start( now| recording)?|next"))), 8000)
+        val start = device.wait(Until.findObject(By.text(Pattern.compile("(?i)start( now| recording)?|next|share screen|record( screen| app)?"))), 8000)
         assertNotNull("Android asks before recording, with a Start button", start)
         start.click()
+        if (singleApp) { pickOtherApp(shotName); return }
         // some versions ask in two steps
         // (the question may close as it is found: then there was no second step)
         runCatching { device.wait(Until.findObject(By.text(Pattern.compile("(?i)start( now| recording)?"))), 1500)?.click() }
     }
 
+    /** Android's app picker (recent apps): the stand-in "Other app" (its label, or its package's name). */
+    private fun pickOtherApp(shotName: String) {
+        // "\b": not the stand-in's own text "A slide in another app", which may show behind the picker
+        val label = Pattern.compile("(?i).*\\b(other app|ink\\.contrast\\.test)\\b.*")
+        val app = device.wait(Until.findObject(By.desc(label)), 8000) ?: device.findObject(By.text(label))
+        shot("$shotName b: Android's app picker")
+        if (app == null) runCatching { device.dumpWindowHierarchy(File(shots, "$shotName b: app picker.xml")) }
+        assertNotNull("Android's app picker lists the stand-in \"Other app\"", app)
+        app!!.click()
+    }
+
+    /** Waits for "Saved to the Gallery", and finds that video in the Gallery. */
+    private fun savedVideo(shotName: String): Pair<String, Uri> {
+        val saved = device.wait(Until.findObject(By.desc(Pattern.compile("Saved to the Gallery: .*"))), 30000)
+        shot(shotName)
+        assertNotNull("the video is saved to the Gallery (the toolbar says where)", saved)
+        val name = saved!!.contentDescription.toString().substringAfterLast('/')
+        val uri = ctx.contentResolver.query(MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+            arrayOf(MediaStore.Video.Media._ID), "${MediaStore.Video.Media.DISPLAY_NAME} = ?", arrayOf(name), null)!!.use {
+            assertTrue("\"$name\" is in the Gallery", it.moveToFirst())
+            ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, it.getLong(0))
+        }
+        return name to uri
+    }
+
+    /** The video's last frame (after everything was drawn), saved as [shotName].png for a person to look at. */
+    private fun lastFrame(uri: Uri, shotName: String): Bitmap {
+        val lastUs = MediaExtractor().run {
+            setDataSource(ctx, uri, null)
+            val video = (0 until trackCount).first { getTrackFormat(it).getString(MediaFormat.KEY_MIME)!!.startsWith("video/") }
+            selectTrack(video)
+            var last = 0L
+            while (sampleTrackIndex >= 0) { last = maxOf(last, sampleTime); advance() }
+            release(); last
+        }
+        val frame = MediaMetadataRetriever().run {
+            setDataSource(ctx, uri)
+            val f = getFrameAtTime(lastUs, MediaMetadataRetriever.OPTION_CLOSEST)
+            release(); f
+        }
+        assertNotNull("a frame from the video at ${lastUs / 1000} ms", frame)
+        File(shots, "$shotName.png").outputStream().use { frame!!.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        return frame!!
+    }
+
+    private fun screen(): Pair<Int, Int> {
+        var s = 0 to 0
+        inst.runOnMainSync { s = InkService.running!!.screenSize() }
+        return s
+    }
+
+    private fun toolbarOnScreen(): Rect {
+        var r: Rect? = null
+        inst.runOnMainSync { r = InkService.running?.toolbarOnScreen() }
+        assertNotNull("the toolbar's place on the screen", r)
+        return r!!
+    }
+
+    /** A point on the screen, as fractions of the screen as [drag] takes them, in the frame's pixels. */
+    private fun inFrame(frame: Bitmap, fx: Float, fy: Float): Pair<Float, Float> {
+        val (sw, sh) = screen()
+        val box = CleanRecording.fit(sw, sh, frame.width, frame.height)
+        val s = box.width / sw
+        return (box.left + fx * device.displayWidth * s) to (box.top + fy * device.displayHeight * s)
+    }
+
+    /** Whether there is a red pixel (the pen's red, give or take video compression) within [r] pixels of a point. */
+    private fun redNear(frame: Bitmap, x: Float, y: Float, r: Int = 16): Boolean {
+        for (dy in -r..r) for (dx in -r..r) {
+            val px = x.toInt() + dx
+            val py = y.toInt() + dy
+            if (px !in 0 until frame.width || py !in 0 until frame.height) continue
+            val c = frame.getPixel(px, py)
+            if (Color.red(c) > 170 && Color.green(c) < 110 && Color.blue(c) < 110) return true
+        }
+        return false
+    }
+
+    /** The share of the toolbar's rectangle (its rounded corners left out) in the frame that is the toolbar's colour. */
+    private fun toolbarShare(frame: Bitmap, bar: Rect): Float {
+        val (sw, sh) = screen()
+        val box = CleanRecording.fit(sw, sh, frame.width, frame.height)
+        val s = box.width / sw
+        val left = (box.left + (bar.left + bar.width() * 0.15f) * s).toInt().coerceIn(0, frame.width)
+        val right = (box.left + (bar.right - bar.width() * 0.15f) * s).toInt().coerceIn(0, frame.width)
+        val top = (box.top + (bar.top + bar.height() * 0.15f) * s).toInt().coerceIn(0, frame.height)
+        val bottom = (box.top + (bar.bottom - bar.height() * 0.15f) * s).toInt().coerceIn(0, frame.height)
+        if (right <= left || bottom <= top) return 0f
+        val pixels = IntArray((right - left) * (bottom - top))
+        frame.getPixels(pixels, 0, right - left, left, top, right - left, bottom - top)
+        return CleanRecording.share(pixels, TOOLBAR_COLOR)
+    }
+
+    /** The red line drawn by [drag] (0.15, 0.55) to (0.85, 0.65) is in the frame: checked at three points along it. */
+    private fun assertRedLine(frame: Bitmap, what: String) {
+        for (t in floatArrayOf(0.25f, 0.5f, 0.75f)) {
+            val (x, y) = inFrame(frame, 0.15f + 0.7f * t, 0.55f + 0.1f * t)
+            assertTrue("$what: the red line is in the video at (${x.toInt()}, ${y.toInt()}) of ${frame.width} x ${frame.height}", redNear(frame, x, y))
+        }
+    }
+
+    private fun waitForMode(m: CleanRecording.Mode): Boolean {
+        val until = System.currentTimeMillis() + 8000
+        while (System.currentTimeMillis() < until) {
+            if (recorder { it.mode == m }) return true
+            Thread.sleep(200)
+        }
+        return false
+    }
+
+    /** Red, thick pen, with drawing off (so the taps on Android's question and picker reach them). */
+    private fun redPen() {
+        press("Pen")
+        press("Red (1)")
+        press("Thick line")
+        if (drawing()) press("Draw on / off")
+    }
+
     @Test fun recordsPausesResumesAndSavesToTheGallery() {
         device.executeShellCommand("am start -W -n ${inst.context.packageName}/ink.contrast.OtherAppActivity")
         device.wait(Until.findObject(By.text("Not tapped")), 8000)
+        redPen()
 
         press("Record the screen")
-        answerRecordingQuestion()
+        answerRecordingQuestion(singleApp = false, shotName = "09")
         assertNotNull("recording: ⏹ replaces ⏺", device.wait(Until.findObject(By.desc("Stop recording")), 8000))
         assertTrue("recording", recorder { it.active })
+        if (Build.VERSION.SDK_INT >= 34)
+            assertTrue("Android 14+: the recorder sees the toolbar in the picture: the entire screen", waitForMode(CleanRecording.Mode.ENTIRE_SCREEN))
         press("Draw on / off")
         drag(0.15f, 0.55f, 0.85f, 0.65f)
         Thread.sleep(1500)
@@ -211,18 +354,11 @@ class ContrastInkTest {
         assertTrue("resumed", recorder { it.active && !it.paused })
         drag(0.15f, 0.75f, 0.85f, 0.7f)
         Thread.sleep(1500)
+        val bar = toolbarOnScreen()
 
         press("Stop recording")
-        val saved = device.wait(Until.findObject(By.desc(Pattern.compile("Saved to the Gallery: .*"))), 30000)
-        shot("11 saved")
-        assertNotNull("the video is saved to the Gallery (the toolbar says where)", saved)
-        val name = saved!!.contentDescription.toString().substringAfterLast('/')
+        val (name, uri) = savedVideo("11 saved")
         // it is really there, complete, and plays for a few seconds
-        val uri = ctx.contentResolver.query(MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-            arrayOf(MediaStore.Video.Media._ID), "${MediaStore.Video.Media.DISPLAY_NAME} = ?", arrayOf(name), null)!!.use {
-            assertTrue("\"$name\" is in the Gallery", it.moveToFirst())
-            ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, it.getLong(0))
-        }
         val ms = MediaMetadataRetriever().run {
             setDataSource(ctx, uri)
             val d = extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLong() ?: 0
@@ -245,19 +381,67 @@ class ContrastInkTest {
             release(); info
         }
         ctx.contentResolver.openInputStream(uri)!!.use { input -> File(shots, "12 the recording.mp4").outputStream().use { input.copyTo(it) } }
+        // the entire screen: the marks and the toolbar are both in the picture
+        val frame = lastFrame(uri, "12b last frame of the entire-screen video")
         ctx.contentResolver.delete(uri, null, null)
+        assertRedLine(frame, "entire screen")
+        val share = toolbarShare(frame, bar)
+        assertTrue("entire screen: the toolbar is in the video (${(share * 100).toInt()}% of its box is its colour)", share > 0.3f)
         // as long as the toolbar's clock said (the pause is cut out), not the wall time
         // the toolbar's clock when it stopped (paused time left out). Not read by the test before pressing ⏹: each
         // step of the test waits for the screen to settle, and the ticking clock keeps it from settling for ~10 s.
         var timer = 0L
         inst.runOnMainSync { timer = InkService.running?.recorder?.lastLength ?: 0 }
-        assertTrue("the video ($ms ms: $tracks) is as long as the toolbar's clock said ($timer ms)",
+        assertTrue("the video \"$name\" ($ms ms: $tracks) is as long as the toolbar's clock said ($timer ms)",
             ms >= 1500 && Math.abs(ms - timer) <= 2500)
+    }
+
+    /**
+     * Android 14+: "A single app" (the stand-in other app) records that app without the toolbar, and the marks are
+     * drawn into the video by Contrast Ink. Checked in the saved video's last frame: the red line is there, the
+     * toolbar's rectangle has none of the toolbar's colour.
+     */
+    @Test fun recordsOneAppWithoutTheToolbar() {
+        assumeTrue("one app can be recorded from Android 14", Build.VERSION.SDK_INT >= 34)
+        device.executeShellCommand("am start -W -n ${inst.context.packageName}/ink.contrast.OtherAppActivity")
+        device.wait(Until.findObject(By.text("Not tapped")), 8000)
+        redPen()
+
+        press("Record the screen")
+        answerRecordingQuestion(singleApp = true, shotName = "20")
+        assertNotNull("recording: ⏹ replaces ⏺", device.wait(Until.findObject(By.desc("Stop recording")), 10000))
+        assertTrue("the recorder sees no toolbar in the picture: one app", waitForMode(CleanRecording.Mode.SINGLE_APP))
+        assertNotNull("the stand-in app is in front", device.wait(Until.findObject(By.text(Pattern.compile("Not tapped|Tapped"))), 4000))
+        press("Draw on / off")
+        drag(0.15f, 0.55f, 0.85f, 0.65f)
+        Thread.sleep(1500)
+        shot("21 recording one app, red line")
+        val bar = toolbarOnScreen()
+
+        press("Stop recording")
+        val (_, uri) = savedVideo("22 saved")
+        ctx.contentResolver.openInputStream(uri)!!.use { input -> File(shots, "23 the one-app recording.mp4").outputStream().use { input.copyTo(it) } }
+        val frame = lastFrame(uri, "23b last frame of the one-app video")
+        ctx.contentResolver.delete(uri, null, null)
+
+        // it is the stand-in app: its blue lower half
+        val (bx, by) = inFrame(frame, 0.5f, 0.9f)
+        val blue = frame.getPixel(bx.toInt(), by.toInt())
+        assertTrue("the video shows the stand-in app (its blue button), not ${Integer.toHexString(blue)}",
+            Color.blue(blue) > 150 && Color.red(blue) < 120)
+        assertRedLine(frame, "one app")
+        val share = toolbarShare(frame, bar)
+        assertTrue("one app: no toolbar in the video (${(share * 1000).toInt() / 10f}% of its box is its colour)", share < 0.02f)
     }
 
     private fun recorder(check: (ScreenRecorder) -> Boolean): Boolean {
         var ok = false
         inst.runOnMainSync { ok = InkService.running?.recorder?.let(check) == true }
         return ok
+    }
+
+    private companion object {
+        /** The toolbar's background (ToolbarView). */
+        const val TOOLBAR_COLOR = 0xFF141A22.toInt()
     }
 }

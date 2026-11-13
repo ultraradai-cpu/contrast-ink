@@ -44,10 +44,19 @@ it is at most 80% opaque.
 
 ## Record
 
-Press **⏺**. When Android asks, choose **Entire screen** (recording a single app would leave out your marks).
+Press **⏺**, then answer Android's "start recording?" question.
 
-- The video has the whole screen with your voice. **The toolbar is in it** (Android can't hide it the way
-  Windows does): make it small with ‹ and drag it to a corner.
+**Recording without the toolbar (Android 14 and later):** when Android asks, choose **A single app**, then pick
+your slides app (PowerPoint, the PDF viewer...). The video has that app and your marks (pen, shapes, laser), with
+your voice, and **no toolbar**. The toolbar says "Recording one app" once it has started. Keep the slides app in
+front while recording: if you switch to another app, the video doesn't show it.
+
+- **Entire screen** works too, but then the toolbar is in the video (the toolbar says so): make it small with ‹ and
+  drag it to a corner.
+- **Android 8 to 13** can only record the entire screen: **the toolbar is in the video** (Android can't leave one
+  window out of it). Make it small with ‹ and drag it to a corner.
+- With **A single app**, the marks are placed assuming the app fills the screen (how slides are shown). In split
+  screen, marks line up for the top or left app only.
 - **⏸ / ▶** pauses and resumes; **⏹** stops.
 - Videos go to **Movies/Contrast Ink** (Gallery, Files). A long lecture takes a little while to save: the toolbar
   says when it's there. Quitting while recording (✕, or Quit on the notification) stops and saves it first.
@@ -88,10 +97,19 @@ shows the connect screen. The PC check isn't asked over the cable, but a PC with
 
 - `core`: the rules (shapes, eraser hit test, fading, undo, settings), plain Kotlin: `./gradlew :core:test`.
 - `app`: the Android app (service with overlay windows, drawing view, toolbar, screen recording, pad mode).
+- Clean recording (Android 14+): `ScreenRecorder` sends what Android records through `VideoCompositor` (OpenGL ES 2:
+  VirtualDisplay → SurfaceTexture → the encoder's surface). When the presenter chose one app, the drawing layer is
+  copied into a bitmap (at most ~30 times a second, whenever it redraws) and blended over each frame. Android doesn't
+  say which choice was made: if the recorded content isn't the screen's size it is one app; otherwise the first
+  frames are looked at where the toolbar is (the entire screen has it there, one app never does). These rules and
+  where the marks go in the frame are in `core/.../CleanRecording.kt`, with tests.
 - `core/.../PadProtocol.kt`, `PadCrypto.kt`, `PadClient.kt`: the pad link's messages, its encryption (the platform's
   own P-256, HKDF and AES-GCM) and the tablet's handshake, checked byte for byte against the spec's test vectors.
 - `app/src/androidTest`: runs the app on an emulator over a stand-in app (Android's Settings hides other apps' overlays): a tap goes through with drawing
-  off, every tool draws, undo / clear / eraser, with a screenshot of every step. `PadTest` runs pad mode against a
+  off, every tool draws, undo / clear / eraser, with a screenshot of every step. Two recording tests: the entire
+  screen (the red line and the toolbar are both in the saved video's last frame) and, on Android 14+, "A single app"
+  with the stand-in picked in Android's app picker (the red line is in the frame, the toolbar's rectangle has none of
+  the toolbar's colour). The frames are saved next to the screenshots. `PadTest` runs pad mode against a
   stand-in PC inside the test that speaks version 2 (picture, strokes, commands, a reconnect, a lost connection, a
   wrong code, a PC whose key changed).
 - Every push that changes `android/` runs all of this on GitHub (`.github/workflows/android.yml`); on main the APK
