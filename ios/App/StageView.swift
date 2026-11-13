@@ -55,6 +55,9 @@ final class Stage: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate, UI
         canvas.showsVerticalScrollIndicator = false
         canvas.showsHorizontalScrollIndicator = false
         canvas.contentInsetAdjustmentBehavior = .never
+        // the canvas is a scroll view: on iPadOS 17 it would take Page Up / Page Down (a presenter clicker's keys)
+        // to scroll, and the slide wouldn't change
+        if #available(iOS 17.0, *) { canvas.allowsKeyboardScrolling = false }
         canvas.accessibilityIdentifier = "canvas"
         // PencilKit swaps black and white ink in dark mode: marks must look the same as in the recording and on the projector
         canvas.overrideUserInterfaceStyle = .light

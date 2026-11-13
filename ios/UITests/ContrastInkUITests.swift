@@ -124,7 +124,9 @@ final class ContrastInkUITests: XCTestCase {
         key(XCUIKeyboardKey.downArrow.rawValue); XCTAssertEqual(number.label, "2 / 2", "↓ next")
         key(XCUIKeyboardKey.pageUp.rawValue); XCTAssertEqual(number.label, "1 / 2", "Page Up previous")
         key(XCUIKeyboardKey.return.rawValue); XCTAssertEqual(number.label, "2 / 2", "Return next (a clicker)")
-        key(XCUIKeyboardKey.pageUp.rawValue)
+        key(XCUIKeyboardKey.leftArrow.rawValue); XCTAssertEqual(number.label, "1 / 2")
+        key(XCUIKeyboardKey.pageDown.rawValue); XCTAssertEqual(number.label, "2 / 2", "Page Down next (a clicker)")
+        key(XCUIKeyboardKey.leftArrow.rawValue); XCTAssertEqual(number.label, "1 / 2")
         shot("K0 keys changed the slides")
 
         for (k, name) in [("h", "Highlighter (H)"), ("a", "Arrow (A)"), ("o", "Circle (O)"), ("e", "Eraser (E)"),

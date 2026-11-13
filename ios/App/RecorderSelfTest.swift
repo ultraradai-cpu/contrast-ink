@@ -25,8 +25,12 @@ enum RecorderSelfTest {
         let p1 = CaptureSink.hostNow()
         sink.resume(at: p1)
         await feed(sink, seconds: 1, shade: 0.5)
+        // recording goes on until fragments are on disk (the writer writes them as new frames come; give a slow
+        // simulator up to 15 s more)
+        for _ in 0..<15 where sink.writtenBytes() == 0 { await feed(sink, seconds: 1, shade: 0.5) }
         let expected = CaptureSink.hostNow() - t0 - (p1 - p0)
-        try? await Task.sleep(nanoseconds: 1_500_000_000)     // the fragments reach the disk
+        let written = sink.writtenBytes()
+        guard written > 0 else { return "fail: nothing reached the disk while recording" }
 
         // what a crash would leave: the file as it is, never finished
         do { try FileManager.default.copyItem(at: url, to: cut) } catch { return "fail: no file while recording (\(error.localizedDescription))" }
