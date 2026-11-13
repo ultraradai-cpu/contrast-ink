@@ -77,8 +77,20 @@ jobs:
         with:
           name: ContrastInk-apk
           path: ContrastInk.apk
-      - name: Update the android-latest release (main only)
-        if: github.ref == 'refs/heads/main' && matrix.api == 35
+
+  # The release is its own job: it runs only when every emulator job (API 29, 34 and 35) passed, because "needs"
+  # waits for the whole matrix and fails if any of it failed, whatever fail-fast says.
+  release:
+    name: Update the android-latest release (main only)
+    needs: android
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ContrastInk-apk
+      - name: Update the android-latest release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

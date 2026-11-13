@@ -252,6 +252,41 @@ class PadTest {
 
     private fun shot(name: String) { device.takeScreenshot(File(shots, "$name.png")) }
 
+    /**
+     * The fake PC's picture really is on the tablet's screen, not only acknowledged (FRAME_ACK): a screenshot, sampled
+     * where the picture should be. The PC's slide is white with a black square in the middle (600..1000 x 250..650
+     * of 1600 x 900): the middle must be dark, four points of the white around it must be white. Kept as [name].png.
+     */
+    private fun assertPcPictureOnScreen(name: String) {
+        device.waitForIdle()
+        var r = RectF()
+        val activity = padActivity()
+        val until = System.currentTimeMillis() + 4000
+        while (System.currentTimeMillis() < until) {
+            inst.runOnMainSync { r = activity.pad.pictureOnScreen() }
+            if (r.width() > 0 && r.height() > 0) break
+            Thread.sleep(100)
+        }
+        val taken = inst.uiAutomation.takeScreenshot()
+        assertNotNull("a screenshot of the pad", taken)
+        val screen = taken!!.copy(Bitmap.Config.ARGB_8888, false)
+        File(shots, "$name.png").outputStream().use { screen.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        fun px(fx: Float, fy: Float): Int {
+            val x = (r.left + fx * r.width()).toInt().coerceIn(0, screen.width - 1)
+            val y = (r.top + fy * r.height()).toInt().coerceIn(0, screen.height - 1)
+            return screen.getPixel(x, y)
+        }
+        fun hex(c: Int) = String.format("#%06X", c and 0xFFFFFF)
+        val middle = px(0.5f, 0.5f)
+        assertTrue("the PC's black square shows in the middle of its picture on the tablet ($r): ${hex(middle)}",
+            Color.red(middle) < 60 && Color.green(middle) < 60 && Color.blue(middle) < 60)
+        for ((fx, fy) in listOf(0.15f to 0.5f, 0.85f to 0.5f, 0.5f to 0.12f, 0.5f to 0.88f)) {
+            val c = px(fx, fy)
+            assertTrue("the PC's white slide shows on the tablet at ($fx, $fy) of its picture ($r): ${hex(c)}",
+                Color.red(c) > 200 && Color.green(c) > 200 && Color.blue(c) > 200)
+        }
+    }
+
     private fun openPad(code: String) {
         ctx.startActivity(Intent(ctx, PadActivity::class.java)
             .putExtra(PadActivity.EXTRA_ADDRESS, "127.0.0.1:${pc.server.localPort}")
@@ -281,6 +316,19 @@ class PadTest {
         b.click()
     }
 
+    /**
+     * No PC in the list (the emulator's network has none): after about 8 s the connect screen says why that often
+     * happens (hospital Wi-Fi keeping devices apart) and what to do instead. Not before.
+     */
+    @Test fun saysToTryAHotspotWhenNoPcIsFound() {
+        openPadEmpty()
+        assertNotNull("the connect screen", device.wait(Until.findObject(By.text("PCs on this network")), 8000))
+        assertNull("no hint while it has only just started looking", device.findObject(By.text(PadActivity.HOTSPOT_HINT)))
+        val hint = device.wait(Until.findObject(By.text(PadActivity.HOTSPOT_HINT)), (PadActivity.NO_PC_HINT_MS + 6000))
+        shot("18 no PC found, the hotspot hint")
+        assertNotNull("with no PC found for ${PadActivity.NO_PC_HINT_MS / 1000} s, the hotspot hint shows", hint)
+    }
+
     @Test fun drawsOnThePcsPictureAndSendsCommands() {
         openPad("123456")
         val hello = pc.next(PadProtocol.HELLO)
@@ -296,6 +344,7 @@ class PadTest {
         assertNotNull("the tablet acknowledges the picture once it is on screen (FRAME_ACK)", pc.next(PadProtocol.FRAME_ACK))
         assertNotNull("the toolbar shows", device.wait(Until.findObject(By.desc("Undo")), 4000))
         assertNotNull("the PC's name shows", device.wait(Until.findObject(By.text("TEST-PC")), 4000))
+        assertPcPictureOnScreen("20a the PC's picture, as pixels")
         assertArrayEquals("the PC's key is remembered under its name", FakePc.VECTOR_PC_KEY,
             Base64.getDecoder().decode(prefs.getString(PadActivity.PIN_PREFIX + "TEST-PC", "")))
         assertNull("the code is never saved", prefs.getString("pad.code", null))

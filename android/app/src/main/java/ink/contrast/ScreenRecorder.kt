@@ -208,7 +208,7 @@ class ScreenRecorder(private val service: InkService) {
         pausedTotal = 0
         paused = false
         ticker.run()
-        main.postDelayed(spaceCheck, SPACE_CHECK_MS)
+        main.postDelayed(spaceCheck, spaceCheckMs)
         // Android 14+: said with what is recorded, once that is known (modeFound), so one message doesn't hide the other
         val news = listOfNotNull(
             if (space == Recording.Space.LOW) lowSpace().also { lowSpaceSaid = true } else null,
@@ -337,12 +337,12 @@ class ScreenRecorder(private val service: InkService) {
         override fun run() {
             if (!active) return
             checkSpace()
-            if (active) main.postDelayed(this, SPACE_CHECK_MS)
+            if (active) main.postDelayed(this, spaceCheckMs)
         }
     }
 
-    /** Checks the free space now (the minute's check; the app's test calls it directly). */
-    fun checkSpace() {
+    /** Checks the free space now (the minute's check). */
+    private fun checkSpace() {
         val dir = folder ?: return
         if (!active) return
         when (Recording.space(freeBytes(dir))) {
@@ -568,6 +568,9 @@ class ScreenRecorder(private val service: InkService) {
         private const val TAG = "ContrastInk"
         const val NO_SOUND = "Recording without sound: allow the microphone in Contrast Ink's settings screen."
         const val SPACE_CHECK_MS = 60_000L
+        /** TEST ONLY: how often the free space is checked (the app's test waits for the scheduled check, not a minute). */
+        @Volatile var spaceCheckMsForTest: Long? = null
+        private val spaceCheckMs get() = spaceCheckMsForTest ?: SPACE_CHECK_MS
         /** TEST ONLY: Android's picture reaches the compositor this much later (a slow first frame). */
         @Volatile var displayDelayForTest = 0L
         /** TEST ONLY: a small size limit, so the app's test sees a recording go on in a second part. */
