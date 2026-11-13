@@ -186,8 +186,7 @@ final class ContrastInkUITests: XCTestCase {
         app.buttons["Close slides"].tap()
         XCTAssertTrue(app.buttons["Open slides (PDF)"].waitForExistence(timeout: 5), "no marks: closed at once")
 
-        app.terminate()
-        launchSample()
+        launchSample()   // launching again ends the running one
         drag(CGVector(dx: 0.15, dy: 0.40), CGVector(dx: 0.8, dy: 0.70))
         expectMarks(1, "a line")
         app.buttons["Close slides"].tap()

@@ -25,17 +25,20 @@ enum RecorderSelfTest {
         let p1 = CaptureSink.hostNow()
         sink.resume(at: p1)
         await feed(sink, seconds: 1, shade: 0.5)
-        // recording goes on until fragments are on disk (the writer writes them as new frames come; give a slow
-        // simulator up to 15 s more)
-        for _ in 0..<15 where sink.writtenBytes() == 0 { await feed(sink, seconds: 1, shade: 0.5) }
+        // what a crash would leave: the file as it is, never finished. Recording goes on (fragments are written as
+        // new frames come) until a copy plays; a slow simulator gets up to 20 s more.
+        var early = (count: 0, duration: 0.0, note: "nothing on disk")
+        var bytes = 0
+        for _ in 0..<20 {
+            await feed(sink, seconds: 1, shade: 0.5)
+            bytes = Int(sink.writtenBytes())
+            guard bytes > 4096 else { continue }
+            try? FileManager.default.removeItem(at: cut)
+            do { try FileManager.default.copyItem(at: url, to: cut) } catch { return "fail: no file while recording (\(error.localizedDescription))" }
+            early = await frames(cut)
+            if early.count > 0 { break }
+        }
         let expected = CaptureSink.hostNow() - t0 - (p1 - p0)
-        let written = sink.writtenBytes()
-        guard written > 0 else { return "fail: nothing reached the disk while recording" }
-
-        // what a crash would leave: the file as it is, never finished
-        do { try FileManager.default.copyItem(at: url, to: cut) } catch { return "fail: no file while recording (\(error.localizedDescription))" }
-        let early = await frames(cut)
-        let bytes = (try? cut.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
         guard early.count > 0 else { return "fail: the unfinished file (\(bytes) bytes) doesn't play (\(early.note))" }
 
         guard let result = await sink.finish() else { return "fail: nothing was written" }
