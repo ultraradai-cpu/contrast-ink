@@ -44,6 +44,8 @@ jobs:
             xcrun xcresulttool export attachments --path results.xcresult --output-path shots || true
           fi
           ls -la shots
+          # a skipped test is not a pass: say so on the run's page
+          [ -f test.log ] && grep -E "Test skipped - " test.log | sed -E 's/^.*(-\[[^]]*\]).*Test skipped - (.*)$/\1: \2/' | sort -u | while read -r line; do echo "::warning title=Skipped UI test::$line"; done || true
           # every failed check, with the steps just before it (the tail above can miss an early test's)
           if [ -f test.log ]; then grep -n -B12 -E "error: -\[|Test Case .* failed" test.log | grep -v -E "Requesting snapshot|Checking existence|Find the" | tail -300 || true; fi
       - uses: actions/upload-artifact@v4

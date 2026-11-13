@@ -15,6 +15,11 @@ struct ContrastInkApp: App {
         if args.contains("-resetLibrary") { try? FileManager.default.removeItem(at: Library.folder) }
         #endif
         // the app's own UI test: a sample deck, and a finger that draws (the simulator has no Apple Pencil)
+        if args.contains("-importTest") {   // the import test draws with a finger too
+            var s = Lecture.shared.settings
+            s.fingerDraws = true; s.tool = .pen; s.fadingInk = false
+            Lecture.shared.settings = s
+        }
         if args.contains("-uitest") {
             var s = Lecture.shared.settings
             // -pencilOnly: the iPad's default, a finger swipes slides and doesn't draw

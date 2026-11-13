@@ -127,6 +127,7 @@ struct PadConnectView: View {
 
     /// Nothing found for a while, or a typed address couldn't be reached: the network is likely the problem.
     private var showHotspotHint: Bool {
+        if client.browseProblem != nil { return false }   // Local Network not allowed: that message says what to do
         if case .lost = client.phase, client.welcome == nil { return true }
         return nothingFound && client.found.isEmpty
     }

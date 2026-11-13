@@ -1,6 +1,7 @@
 import ContrastInkCore
 import PDFKit
 import PencilKit
+import Photos
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -33,6 +34,7 @@ struct RootView: View {
 
 struct HomeView: View {
     @EnvironmentObject var lecture: Lecture
+    @EnvironmentObject var recorder: LectureRecorder
     @State private var decks: [URL] = []
     @State private var picking: Picking?
     @State private var importing = Picking.pdf   // what the open picker is for (kept after it closes)
@@ -48,6 +50,7 @@ struct HomeView: View {
     struct Locked {
         let url: URL
         let doc: PDFDocument
+        let key: String?
     }
 
     var body: some View {
@@ -72,6 +75,13 @@ struct HomeView: View {
                 } footer: {
                     Text("Contrast Ink on the PC shows a code: the PC's screen comes to this iPad, and what you draw here is drawn on the PC (and recorded there).")
                 }
+                // a recording stopped by closing the slides says here where it went (then the message is done)
+                if let n = recorder.notice {
+                    Button { recorder.notice = nil } label: {
+                        Label(n, systemImage: "record.circle").foregroundStyle(Color.noticeText)
+                    }
+                    .accessibilityIdentifier("homeRecorderNotice")
+                }
                 if working { HStack { ProgressView(); Text("Opening…") } }
                 if let problem { Text(problem).foregroundStyle(Color.noticeText).accessibilityIdentifier("homeProblem") }
                 if !decks.isEmpty {
@@ -82,8 +92,8 @@ struct HomeView: View {
                                       systemImage: Library.isImageDeck(url) ? "photo.on.rectangle" : "rectangle.on.rectangle")
                             }
                             .contextMenu {
-                                if SavedMarks.exists(key: url.lastPathComponent) {
-                                    Button(role: .destructive) { SavedMarks.remove(key: url.lastPathComponent); decks = Library.decks() } label: {
+                                if let key = Library.listedMarksKey(url), SavedMarks.exists(key: key) {
+                                    Button(role: .destructive) { SavedMarks.remove(key: key); decks = Library.decks() } label: {
                                         Label("Clear saved marks", systemImage: "eraser")
                                     }
                                 }
@@ -102,6 +112,7 @@ struct HomeView: View {
             .navigationTitle("Contrast Ink")
         }
         .onAppear { decks = Library.decks() }
+        .onDisappear { recorder.notice = nil }
         .fullScreenCover(isPresented: $padOpen) { PadView(close: { padOpen = false }).environmentObject(lecture) }
         // one picker for both (two .fileImporter on one view: some iOS versions only ever show the last)
         .fileImporter(isPresented: Binding(get: { picking != nil }, set: { if !$0 { picking = nil } }),
@@ -159,10 +170,16 @@ struct HomeView: View {
             }
             return
         }
-        guard let doc = Deck.open(pdf: url) else { problem = "\(url.lastPathComponent) couldn't be opened as a PDF."; return }
-        if doc.isLocked { password = ""; locked = Locked(url: url, doc: doc); return }
-        Library.touch(url)
-        lecture.open(Deck(title: url.deletingPathExtension().lastPathComponent, source: .pdf(doc), key: url.lastPathComponent))
+        working = true
+        Task {
+            // its marks are kept under its content (hashed away from the main thread)
+            let key = await Task.detached { Library.marksKey(pdf: url) }.value
+            working = false
+            guard let doc = Deck.open(pdf: url) else { problem = "\(url.lastPathComponent) couldn't be opened as a PDF."; return }
+            if doc.isLocked { password = ""; locked = Locked(url: url, doc: doc, key: key); return }
+            Library.touch(url)
+            lecture.open(Deck(title: url.deletingPathExtension().lastPathComponent, source: .pdf(doc), key: key))
+        }
     }
 
     private func unlock() {
@@ -173,7 +190,7 @@ struct HomeView: View {
             return
         }
         Library.touch(l.url)
-        lecture.open(Deck(title: l.url.deletingPathExtension().lastPathComponent, source: .pdf(l.doc), key: l.url.lastPathComponent))
+        lecture.open(Deck(title: l.url.deletingPathExtension().lastPathComponent, source: .pdf(l.doc), key: l.key))
     }
 }
 
@@ -187,7 +204,10 @@ private struct ImportTestButtons: View {
         Section("Import test") {
             Button("Locked PDF") { picked([Self.pdf("Locked", password: "secret")], .pdf) }.accessibilityIdentifier("testImportLocked")
             Button("Broken PDF") { picked([Self.file("Broken.pdf", Data("this is not a PDF".utf8))], .pdf) }.accessibilityIdentifier("testImportBroken")
-            Button("Same PDF twice") { picked([Self.pdf("Twice")], .pdf) }.accessibilityIdentifier("testImportTwice")
+            Button("Same PDF again") { picked([Self.twice], .pdf) }.accessibilityIdentifier("testImportTwice")
+            Button("Revised PDF, same name") {
+                picked([Self.file("Twice.pdf", Self.pdfData("Twice, revised"))], .pdf)
+            }.accessibilityIdentifier("testImportRevised")
             Button("Pictures, one broken") {
                 picked([Self.lines("a.png"), Self.file("b.png", Data("not a picture".utf8)), Self.picture("c.png")], .images)
             }.accessibilityIdentifier("testImportImages")
@@ -206,7 +226,13 @@ private struct ImportTestButtons: View {
         return u
     }
 
-    private static func pdf(_ name: String, password: String? = nil) -> URL {
+    /// The same bytes every time it is picked in this run (a PDF made again would carry a new date).
+    private static let twiceBytes = pdfData("Twice")
+    private static var twice: URL { file("Twice.pdf", twiceBytes) }
+
+    private static func pdf(_ name: String, password: String? = nil) -> URL { file("\(name).pdf", pdfData(name, password: password)) }
+
+    private static func pdfData(_ name: String, password: String? = nil) -> Data {
         let f = UIGraphicsPDFRendererFormat()
         if let password {
             f.documentInfo = [kCGPDFContextUserPassword as String: password, kCGPDFContextOwnerPassword as String: password]
@@ -217,7 +243,7 @@ private struct ImportTestButtons: View {
             UIColor.darkGray.setFill(); ctx.fill(size)
             (name as NSString).draw(at: CGPoint(x: 80, y: 80), withAttributes: [.font: UIFont.boldSystemFont(ofSize: 56), .foregroundColor: UIColor.white])
         }
-        return file("\(name).pdf", data)
+        return data
     }
 
     /// Black lines on a see-through background (as a diagram exported from a drawing app often is).
@@ -263,6 +289,7 @@ struct PresenterView: View {
     @EnvironmentObject var lecture: Lecture
     @EnvironmentObject var recorder: LectureRecorder
     @State private var showSettings = false
+    @State private var confirmClearMarks = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -287,8 +314,12 @@ struct PresenterView: View {
                 HStack {
                     Text("The marks from last time are back.").font(.footnote).foregroundStyle(Color.offText)
                     Spacer()
-                    Button("Clear saved marks") { lecture.clearSavedMarks() }
+                    Button("Clear saved marks") { confirmClearMarks = true }
                         .font(.footnote.bold()).accessibilityIdentifier("clearSavedMarks")
+                        .confirmationDialog("Clear the marks on every slide?", isPresented: $confirmClearMarks, titleVisibility: .visible) {
+                            Button("Clear marks", role: .destructive) { lecture.clearSavedMarks() }
+                            Button("Cancel", role: .cancel) {}
+                        } message: { Text("The marks saved from last time go, on every slide of these slides. This can't be undone.") }
                     Button { lecture.dismissRestored() } label: { Image(systemName: "xmark.circle") }
                         .accessibilityLabel("Keep them").accessibilityIdentifier("keepSavedMarks")
                 }
@@ -302,7 +333,7 @@ struct PresenterView: View {
         .background(KeyboardShortcuts())
         .overlay(alignment: .bottomTrailing) {
             // the app's UI test reads how many marks are on the slide (invisible, and only in a test run)
-            if ProcessInfo.processInfo.arguments.contains("-uitest") {
+            if ProcessInfo.processInfo.arguments.contains("-uitest") || ProcessInfo.processInfo.arguments.contains("-importTest") {
                 Text("\(lecture.drawing.strokes.count)").font(.caption2).opacity(0.02)
                     .accessibilityIdentifier("markCount")
             }
@@ -537,6 +568,7 @@ struct BarButton: ButtonStyle {
 struct SettingsView: View {
     @EnvironmentObject var lecture: Lecture
     @Environment(\.dismiss) private var dismiss
+    @State private var photosNote: String?
 
     var body: some View {
         NavigationStack {
@@ -556,6 +588,18 @@ struct SettingsView: View {
                 Section {
                     Toggle("Also save recordings to Photos", isOn: $lecture.settings.alsoSaveToPhotos)
                         .accessibilityIdentifier("alsoSaveToPhotos")
+                        .onChange(of: lecture.settings.alsoSaveToPhotos) { on in
+                            guard on else { photosNote = nil; return }
+                            // asked now, not at the end of a lecture
+                            Task {
+                                let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+                                if status != .authorized && status != .limited {
+                                    lecture.settings.alsoSaveToPhotos = false
+                                    photosNote = "Photos access is off for Contrast Ink: allow it in Settings → Contrast Ink → Photos, then switch this on again."
+                                }
+                            }
+                        }
+                    if let photosNote { Text(photosNote).font(.footnote).foregroundStyle(Color.noticeText) }
                 } header: { Text("Recording") } footer: {
                     Text("Recordings are always kept in Files → On My iPad → Contrast Ink → Recordings. Off by default: with iCloud Photos on, a copy in Photos is uploaded to iCloud, patient images included.")
                 }
@@ -617,7 +661,7 @@ struct ProjectorSlide: View {
     var body: some View {
         ZStack {
             Color.black
-            if let image, shownPage == page { Image(uiImage: image).resizable() }
+            if let image { Image(uiImage: image).resizable() }   // the slide before stays until this one is ready
         }
         .task(id: "\(ObjectIdentifier(deck).hashValue) \(page) \(Int(pixelWidth))") {
             if let hit = deck.cachedImage(page, pixelWidth: pixelWidth) { image = hit; shownPage = page; return }

@@ -13,8 +13,8 @@ enum RecorderSelfTest {
         try? FileManager.default.removeItem(at: dir)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent("test.mov"), cut = dir.appendingPathComponent("interrupted.mov")
-        let sink = CaptureSink(fragmentInterval: 1, withSound: { false })
-        sink.prepare(url: url)
+        let sink = CaptureSink(fragmentInterval: 1)
+        sink.prepare(url: url, microphone: false)
         sink.setGeometry(stage: CGRect(x: 0, y: 0, width: 320, height: 240), screen: CGSize(width: 320, height: 240))
 
         let t0 = CaptureSink.hostNow()
@@ -56,8 +56,8 @@ enum RecorderSelfTest {
     /// (0 = black; the black backdrop must not show through).
     private static func seeThroughFrames(_ dir: URL) async -> Int {
         let url = dir.appendingPathComponent("alpha.mov")
-        let sink = CaptureSink(fragmentInterval: 1, withSound: { false })
-        sink.prepare(url: url)
+        let sink = CaptureSink(fragmentInterval: 1)
+        sink.prepare(url: url, microphone: false)
         sink.setGeometry(stage: CGRect(x: 0, y: 0, width: 320, height: 240), screen: CGSize(width: 320, height: 240))
         for _ in 0..<45 {
             if let b = sample(shade: 0, seeThrough: true) { sink.receive(b, type: .video) }

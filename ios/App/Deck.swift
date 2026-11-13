@@ -1,5 +1,7 @@
 import ContrastInkCore
+import CryptoKit
 import PDFKit
+import PencilKit
 import ImageIO
 import UIKit
 
@@ -24,7 +26,10 @@ final class Deck: @unchecked Sendable {
     let key: String?
     private(set) var pageCount: Int
     private let cache = NSCache<NSString, UIImage>()
-    private let rendering = NSLock()                       // one page drawn at a time (PDFKit isn't for two threads)
+    private let rendering = NSLock()                       // one PDF page drawn at a time (PDFKit isn't for two threads)
+    /// Which slide the slides ahead are for: a decode queued for a slide left behind is skipped.
+    private let aheadLock = NSLock()
+    private var aheadFor = -1
     private static let ahead = DispatchQueue(label: "Contrast Ink slides ahead", qos: .utility)
     private static let now = DispatchQueue(label: "Contrast Ink slide", qos: .userInitiated)
     private var memoryWarning: NSObjectProtocol?
@@ -117,7 +122,10 @@ final class Deck: @unchecked Sendable {
         let w = Deck.roundedWidth(pixelWidth)   // a few sizes only, so the cache is reused
         let key = Deck.key(page, w)
         if let hit = cache.object(forKey: key) { return hit }
-        rendering.lock(); defer { rendering.unlock() }
+        // PDFKit draws one page at a time; pictures decode side by side
+        let isPDF: Bool = { if case .pdf = source { return true } else { return false } }()
+        if isPDF { rendering.lock() }
+        defer { if isPDF { rendering.unlock() } }
         if let hit = cache.object(forKey: key) { return hit }   // drawn ahead while this waited
         let size = pageSize(page), px = CGSize(width: w, height: (w * size.height / size.width).rounded())
         let img: UIImage
@@ -140,8 +148,15 @@ final class Deck: @unchecked Sendable {
 
     /// Draws the slides either side of `page` in the background, so turning to them doesn't hold up the Pencil.
     func drawAhead(around page: Int, pixelWidth: CGFloat) {
+        aheadLock.lock(); aheadFor = page; aheadLock.unlock()
         for p in [page + 1, page - 1] where p >= 0 && p < pageCount {
-            Deck.ahead.async { [weak self] in _ = self?.image(p, pixelWidth: pixelWidth) }
+            Deck.ahead.async { [weak self] in
+                guard let self else { return }
+                // the presenter has moved on (clicking through a big deck): this one isn't next to the slide any more
+                self.aheadLock.lock(); let current = self.aheadFor; self.aheadLock.unlock()
+                guard abs(current - p) <= 1 else { return }
+                _ = self.image(p, pixelWidth: pixelWidth)
+            }
         }
     }
 
@@ -181,7 +196,8 @@ enum Library {
     }
 
     /// Copies a PDF picked in Files into the library, so it opens again next time. It is opened first: a file that
-    /// isn't a PDF never gets in. One with the same name as a deck already there gets its own name ("Lecture (2).pdf").
+    /// isn't a PDF never gets in. The same PDF picked again (the same bytes) is the deck already there, with its
+    /// marks; another one with the same name as a deck there gets its own name ("Lecture (2).pdf").
     static func add(_ picked: URL) throws -> URL {
         let scoped = picked.startAccessingSecurityScopedResource()
         defer { if scoped { picked.stopAccessingSecurityScopedResource() } }
@@ -189,10 +205,45 @@ enum Library {
             throw Problem(text: "\(picked.lastPathComponent) couldn't be opened as a PDF (it may be damaged, or not a PDF). Nothing was added.")
         }
         if picked.deletingLastPathComponent().standardizedFileURL == folder.standardizedFileURL { return picked }
+        if let same = sameContent(as: picked) { return same }
         let name = FileNames.unique(picked.lastPathComponent) { FileManager.default.fileExists(atPath: folder.appendingPathComponent($0).path) }
         let dest = folder.appendingPathComponent(name)
         try FileManager.default.copyItem(at: picked, to: dest)
         return dest
+    }
+
+    /// A PDF already in the library with exactly these bytes (sizes compared first, so few files are hashed).
+    static func sameContent(as url: URL) -> URL? {
+        let size = CaptureSink.size(of: url)
+        guard size > 0, let hash = sha256(url) else { return nil }
+        for d in decks() where d.pathExtension.lowercased() == "pdf" && CaptureSink.size(of: d) == size {
+            if sha256(d) == hash { return d }
+        }
+        return nil
+    }
+
+    /// The SHA-256 of a file, read 1 MB at a time (a deck can be hundreds of MB), as hex. Away from the main thread.
+    static func sha256(_ url: URL) -> String? {
+        guard let h = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? h.close() }
+        var hasher = SHA256()
+        while let chunk = try? h.read(upToCount: 1 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The key a PDF's marks are kept under: its content (a revised PDF of the same name gets none of the old
+    /// marks). Marks an earlier version kept under the file's name move to it once. Away from the main thread.
+    static func marksKey(pdf url: URL) -> String? {
+        guard let hash = sha256(url) else { return nil }
+        let key = MarksPlan.key(sha256: hash)
+        SavedMarks.migrate(from: url.lastPathComponent, to: key)
+        SavedMarks.remember(key, for: url.lastPathComponent)
+        return key
+    }
+
+    /// The marks key of a deck listed in the library, as far as known without reading it (nil: never opened).
+    static func listedMarksKey(_ url: URL) -> String? {
+        isImageDeck(url) ? url.lastPathComponent : SavedMarks.key(for: url.lastPathComponent)
     }
 
     /// Copies picked pictures into a new folder in the library (an image deck), in the order picked. Pictures that
@@ -257,6 +308,7 @@ enum Library {
     /// Removes a deck and its saved marks.
     static func remove(_ url: URL) {
         try? FileManager.default.removeItem(at: url)
+        SavedMarks.remove(key: SavedMarks.key(for: url.lastPathComponent))
         SavedMarks.remove(key: url.lastPathComponent)
     }
 
@@ -283,7 +335,11 @@ enum Library {
     }
 }
 
-/// Each deck's marks on disk: Application Support/Marks/<deck>.marks (not in Files: they aren't documents).
+/// Each deck's marks on disk: Application Support/Marks/<key>.marks (not in Files: they aren't documents). A PDF's
+/// key is its content's SHA-256 (MarksPlan.key), an image deck's its folder's name.
+///
+/// Everything happens on one queue. It keeps what each deck's file holds, so a save encodes only the slides that
+/// changed, and slides beyond the deck's pages (a deck that got shorter) are written back, never dropped.
 enum SavedMarks {
     static var folder: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -294,28 +350,70 @@ enum SavedMarks {
 
     static func url(key: String) -> URL { folder.appendingPathComponent(MarksFile.fileName(forDeck: key)) }
 
-    static func load(key: String) -> [Int: Data] { MarksFile.decode(try? Data(contentsOf: url(key: key))) }
+    private static let queue = DispatchQueue(label: "Contrast Ink saving marks", qos: .utility)
+    /// What is on disk for each key (the queue only).
+    private static var onDisk: [String: [Int: Data]] = [:]
+
+    /// The saved marks of a deck (all its slides, those beyond its pages too).
+    static func load(key: String) -> [Int: Data] {
+        queue.sync {
+            if let known = onDisk[key] { return known }
+            let saved = MarksFile.decode(try? Data(contentsOf: url(key: key)))
+            onDisk[key] = saved
+            return saved
+        }
+    }
 
     static func exists(key: String) -> Bool { FileManager.default.fileExists(atPath: url(key: key).path) }
 
-    private static let writing = DispatchQueue(label: "Contrast Ink saving marks", qos: .utility)
-
-    /// Saved in the background; with no marks the file goes.
-    static func save(_ pages: [Int: Data], key: String) {
+    /// The slides that changed (an empty drawing: none left), encoded and written in the background.
+    static func save(_ changes: [Int: PKDrawing], key: String, pageCount: Int) {
         let u = url(key: key)
-        writing.async {
-            if pages.isEmpty { try? FileManager.default.removeItem(at: u); return }
-            try? MarksFile.encode(pages).write(to: u, options: .atomic)
+        queue.async {
+            var now = onDisk[key] ?? MarksFile.decode(try? Data(contentsOf: u))
+            let kept = now.filter { $0.key >= pageCount }
+            for (p, d) in changes { now[p] = d.strokes.isEmpty ? nil : d.dataRepresentation() }
+            now = MarksPlan.toSave(now.filter { $0.key < pageCount }, kept: kept, pageCount: pageCount)
+            onDisk[key] = now
+            if now.isEmpty { try? FileManager.default.removeItem(at: u); return }
+            try? MarksFile.encode(now).write(to: u, options: .atomic)
         }
     }
 
     /// Waits for the saves already asked for (before the app may be suspended).
-    static func flush() { writing.sync {} }
+    static func flush() { queue.sync {} }
 
-    static func remove(key: String) {
+    static func remove(key: String?) {
+        guard let key else { return }
         let u = url(key: key)
-        writing.sync { try? FileManager.default.removeItem(at: u) }
+        queue.sync { onDisk[key] = nil; try? FileManager.default.removeItem(at: u) }
     }
 
-    static func removeAll() { try? FileManager.default.removeItem(at: folder) }
+    static func removeAll() {
+        queue.sync { onDisk = [:] }
+        try? FileManager.default.removeItem(at: folder)
+    }
+
+    /// Marks kept under a PDF's file name by an earlier version move to its content key, once.
+    static func migrate(from old: String, to new: String) {
+        let o = url(key: old), n = url(key: new)
+        queue.sync {
+            let fm = FileManager.default
+            guard MarksPlan.migrate(oldExists: fm.fileExists(atPath: o.path), newExists: fm.fileExists(atPath: n.path)) else { return }
+            try? fm.moveItem(at: o, to: n)
+            onDisk[old] = nil; onDisk[new] = nil
+        }
+    }
+
+    // which content key a library file's marks are under (for the home screen's "Clear saved marks")
+    private static let indexKey = "marksKeys"
+    static func remember(_ key: String, for fileName: String) {
+        var all = UserDefaults.standard.dictionary(forKey: indexKey) as? [String: String] ?? [:]
+        all[fileName] = key
+        UserDefaults.standard.set(all, forKey: indexKey)
+    }
+
+    static func key(for fileName: String) -> String? {
+        (UserDefaults.standard.dictionary(forKey: indexKey) as? [String: String])?[fileName]
+    }
 }

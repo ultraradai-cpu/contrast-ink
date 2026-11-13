@@ -34,12 +34,19 @@ final class Lecture: ObservableObject {
     private var otherSlides: Set<Date> = []
     /// The slide the pen (or a shape's drag) went down on: the stroke is that slide's even if the slide changes first.
     private var penPage = PenPage()
+    /// Which slides' marks changed since the last save, and when the next save is due.
+    private var debounce = SaveDebounce()
+    private var saveTimer: Timer?
 
     private init() {
         settings = Settings.decode(UserDefaults.standard.data(forKey: "settings"),
                                    isPhone: UIDevice.current.userInterfaceIdiom == .phone)
         // leaving the screen (Home, another app; the iPad's own screen going while a projector stays on): keep the marks
         MainScreen.onLeave { [weak self] in self?.saveMarks(); SavedMarks.flush() }
+        // marks are saved a moment after each change (SaveDebounce): a crash loses at most the last seconds
+        saveTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.saveMarks(force: false) }
+        }
     }
 
     private func saveSettings() {
@@ -50,6 +57,7 @@ final class Lecture: ObservableObject {
 
     func open(_ deck: Deck) {
         if self.deck != nil { saveMarks() }
+        debounce = SaveDebounce()
         marks.reset()
         fading = [:]; faded = []
         penPage = PenPage()
@@ -59,12 +67,13 @@ final class Lecture: ObservableObject {
         // the marks left on this deck last time come back
         var restored: [Int: PKDrawing] = [:]
         if let key = deck.key {
-            for (p, data) in SavedMarks.load(key: key) {
+            let saved = SavedMarks.load(key: key)
+            if let last = saved.keys.max() { deck.growWhiteboard(to: last + 1) }
+            // slides the deck no longer has keep their marks on disk (MarksPlan): only the others are shown
+            for (p, data) in MarksPlan.restore(saved, pageCount: deck.pageCount).shown {
                 if let d = try? PKDrawing(data: data), !d.strokes.isEmpty { restored[p] = d }
             }
         }
-        if let last = restored.keys.max() { deck.growWhiteboard(to: last + 1) }
-        restored = restored.filter { $0.key < deck.pageCount }
         marks.restore(restored)
         restoredMarks = !restored.isEmpty
         drawing = marks.drawing
@@ -86,16 +95,19 @@ final class Lecture: ObservableObject {
     /// Any slide has a mark (closing asks first).
     var hasMarks: Bool { marks.hasMarks }
 
-    /// Every slide's marks to disk (on a slide change, on leaving the screen, on closing). Fading marks aren't kept:
-    /// they were going anyway.
-    func saveMarks() {
-        guard let key = deck?.key else { return }
-        var pages: [Int: Data] = [:]
-        for (p, d) in marks.savedPages {
-            let kept = d.strokes.filter { fading[$0.path.creationDate] == nil }
-            if !kept.isEmpty { pages[p] = PKDrawing(strokes: kept).dataRepresentation() }
+    /// A slide's marks changed: saved a couple of seconds later (or at once on a slide change or leaving the screen).
+    private func changed(_ page: Int) { debounce.changed(page: page, now: Date().timeIntervalSinceReferenceDate) }
+
+    /// The slides whose marks changed go to disk, encoded off the main thread. `force`: now (a slide change, leaving
+    /// the screen, closing), else only once the debounce is due. Fading marks aren't kept: they were going anyway.
+    func saveMarks(force: Bool = true) {
+        guard let deck, let key = deck.key,
+              let pages = debounce.take(now: Date().timeIntervalSinceReferenceDate, force: force), !pages.isEmpty else { return }
+        var changes: [Int: PKDrawing] = [:]
+        for p in pages {
+            changes[p] = PKDrawing(strokes: marks.drawing(on: p).strokes.filter { fading[$0.path.creationDate] == nil })
         }
-        SavedMarks.save(pages, key: key)
+        SavedMarks.save(changes, key: key, pageCount: deck.pageCount)
     }
 
     /// "Keep them": the note about restored marks goes.
@@ -108,6 +120,7 @@ final class Lecture: ObservableObject {
         let leaving = marks.drawing.strokes.map(\.path.creationDate)
         otherSlides.formUnion(leaving)
         let p = page
+        debounce = SaveDebounce()
         marks.reset()
         marks.show(page: p)
         fading = [:]
@@ -144,7 +157,7 @@ final class Lecture: ObservableObject {
         page = p
         drawing = marks.drawing
         slideChanged?(p)
-        saveMarks()
+        saveMarks()   // any change waiting: now
     }
 
     // MARK: marks
@@ -178,7 +191,7 @@ final class Lecture: ObservableObject {
                 marks.commit(PKDrawing(strokes: m.strokes), on: target)
             }
             drawing = marks.drawing   // the canvas shows this slide's marks again when the pen lifts
-            saveMarks()
+            changed(target)
             return
         }
         let m = InkMerge.merge(slide: marks.drawing.strokes, canvas: new.strokes, erasing: erasing,
@@ -189,6 +202,7 @@ final class Lecture: ObservableObject {
         }
         marks.commit(PKDrawing(strokes: m.strokes))
         drawing = marks.drawing   // also puts the canvas right when it showed something else
+        changed(page)
     }
 
     /// An arrow or oval was drawn: one stroke, like any mark, on the slide its drag began on.
@@ -217,11 +231,13 @@ final class Lecture: ObservableObject {
         }
         if changed { marks.replaceQuietly(d); startFading() }
         drawing = marks.drawing
+        self.changed(page)
     }
 
     func clear() {
         marks.clear()
         drawing = marks.drawing
+        changed(page)
     }
 
     var canUndo: Bool { marks.canUndo }

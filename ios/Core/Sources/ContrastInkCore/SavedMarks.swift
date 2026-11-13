@@ -86,3 +86,48 @@ extension PageMarks {
     /// Any slide has a mark.
     public var hasMarks: Bool { pages.values.contains { $0.drawing != empty } }
 }
+
+/// Which saved marks a deck gets, and what is written back.
+public enum MarksPlan {
+    /// A PDF's marks are kept under the SHA-256 of its bytes: a revised PDF with the same name doesn't get the old
+    /// marks, and the same PDF picked again finds them.
+    public static func key(sha256 hex: String) -> String { "sha256-" + hex.lowercased() }
+
+    /// Saved marks split into the slides the deck has and the rest (a deck with fewer pages now): the rest are kept
+    /// and written back, never dropped.
+    public static func restore<T>(_ saved: [Int: T], pageCount: Int) -> (shown: [Int: T], kept: [Int: T]) {
+        var shown: [Int: T] = [:], kept: [Int: T] = [:]
+        for (k, v) in saved { if k < pageCount { shown[k] = v } else { kept[k] = v } }
+        return (shown, kept)
+    }
+
+    /// What to write: every slide's marks now, plus the kept ones beyond the deck's pages.
+    public static func toSave<T>(_ now: [Int: T], kept: [Int: T], pageCount: Int) -> [Int: T] {
+        var out = kept.filter { $0.key >= pageCount }
+        for (k, v) in now { out[k] = v }
+        return out
+    }
+
+    /// Marks saved by an earlier version under the PDF's file name move to its content key once: only when nothing
+    /// is saved under the content key yet.
+    public static func migrate(oldExists: Bool, newExists: Bool) -> Bool { oldExists && !newExists }
+}
+
+/// Saving marks a moment after the last change: a crash loses at most the last couple of seconds.
+public struct SaveDebounce: Equatable, Sendable {
+    public static let delay = 2.0
+    public private(set) var due: Double?
+    public private(set) var dirty: Set<Int> = []
+    public init() {}
+
+    /// A slide's marks changed at `now`: the save is due `delay` later (a later change moves it).
+    public mutating func changed(page: Int, now: Double) { dirty.insert(page); due = now + Self.delay }
+
+    /// At `now`: the pages to encode again when the save is due (and forgets them), else nil.
+    public mutating func take(now: Double, force: Bool = false) -> Set<Int>? {
+        guard let d = due, force || now >= d else { return nil }
+        due = nil
+        defer { dirty = [] }
+        return dirty
+    }
+}

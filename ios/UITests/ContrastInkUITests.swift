@@ -210,6 +210,10 @@ final class ContrastInkUITests: XCTestCase {
         app.buttons["next"].tap()
         expectMarks(1, "slide 2's line, saved when the app left the screen, is back")
         app.buttons["clearSavedMarks"].tap()
+        let sure = app.buttons["Clear marks"]
+        XCTAssertTrue(sure.waitForExistence(timeout: 5), "asks first")
+        expectMarks(1, "nothing cleared before the answer")
+        sure.tap()
         Thread.sleep(forTimeInterval: 0.4)
         expectMarks(0, "cleared")
         app.buttons["previous"].tap()
@@ -220,6 +224,40 @@ final class ContrastInkUITests: XCTestCase {
         launchSample(reset: false)
         expectMarks(0, "nothing comes back after clearing")
         XCTAssertFalse(app.buttons["clearSavedMarks"].exists)
+
+        // a stroke, then the app ends without warning (as in a crash): saved 2 seconds after the stroke
+        drag(CGVector(dx: 0.15, dy: 0.40), CGVector(dx: 0.8, dy: 0.70))
+        expectMarks(1, "a line")
+        Thread.sleep(forTimeInterval: 3.5)
+        app.terminate()
+        launchSample(reset: false)
+        expectMarks(1, "the line, saved a moment after it was drawn, is back")
+    }
+
+    /// "Stop recording and close": the recording's message (where it went, or why nothing was) shows on the home
+    /// screen, where the presenter now is.
+    func testClosingWhileRecordingSaysWhatHappened() throws {
+        launchSample()
+        app.buttons["Record"].tap()
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let pause = app.buttons["Pause recording"]
+        let end = Date().addingTimeInterval(20)
+        while !pause.exists, Date() < end {
+            for label in ["Record Screen", "Allow", "OK", "Start Recording"] where springboard.buttons[label].exists {
+                springboard.buttons[label].tap()
+            }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        guard pause.exists else { throw XCTSkip("ReplayKit didn't start in this simulator") }
+        Thread.sleep(forTimeInterval: 1)
+        app.buttons["Close slides"].tap()
+        let close = app.buttons["Stop recording and close"]
+        XCTAssertTrue(close.waitForExistence(timeout: 5), "asks first while recording")
+        close.tap()
+        let notice = app.buttons["homeRecorderNotice"]
+        XCTAssertTrue(notice.waitForExistence(timeout: 30), "the recording's message on the home screen")
+        XCTAssertTrue(notice.label.contains("Recordings") || notice.label.contains("Nothing was recorded"), notice.label)
+        shot("R3 closed while recording: what happened")
     }
 
     /// ✕ with marks asks first; with nothing to lose it closes at once.
@@ -339,15 +377,30 @@ final class ContrastInkUITests: XCTestCase {
         XCTAssertEqual(app.staticTexts["slideNumber"].label, "1 / 1")
         app.buttons["Close slides"].tap()
 
-        for _ in 0..<2 {
-            XCTAssertTrue(app.buttons["testImportTwice"].waitForExistence(timeout: 10))
-            app.buttons["testImportTwice"].tap()
-            XCTAssertTrue(app.staticTexts["slideNumber"].waitForExistence(timeout: 10))
-            app.buttons["Close slides"].tap()
-        }
+        // a PDF, a mark on it, then the same PDF picked again: the same deck, with its mark
+        XCTAssertTrue(app.buttons["testImportTwice"].waitForExistence(timeout: 10))
+        app.buttons["testImportTwice"].tap()
+        XCTAssertTrue(app.staticTexts["slideNumber"].waitForExistence(timeout: 10))
+        drag(CGVector(dx: 0.2, dy: 0.45), CGVector(dx: 0.7, dy: 0.6))
+        expectMarks(1, "a line on it")
+        app.buttons["Close slides"].tap()
+        app.buttons["Close the slides"].tap()
+        XCTAssertTrue(app.buttons["testImportTwice"].waitForExistence(timeout: 10))
+        app.buttons["testImportTwice"].tap()
+        XCTAssertTrue(app.staticTexts["slideNumber"].waitForExistence(timeout: 10))
+        expectMarks(1, "the same PDF again: its mark is back")
+        app.buttons["Close slides"].tap()
+        app.buttons["Close the slides"].tap()
         XCTAssertTrue(app.buttons["Twice"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Twice (2)"].exists, "the second gets its own name, the first is kept")
-        shot("I3 the same name twice")
+        XCTAssertFalse(app.buttons["Twice (2)"].exists, "the same bytes: no second copy")
+        // a revised PDF with the same name: its own copy, and none of the old marks
+        app.buttons["testImportRevised"].tap()
+        XCTAssertTrue(app.staticTexts["slideNumber"].waitForExistence(timeout: 10))
+        expectMarks(0, "a revised PDF of the same name starts clean")
+        app.buttons["Close slides"].tap()
+        XCTAssertTrue(app.buttons["Twice (2)"].waitForExistence(timeout: 5), "the revision gets its own name")
+        XCTAssertTrue(app.buttons["Twice"].exists, "the first is kept")
+        shot("I3 the same PDF again, and a revision")
 
         app.buttons["testImportImages"].tap()
         let number = app.staticTexts["slideNumber"]

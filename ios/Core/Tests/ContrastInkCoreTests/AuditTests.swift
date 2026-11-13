@@ -286,3 +286,55 @@ final class SplitViewCropTests: XCTestCase {
         XCTAssertNotEqual(old.x, px.x)
     }
 }
+
+final class SecondAuditTests: XCTestCase {
+    func testSoundIsDecidedFromWhatCaptureGot() {
+        XCTAssertEqual(SoundTrack.decide(microphone: nil, heardMic: false, waited: 0.1), .wait,
+                       "the first picture can come before capture says whether it got the microphone")
+        XCTAssertEqual(SoundTrack.decide(microphone: true, heardMic: false, waited: 0.1), .wait, "wait for its first sample")
+        XCTAssertEqual(SoundTrack.decide(microphone: nil, heardMic: true, waited: 0), .start(withSound: true))
+        XCTAssertEqual(SoundTrack.decide(microphone: false, heardMic: false, waited: 0), .start(withSound: false))
+        XCTAssertEqual(SoundTrack.decide(microphone: true, heardMic: false, waited: 1.2), .start(withSound: true),
+                       "the microphone is on: the voice track is made even if its first sample is late")
+        XCTAssertEqual(SoundTrack.decide(microphone: nil, heardMic: false, waited: 1.2), .start(withSound: false))
+    }
+
+    func testChaptersAreWrittenOnceThereAreTwo() {
+        XCTAssertNil(ChaptersFile.text([(0, "Slide 1")]))
+        XCTAssertEqual(ChaptersFile.text([(0, "Slide 1"), (65, "Slide 2")]), "0:00 Slide 1\n1:05 Slide 2\n")
+    }
+
+    func testMarksAreKeyedByContent() {
+        XCTAssertEqual(MarksPlan.key(sha256: "ABC1"), "sha256-abc1")
+        XCTAssertNotEqual(MarksPlan.key(sha256: "aa"), MarksPlan.key(sha256: "bb"), "a revised PDF: other marks")
+    }
+
+    func testMarksBeyondTheDeckAreKept() {
+        let saved = [0: "a", 3: "b", 9: "c"]
+        let r = MarksPlan.restore(saved, pageCount: 4)
+        XCTAssertEqual(r.shown, [0: "a", 3: "b"])
+        XCTAssertEqual(r.kept, [9: "c"])
+        XCTAssertEqual(MarksPlan.toSave([0: "x"], kept: r.kept, pageCount: 4), [0: "x", 9: "c"],
+                       "slide 9's marks are written back, not dropped")
+        XCTAssertEqual(MarksPlan.toSave([:], kept: [2: "old"], pageCount: 4), [:], "a kept page the deck has again is its own")
+    }
+
+    func testOldNameKeyedMarksMoveOnce() {
+        XCTAssertTrue(MarksPlan.migrate(oldExists: true, newExists: false))
+        XCTAssertFalse(MarksPlan.migrate(oldExists: true, newExists: true), "never over newer marks")
+        XCTAssertFalse(MarksPlan.migrate(oldExists: false, newExists: false))
+    }
+
+    func testMarksAreSavedTwoSecondsAfterTheLastChange() {
+        var d = SaveDebounce()
+        XCTAssertNil(d.take(now: 0))
+        d.changed(page: 1, now: 10)
+        XCTAssertNil(d.take(now: 11), "not yet")
+        d.changed(page: 3, now: 11.5)
+        XCTAssertNil(d.take(now: 12.9), "a later change moves it")
+        XCTAssertEqual(d.take(now: 13.6), [1, 3], "only the slides that changed are encoded")
+        XCTAssertNil(d.take(now: 20))
+        d.changed(page: 0, now: 30)
+        XCTAssertEqual(d.take(now: 30, force: true), [0], "leaving the screen saves at once")
+    }
+}

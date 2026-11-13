@@ -23,6 +23,8 @@ final class LectureRecorder: ObservableObject {
     private var phase = RecorderPhase() { didSet { state = phase.state } }
     private let sink = CaptureSink()
     private var chapters: [(at: Double, name: String)] = []
+    /// The video being written (its chapters file goes beside it).
+    private var videoURL: URL?
     private var lastChapterPage = -1
     private var clock: Timer?
     private var lastSpaceCheck = Date.distantPast
@@ -104,6 +106,7 @@ final class LectureRecorder: ObservableObject {
         lastProblem = nil
         warnedSpace = false
         let url = LectureRecorder.newFileURL(title: Lecture.shared.deck?.title ?? "Lecture")
+        videoURL = url
         sink.prepare(url: url)
         screen.isMicrophoneEnabled = true
         do {
@@ -125,6 +128,7 @@ final class LectureRecorder: ObservableObject {
             stopReason = nil
             return
         }
+        sink.setMicrophone(screen.isMicrophoneEnabled)   // the sound track follows what capture really got
         if !screen.isMicrophoneEnabled { notice = "Recording without sound: microphone access is off (Settings → Contrast Ink)." }
         chapters = []
         lastChapterPage = Lecture.shared.page
@@ -177,10 +181,7 @@ final class LectureRecorder: ObservableObject {
             return
         }
         let url = result.url
-        if chapters.count > 1 {
-            let file = url.deletingLastPathComponent().appendingPathComponent(url.deletingPathExtension().lastPathComponent + " chapters.txt")
-            try? Chapters.text(chapters).write(to: file, atomically: true, encoding: .utf8)
-        }
+        writeChapters()
         var photos = RecordingReport.Photos.off
         if Lecture.shared.settings.alsoSaveToPhotos {
             let size = CaptureSink.size(of: url)
@@ -197,6 +198,16 @@ final class LectureRecorder: ObservableObject {
         guard state == .recording, page != lastChapterPage else { return }
         lastChapterPage = page
         chapters.append((sink.elapsed(at: CaptureSink.hostNow()), "Slide \(page + 1)"))
+        writeChapters()   // at every slide change, so a crash keeps them
+    }
+
+    static let chaptersQueue = DispatchQueue(label: "Contrast Ink chapters")
+
+    /// "<video> chapters.txt" beside the video, written again whole (it is small).
+    private func writeChapters() {
+        guard let url = videoURL, let text = ChaptersFile.text(chapters) else { return }
+        let file = url.deletingLastPathComponent().appendingPathComponent(url.deletingPathExtension().lastPathComponent + " chapters.txt")
+        LectureRecorder.chaptersQueue.async { try? text.write(to: file, atomically: true, encoding: .utf8) }
     }
 
     static var folder: URL {
@@ -253,15 +264,16 @@ final class CaptureSink: @unchecked Sendable {
     private var failed = false
     private var videoForward = Forward(), audioForward = Forward()   // times only go forward in each track
 
-    /// Whether the video gets a sound track: only when the microphone is allowed. A track that never gets a sample
-    /// would hold every fragment back (the writer waits to interleave it), and nothing would reach the disk until the end.
-    let withSound: () -> Bool
+    init(fragmentInterval: Double = 10) { self.fragmentInterval = fragmentInterval }
 
-    init(fragmentInterval: Double = 10,
-         withSound: @escaping () -> Bool = { AVAudioSession.sharedInstance().recordPermission == .granted }) {
-        self.fragmentInterval = fragmentInterval
-        self.withSound = withSound
-    }
+    // whether the video gets a sound track (SoundTrack's rule): what capture said about the microphone (under
+    // `lock`), whether a microphone sample came, and when the first picture came (the capture queue only)
+    private var microphone: Bool?
+    private var heardMic = false
+    private var firstPictureAt: Double?
+
+    /// Screen capture started, with the microphone or without it.
+    func setMicrophone(_ on: Bool) { lock.lock(); microphone = on; lock.unlock() }
 
     static func hostNow() -> Double { CMClockGetTime(CMClockGetHostTimeClock()).seconds }
 
@@ -313,9 +325,12 @@ final class CaptureSink: @unchecked Sendable {
         lock.unlock()
     }
 
-    func prepare(url: URL) {
+    /// `microphone`: known already (the self-test), else told by setMicrophone once capture has started.
+    func prepare(url: URL, microphone: Bool? = nil) {
         queue.sync {
             self.url = url
+            heardMic = false; firstPictureAt = nil
+            lock.lock(); self.microphone = microphone; lock.unlock()
             writer = nil; video = nil; audio = nil; adaptor = nil; failed = false
             videoForward = Forward(); audioForward = Forward()
             lock.lock(); timeline = Timeline(); problem = nil; isBroken = false; fileURL = url; lock.unlock()
@@ -350,13 +365,20 @@ final class CaptureSink: @unchecked Sendable {
                                   image: Size(image.extent.width, image.extent.height))
         guard crop.width >= 2, crop.height >= 2 else { return }
 
+        if writer == nil {
+            // the sound track is decided before the file starts: wait (up to a second) to know about the microphone
+            let now = CaptureSink.hostNow()
+            let first = firstPictureAt ?? now
+            firstPictureAt = first
+            lock.lock(); let mic = microphone; lock.unlock()
+            guard case .start(let withSound) = SoundTrack.decide(microphone: mic, heardMic: heardMic, waited: now - first)
+            else { return }
+            let out = Crop.outputSize(Size(crop.width, crop.height))
+            guard start(size: CGSize(width: out.width, height: out.height), withSound: withSound) else { return }
+        }
         let pts = CMSampleBufferGetPresentationTimeStamp(buffer)
         lock.lock(); timeline.begin(at: pts.seconds); let t = timeline.videoTime(pts.seconds); lock.unlock()
         guard let t else { return }   // paused, or before the start
-        if writer == nil {
-            let out = Crop.outputSize(Size(crop.width, crop.height))
-            guard start(size: CGSize(width: out.width, height: out.height)) else { return }
-        }
         guard let video, let adaptor, video.isReadyForMoreMediaData, let pool = adaptor.pixelBufferPool else { return }
         guard videoForward.admit(t) else { return }
 
@@ -381,6 +403,7 @@ final class CaptureSink: @unchecked Sendable {
     }
 
     private func writeAudio(_ buffer: CMSampleBuffer) {
+        if writer == nil { heardMic = true; return }   // the voice is coming: the file gets a sound track
         guard let audio, audio.isReadyForMoreMediaData else { return }
         let pts = CMSampleBufferGetPresentationTimeStamp(buffer)
         lock.lock(); let t = timeline.videoTime(pts.seconds); lock.unlock()
@@ -394,7 +417,7 @@ final class CaptureSink: @unchecked Sendable {
         if let moved, !audio.append(moved) { fail() }
     }
 
-    private func start(size: CGSize) -> Bool {
+    private func start(size: CGSize, withSound: Bool) -> Bool {
         guard let url else { return false }
         do {
             // QuickTime with movie fragments: the file plays up to the last fragment even if it is never finished
@@ -409,7 +432,7 @@ final class CaptureSink: @unchecked Sendable {
             guard w.canAdd(v) else { throw CocoaError(.fileWriteUnknown) }
             w.add(v)
             var a: AVAssetWriterInput?
-            if withSound() {
+            if withSound {
                 let input = AVAssetWriterInput(mediaType: .audio, outputSettings: [
                     AVFormatIDKey: kAudioFormatMPEG4AAC, AVNumberOfChannelsKey: 1, AVSampleRateKey: 44100, AVEncoderBitRateKey: 96_000,
                 ])

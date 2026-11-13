@@ -21,9 +21,12 @@ open inside Contrast Ink: **in PowerPoint, File → Export → PDF**, then open 
 - Six colours (bright ones for dark MR/CT images, black for white slides, red for both) and three widths.
 - **Fading ink** (⏱): marks disappear after 3 seconds. Hold Shift on a keyboard while drawing to keep one.
 - Each slide keeps its own marks. The next slide starts clean, and going back shows its marks again.
-- **Marks are kept**: on every slide change and whenever Contrast Ink leaves the screen they are saved with the deck,
-  and they come back the next time it is opened (a crash or a flat battery doesn't lose them). To start clean:
-  **Clear saved marks** on the note that says they are back, or touch and hold the deck under **Recent slides**.
+- **Marks are kept**: they are saved with the deck about 2 seconds after each stroke (at once on a slide change,
+  when Contrast Ink leaves the screen and when the slides close), and they come back the next time it is opened. A
+  crash or a flat battery loses at most the strokes of the last 2 seconds; fading marks are never kept. They belong to
+  the PDF's content: the same PDF opened again (even picked again from Files) finds them, and a revised PDF with the
+  same name starts clean. To start clean: **Clear saved marks** on the note that says they are back (it asks first),
+  or touch and hold the deck under **Recent slides**.
 - A stroke belongs to the slide it was begun on, even if the slide changes (a clicker) before the Pencil lifts.
 - **✕** closes the slides; with marks or a recording it asks first (a recording is stopped and saved).
 
@@ -68,8 +71,10 @@ Press **⏺** on the toolbar. The first time, iPad asks to allow screen recordin
 - It needs room: under 1 GB free it doesn't start (it says what to delete); while recording it checks every minute,
   warns under 1 GB, and under 300 MB stops by itself and keeps the video. A lecture is about 3 GB an hour, and the
   copy to Photos needs as much again.
-- Every slide change becomes a chapter: `<video> chapters.txt` is saved beside the video, ready to paste into a
-  YouTube description.
+- Every slide change becomes a chapter: `<video> chapters.txt` is saved beside the video (updated at each slide
+  change, so a crash keeps it), ready to paste into a YouTube description.
+- The voice track is there when capture got the microphone; without microphone access it says so and records
+  without sound.
 - If Contrast Ink leaves the screen (Home, another app) or the recording is interrupted (a call), it stops;
   what was recorded is saved.
 - Slides of different shapes, turning the iPad, a toolbar on two rows: the video keeps its first shape and shows
@@ -140,6 +145,16 @@ the 7 days over Wi-Fi by itself while the PC is on.
 With a Mac instead: `brew install xcodegen`, `xcodegen` in this folder, open `ContrastInk.xcodeproj`, choose your
 team under Signing & Capabilities, plug in the iPad, press Run. An Apple Developer account ($99 a year) removes the
 7 days and allows TestFlight.
+
+## Checked on a real iPad
+
+The simulator can't check these; try them on an iPad before relying on them in a lecture:
+
+- [ ] A presenter clicker's keys: **Return**, **Page Down** and **Page Up** change the slide (the simulator's typed
+  keys never reached the app, so the UI tests leave them out).
+- [ ] A real recording with your voice: ⏺, talk, ⏸ / ▶, ⏹; the `.mov` plays with sound, from Files.
+- [ ] Recording in **Split View** or **Stage Manager**: the video shows the slide, not another part of the screen.
+- [ ] The `.mov` plays on Windows (Films & TV or VLC), with its chapters file beside it.
 
 ## For Developers
 

@@ -180,7 +180,7 @@ final class Stage: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate, UI
     }
 
     /// The slide's picture: from the cache at once, else drawn or decoded away from the main thread (a big
-    /// picture would hold up the Pencil). Meanwhile the old size of this slide stays, never another slide's.
+    /// picture would hold up the Pencil). Meanwhile the picture showing stays until the new one is ready.
     private func showPicture(_ deck: Deck, _ px: CGFloat) {
         let page = shownPage
         if let pictureFor, pictureFor.page == page, pictureFor.width == px { return }
@@ -189,7 +189,7 @@ final class Stage: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate, UI
             pictureFor = (page, px)
             return
         }
-        if pictureFor?.page != page { slide.image = nil }
+        // meanwhile the slide before stays on screen (no black flash, which a recording would keep too)
         deck.loadImage(page, pixelWidth: px) { [weak self, weak deck] img in
             guard let self, let deck, self.lecture.deck === deck, self.shownPage == page else { return }
             self.slide.image = img

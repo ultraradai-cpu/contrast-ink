@@ -118,3 +118,30 @@ public enum RecordingReport {
         return s
     }
 }
+
+/// Whether the video gets a sound track, decided when the first picture arrives. A track that never gets a sample
+/// holds every movie fragment back, and a lecture without its voice is useless, so: a microphone sample already seen
+/// means sound; the microphone known to be off means none; otherwise the writer waits (up to `maxWait`) for the
+/// recorder to say whether capture got the microphone, or for its first sample.
+public enum SoundTrack {
+    public static let maxWait = 1.0
+
+    public enum Decision: Equatable, Sendable { case wait, start(withSound: Bool) }
+
+    /// `microphone`: what screen capture said once it started (nil: not known yet). `heardMic`: a microphone sample
+    /// has arrived. `waited`: seconds since the first picture.
+    public static func decide(microphone: Bool?, heardMic: Bool, waited: Double) -> Decision {
+        if heardMic { return .start(withSound: true) }
+        if microphone == false { return .start(withSound: false) }
+        if waited < maxWait { return .wait }
+        return .start(withSound: microphone == true)
+    }
+}
+
+/// The chapters file of a recording, rewritten at every slide change so a crash keeps what was there.
+public enum ChaptersFile {
+    /// What to write now (nil: nothing yet worth a file, one chapter only).
+    public static func text(_ chapters: [(at: Double, name: String)]) -> String? {
+        chapters.count > 1 ? Chapters.text(chapters) : nil
+    }
+}
