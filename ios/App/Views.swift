@@ -327,7 +327,9 @@ struct KeyboardShortcuts: View {
         case "up": return .upArrow
         case "down": return .downArrow
         case "space": return .space
-        case "pageDown", "pageUp": return nil   // the stage takes them itself (Stage.pressesBegan)
+        // also taken by the stage itself (Stage.pressesBegan) when iPadOS keeps them from these shortcuts
+        case "pageDown": return .pageDown
+        case "pageUp": return .pageUp
         case "return": return .return
         default: return key.count == 1 ? KeyEquivalent(Character(key)) : nil
         }

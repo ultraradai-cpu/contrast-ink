@@ -178,7 +178,7 @@ final class LectureRecorder: ObservableObject {
         }
         var photos = RecordingReport.Photos.off
         if Lecture.shared.settings.alsoSaveToPhotos {
-            let size = Int64((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+            let size = CaptureSink.size(of: url)
             if RecordingSpace.photosCopyFits(free: Self.freeSpace(), fileSize: size) {
                 photos = await LectureRecorder.saveToPhotos(url)
             } else {
@@ -274,8 +274,14 @@ final class CaptureSink: @unchecked Sendable {
     /// The video's size on disk so far.
     func writtenBytes() -> Int64 {
         lock.lock(); let u = fileURL; lock.unlock()
-        guard let u, let size = try? u.resourceValues(forKeys: [.fileSizeKey]).fileSize else { return 0 }
-        return Int64(size)
+        guard let u else { return 0 }
+        return CaptureSink.size(of: u)
+    }
+
+    /// A file's size as it is now on disk. (Not URL resource values: those are cached, and a file being written
+    /// would seem to stay at its first size.)
+    static func size(of url: URL) -> Int64 {
+        ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber)?.int64Value ?? 0
     }
 
     /// ReplayKit reported an error instead of a frame.
