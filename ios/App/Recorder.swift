@@ -57,8 +57,13 @@ final class LectureRecorder: ObservableObject {
     }
 
     /// The stage tells where the slide is on screen.
+    /// `rect` is in the window; the frames are the whole display, and in Split View or Stage Manager the window is
+    /// smaller than the display and moved, so the rectangle is taken to the display's coordinates.
     func stageMoved(_ rect: CGRect, in window: UIWindow) {
-        sink.setGeometry(stage: rect, screen: window.bounds.size)
+        let screen = window.screen
+        let origin = window.convert(CGPoint.zero, to: screen.coordinateSpace)
+        let r = Crop.onScreen(stageInWindow: Rect(rect.minX, rect.minY, rect.width, rect.height), windowOrigin: Pt(origin.x, origin.y))
+        sink.setGeometry(stage: CGRect(x: r.x, y: r.y, width: r.width, height: r.height), screen: screen.bounds.size)
     }
 
     func recordTapped() {
@@ -344,7 +349,9 @@ final class CaptureSink: @unchecked Sendable {
         guard let out else { return }
         // the slide's shape can change mid-recording (a slide of another shape, the iPad turned, the toolbar on two
         // rows): each frame's slide is fitted whole into the video, centred, on black
+        // the screen is opaque: a frame's alpha (0 in some frames) must not let the black backdrop through
         let cut = image.cropped(to: CGRect(x: crop.x, y: crop.y, width: crop.width, height: crop.height))
+            .settingAlphaOne(in: CGRect(x: crop.x, y: crop.y, width: crop.width, height: crop.height))
         let fit = Fit.aspect(Size(crop.width, crop.height), in: Size(outSize.width, outSize.height))
         let s = CGFloat(fit.width) / CGFloat(crop.width)
         let placed = cut

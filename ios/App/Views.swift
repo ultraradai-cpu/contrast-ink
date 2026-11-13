@@ -189,7 +189,7 @@ private struct ImportTestButtons: View {
             Button("Broken PDF") { picked([Self.file("Broken.pdf", Data("this is not a PDF".utf8))], .pdf) }.accessibilityIdentifier("testImportBroken")
             Button("Same PDF twice") { picked([Self.pdf("Twice")], .pdf) }.accessibilityIdentifier("testImportTwice")
             Button("Pictures, one broken") {
-                picked([Self.picture("a.png"), Self.file("b.png", Data("not a picture".utf8)), Self.picture("c.png")], .images)
+                picked([Self.lines("a.png"), Self.file("b.png", Data("not a picture".utf8)), Self.picture("c.png")], .images)
             }.accessibilityIdentifier("testImportImages")
         }
     }
@@ -218,6 +218,17 @@ private struct ImportTestButtons: View {
             (name as NSString).draw(at: CGPoint(x: 80, y: 80), withAttributes: [.font: UIFont.boldSystemFont(ofSize: 56), .foregroundColor: UIColor.white])
         }
         return file("\(name).pdf", data)
+    }
+
+    /// Black lines on a see-through background (as a diagram exported from a drawing app often is).
+    private static func lines(_ name: String) -> URL {
+        let f = UIGraphicsImageRendererFormat(); f.scale = 1; f.opaque = false
+        let img = UIGraphicsImageRenderer(size: CGSize(width: 800, height: 600), format: f).image { ctx in
+            UIColor.black.setFill()
+            ctx.fill(CGRect(x: 0, y: 290, width: 800, height: 20))
+            ctx.fill(CGRect(x: 390, y: 0, width: 20, height: 600))
+        }
+        return file(name, img.pngData() ?? Data())
     }
 
     private static func picture(_ name: String) -> URL {
@@ -327,10 +338,8 @@ struct KeyboardShortcuts: View {
         case "up": return .upArrow
         case "down": return .downArrow
         case "space": return .space
-        // also taken by the stage itself (Stage.pressesBegan) when iPadOS keeps them from these shortcuts
-        case "pageDown": return .pageDown
-        case "pageUp": return .pageUp
-        case "return": return .return
+        // the stage's own key commands (Stage.keyCommands), which ask for priority over the system's use of them
+        case "pageDown", "pageUp", "return": return nil
         default: return key.count == 1 ? KeyEquivalent(Character(key)) : nil
         }
     }

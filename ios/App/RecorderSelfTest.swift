@@ -47,7 +47,35 @@ enum RecorderSelfTest {
         guard full.count >= early.count, abs(full.duration - expected) < 0.7 else {
             return "fail: the finished file has \(full.count) frames over \(String(format: "%.1f", full.duration)) s, expected \(String(format: "%.1f", expected)) s without the pause (\(full.note))"
         }
-        return "ok: finished \(String(format: "%.1f", full.duration)) s, \(full.count) frames; the unfinished copy plays \(early.count) frames"
+        let alpha = await seeThroughFrames(dir)
+        guard alpha > 100 else { return "fail: frames with alpha 0 came out black (brightness \(alpha))" }
+        return "ok: finished \(String(format: "%.1f", full.duration)) s, \(full.count) frames; the unfinished copy plays \(early.count) frames; see-through frames come out grey (\(alpha))"
+    }
+
+    /// Light grey frames with alpha 0 through the writer: the brightness of the middle of the video's first frame
+    /// (0 = black; the black backdrop must not show through).
+    private static func seeThroughFrames(_ dir: URL) async -> Int {
+        let url = dir.appendingPathComponent("alpha.mov")
+        let sink = CaptureSink(fragmentInterval: 1, withSound: { false })
+        sink.prepare(url: url)
+        sink.setGeometry(stage: CGRect(x: 0, y: 0, width: 320, height: 240), screen: CGSize(width: 320, height: 240))
+        for _ in 0..<45 {
+            if let b = sample(shade: 0, seeThrough: true) { sink.receive(b, type: .video) }
+            try? await Task.sleep(nanoseconds: 33_000_000)
+        }
+        guard let result = await sink.finish() else { return -1 }
+        let asset = AVURLAsset(url: result.url)
+        guard let track = try? await asset.loadTracks(withMediaType: .video).first,
+              let reader = try? AVAssetReader(asset: asset) else { return -2 }
+        let out = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+        reader.add(out)
+        guard reader.startReading(), let s = out.copyNextSampleBuffer(), let px = CMSampleBufferGetImageBuffer(s) else { return -3 }
+        CVPixelBufferLockBaseAddress(px, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(px, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(px) else { return -4 }
+        let row = CVPixelBufferGetBytesPerRow(px), h = CVPixelBufferGetHeight(px), w = CVPixelBufferGetWidth(px)
+        let p = base.assumingMemoryBound(to: UInt8.self) + (h / 2) * row + (w / 2) * 4
+        return (Int(p[0]) + Int(p[1]) + Int(p[2])) / 3
     }
 
     /// Frames at 30 a second, stamped with the host clock as ReplayKit's are.
@@ -59,14 +87,21 @@ enum RecorderSelfTest {
         }
     }
 
-    private static func sample(shade: CGFloat) -> CMSampleBuffer? {
+    /// `seeThrough`: light grey pixels with alpha 0 (frames can come with no alpha set).
+    private static func sample(shade: CGFloat, seeThrough: Bool = false) -> CMSampleBuffer? {
         var px: CVPixelBuffer?
         CVPixelBufferCreate(nil, 320, 240, kCVPixelFormatType_32BGRA,
                             [kCVPixelBufferIOSurfacePropertiesKey as String: [:]] as CFDictionary, &px)
         guard let px else { return nil }
         CVPixelBufferLockBaseAddress(px, [])
         if let base = CVPixelBufferGetBaseAddress(px) {
-            memset(base, Int32(min(255, shade * 255)), CVPixelBufferGetBytesPerRow(px) * 240)
+            let bytes = CVPixelBufferGetBytesPerRow(px) * 240
+            if seeThrough {
+                let p = base.assumingMemoryBound(to: UInt8.self)
+                for i in stride(from: 0, to: bytes, by: 4) { p[i] = 200; p[i + 1] = 200; p[i + 2] = 200; p[i + 3] = 0 }
+            } else {
+                memset(base, Int32(min(255, shade * 255)), bytes)
+            }
         }
         CVPixelBufferUnlockBaseAddress(px, [])
         var format: CMVideoFormatDescription?

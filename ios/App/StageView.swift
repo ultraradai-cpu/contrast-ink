@@ -107,11 +107,11 @@ final class Stage: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate, UI
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    // MARK: Page Up / Page Down
+    // MARK: Page Up / Page Down / Return
 
-    // A presenter clicker sends Page Down / Page Up. iPadOS keeps those keys for scrolling and doesn't hand them to
-    // SwiftUI's keyboard shortcuts, so the stage takes them first, as the first responder; every other key goes on
-    // to the shortcuts (KeyboardShortcuts).
+    // A presenter clicker sends Page Down / Page Up (some send Return). iPadOS keeps those keys for scrolling and
+    // default buttons and doesn't hand them to SwiftUI's keyboard shortcuts, so the stage has its own key commands,
+    // with priority over the system's; it is the first responder while the slides show (or the canvas inside it is).
     override var canBecomeFirstResponder: Bool { true }
 
     override func didMoveToWindow() {
@@ -119,22 +119,17 @@ final class Stage: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate, UI
         if window != nil { DispatchQueue.main.async { [weak self] in _ = self?.becomeFirstResponder() } }
     }
 
-    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        var rest = Set<UIPress>()
-        for p in presses {
-            switch p.key?.keyCode {
-            case .keyboardPageDown?: lecture.next()
-            case .keyboardPageUp?: lecture.previous()
-            default: rest.insert(p)
-            }
-        }
-        if !rest.isEmpty { super.pressesBegan(rest, with: event) }
+    override var keyCommands: [UIKeyCommand]? {
+        let next = #selector(nextSlide), previous = #selector(previousSlide)
+        let commands = [UIKeyCommand(input: UIKeyCommand.inputPageDown, modifierFlags: [], action: next),
+                        UIKeyCommand(input: "\r", modifierFlags: [], action: next),
+                        UIKeyCommand(input: UIKeyCommand.inputPageUp, modifierFlags: [], action: previous)]
+        for c in commands { c.wantsPriorityOverSystemBehavior = true }
+        return commands
     }
 
-    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        let rest = presses.filter { $0.key?.keyCode != .keyboardPageDown && $0.key?.keyCode != .keyboardPageUp }
-        if !rest.isEmpty { super.pressesEnded(rest, with: event) }
-    }
+    @objc private func nextSlide() { lecture.next() }
+    @objc private func previousSlide() { lecture.previous() }
 
     // MARK: showing the slide and its marks
 

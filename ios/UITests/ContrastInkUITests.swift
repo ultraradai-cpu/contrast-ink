@@ -34,6 +34,25 @@ final class ContrastInkUITests: XCTestCase {
         XCTAssertEqual(marks, n, what)
     }
 
+    /// The colour on screen at a point given as a fraction of the screen (red, green, blue, 0-255).
+    private func colour(at p: CGVector) -> (r: Int, g: Int, b: Int) {
+        guard let cg = XCUIScreen.main.screenshot().image.cgImage else { return (-1, -1, -1) }
+        let x = Int(p.dx * CGFloat(cg.width)), y = Int(p.dy * CGFloat(cg.height))
+        var px = [UInt8](repeating: 0, count: 4)
+        let ctx = CGContext(data: &px, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        ctx?.draw(cg, in: CGRect(x: -x, y: y - cg.height + 1, width: cg.width, height: cg.height))
+        return (Int(px[0]), Int(px[1]), Int(px[2]))
+    }
+
+    /// A point inside an element, as a fraction of it, turned into a fraction of the screen.
+    private func screenPoint(_ e: XCUIElement, _ p: CGVector) -> CGVector {
+        let f = e.frame, s = app.frame
+        return CGVector(dx: (f.minX + p.dx * f.width - s.minX) / s.width, dy: (f.minY + p.dy * f.height - s.minY) / s.height)
+    }
+
+    private func brightness(_ c: (r: Int, g: Int, b: Int)) -> Int { (c.r + c.g + c.b) / 3 }
+
     func testDrawSlidesUndoAndShapes() {
         app.launchArguments = ["-uitest", "-resetMarks"]
         app.launch()
@@ -46,6 +65,10 @@ final class ContrastInkUITests: XCTestCase {
         drag(CGVector(dx: 0.15, dy: 0.40), CGVector(dx: 0.8, dy: 0.70))
         expectMarks(1, "pen: one line")
         shot("02 red line on slide 1")
+        // the line itself: red, where the drag went (its middle), and not beside it (slide 1 is dark grey)
+        let on = colour(at: CGVector(dx: 0.475, dy: 0.55)), off = colour(at: CGVector(dx: 0.475, dy: 0.47))
+        XCTAssertTrue(on.r > 180 && on.g < 120 && on.b < 120, "the middle of the line is red: \(on)")
+        XCTAssertTrue(off.r < 90, "beside the line the slide shows: \(off)")
 
         app.buttons["next"].tap()
         XCTAssertEqual(number.label, "2 / 2")
@@ -112,6 +135,26 @@ final class ContrastInkUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.3)
     }
 
+    /// The iPad's default (no `fingerDraws`): a finger swipes to the next and previous slide and never draws.
+    func testAFingerSwipesSlidesByDefault() {
+        app.launchArguments = ["-uitest", "-resetMarks", "-pencilOnly"]
+        app.launch()
+        let number = app.staticTexts["slideNumber"]
+        XCTAssertTrue(number.waitForExistence(timeout: 10))
+        let slide = app.descendants(matching: .any)["canvas"]
+        slide.swipeLeft()
+        Thread.sleep(forTimeInterval: 0.6)
+        XCTAssertEqual(number.label, "2 / 2", "a finger swiping left: the next slide")
+        expectMarks(0, "and no mark")
+        slide.swipeRight()
+        Thread.sleep(forTimeInterval: 0.6)
+        XCTAssertEqual(number.label, "1 / 2", "swiping right: the previous slide")
+        drag(CGVector(dx: 0.2, dy: 0.45), CGVector(dx: 0.3, dy: 0.62))   // slow, down: not a swipe
+        expectMarks(0, "a finger doesn't draw")
+        XCTAssertEqual(number.label, "1 / 2")
+        shot("F1 a finger swipes, it doesn't draw")
+    }
+
     /// A hardware keyboard or a presenter clicker: the slide keys, and the letters for every tool (L the laser).
     func testKeys() {
         launchSample()
@@ -125,8 +168,8 @@ final class ContrastInkUITests: XCTestCase {
         key(XCUIKeyboardKey.leftArrow.rawValue); XCTAssertEqual(number.label, "1 / 2", "← previous")
         key(XCUIKeyboardKey.return.rawValue); XCTAssertEqual(number.label, "2 / 2", "Return next (a clicker)")
         key(XCUIKeyboardKey.leftArrow.rawValue); XCTAssertEqual(number.label, "1 / 2")
-        // (Page Up / Page Down: the simulator's typed keys never reached the app in CI, whichever way the app took
-        // them, so they are covered by the Core's key table test only)
+        key(XCUIKeyboardKey.pageDown.rawValue); XCTAssertEqual(number.label, "2 / 2", "Page Down next (a clicker)")
+        key(XCUIKeyboardKey.pageUp.rawValue); XCTAssertEqual(number.label, "1 / 2", "Page Up previous")
         shot("K0 keys changed the slides")
 
         for (k, name) in [("h", "Highlighter (H)"), ("a", "Arrow (A)"), ("o", "Circle (O)"), ("e", "Eraser (E)"),
@@ -314,6 +357,14 @@ final class ContrastInkUITests: XCTestCase {
         let notice = app.buttons["lectureNotice"]
         XCTAssertTrue(notice.waitForExistence(timeout: 5), "says how many couldn't be read")
         XCTAssertEqual(notice.label, "1 of 3 pictures couldn't be read and were left out.")
+        // the first picture is black lines on a see-through background: it must show on white, not black on black
+        let slide = app.descendants(matching: .any)["canvas"]
+        XCTAssertTrue(slide.waitForExistence(timeout: 5))
+        Thread.sleep(forTimeInterval: 1)
+        let background = colour(at: screenPoint(slide, CGVector(dx: 0.25, dy: 0.25)))
+        let line = colour(at: screenPoint(slide, CGVector(dx: 0.25, dy: 0.5)))
+        XCTAssertGreaterThan(brightness(background), 200, "the see-through background is white: \(background)")
+        XCTAssertLessThan(brightness(line), 80, "the black line shows on it: \(line)")
         shot("I4 pictures, one unreadable")
     }
 
@@ -401,6 +452,12 @@ final class ContrastInkUITests: XCTestCase {
         pc.pace(Self.testScreen())
         XCTAssertNotNil(pc.waitFor(0x03, after: before), "FRAME_ACK once the picture is on screen")
         XCTAssertTrue(pictureShown, "the picture is shown")
+        // really on screen: the PC's black square in the middle, white around it
+        Thread.sleep(forTimeInterval: 0.5)
+        let square = colour(at: screenPoint(picture, CGVector(dx: 0.5, dy: 0.55)))
+        let around = colour(at: screenPoint(picture, CGVector(dx: 0.12, dy: 0.55)))
+        XCTAssertLessThan(brightness(square), 60, "the black square: \(square)")
+        XCTAssertGreaterThan(brightness(around), 200, "the white around it: \(around)")
         let acks = pc.messages.count
         XCTAssertNotNil(pc.waitFor(0x03, after: acks), "the next FRAME after the ACK, and its ACK")
         Thread.sleep(forTimeInterval: 0.5)
@@ -694,17 +751,18 @@ final class ContrastInkUITests: XCTestCase {
         shot("U5 unplugged: back on Wi-Fi by itself")
     }
 
-    /// A stand-in for a PC's screen: a dark slide with a title bar and a grid, 1600 x 900 like a FRAME.
+    /// A stand-in for a PC's screen: white with a black square and a title bar, 1600 x 900 like a FRAME.
     static func testScreen() -> Data {
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         let img = UIGraphicsImageRenderer(size: CGSize(width: 1600, height: 900), format: format).image { ctx in
-            UIColor(red: 0.08, green: 0.1, blue: 0.14, alpha: 1).setFill()
+            // white, with a black square in the middle (the test samples both) under a blue title bar
+            UIColor.white.setFill()
             ctx.fill(CGRect(x: 0, y: 0, width: 1600, height: 900))
+            UIColor.black.setFill()
+            ctx.fill(CGRect(x: 600, y: 270, width: 400, height: 400))
             UIColor(red: 0.15, green: 0.39, blue: 0.92, alpha: 1).setFill()
             ctx.fill(CGRect(x: 0, y: 0, width: 1600, height: 120))
-            UIColor.white.withAlphaComponent(0.25).setFill()
-            for i in 1..<8 { ctx.fill(CGRect(x: i * 200, y: 120, width: 2, height: 780)) }
             ("The PC's screen" as NSString).draw(at: CGPoint(x: 60, y: 30),
                 withAttributes: [.font: UIFont.boldSystemFont(ofSize: 56), .foregroundColor: UIColor.white])
         }

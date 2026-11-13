@@ -271,3 +271,18 @@ final class PadCheckFormatTests: XCTestCase {
         XCTAssertEqual(PadCheckFormat.format(hash: Data(repeating: 0x0A, count: 32)), "0A0A-0A0A-0A0A-0A0A", "leading zeros kept")
     }
 }
+
+final class SplitViewCropTests: XCTestCase {
+    /// The app in the right part of Split View: its window starts 400 points in on a 1000 x 800 display, and the frame
+    /// is the whole display at 2 pixels a point. The slide must be cut from the window's place, not the display's left.
+    func testTheCropFollowsAWindowThatIsSmallerAndMoved() {
+        let stage = Rect(0, 100, 600, 450)                       // in the window (600 x 800)
+        let onScreen = Crop.onScreen(stageInWindow: stage, windowOrigin: Pt(400, 0))
+        XCTAssertEqual(onScreen, Rect(400, 100, 600, 450))
+        let px = Crop.pixelRect(stage: onScreen, screen: Size(1000, 800), image: Size(2000, 1600))
+        XCTAssertEqual(px, Rect(800, 1600 - 200 - 900, 1200, 900), "800 pixels in, not 0")
+        // what the old geometry gave (the window's own size as the display): the left of the display, squeezed
+        let old = Crop.pixelRect(stage: stage, screen: Size(600, 800), image: Size(2000, 1600))
+        XCTAssertNotEqual(old.x, px.x)
+    }
+}

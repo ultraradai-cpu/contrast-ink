@@ -236,7 +236,22 @@ enum Library {
             kCGImageSourceThumbnailMaxPixelSize: maxSide,
             kCGImageSourceShouldCacheImmediately: true,
         ]
-        return CGImageSourceCreateThumbnailAtIndex(src, 0, options as CFDictionary).map { UIImage(cgImage: $0) }
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, options as CFDictionary) else { return nil }
+        return flattened(cg)
+    }
+
+    /// A picture on opaque white: a PNG with a see-through background (black lines on nothing) would otherwise show
+    /// black on the black stage.
+    static func flattened(_ cg: CGImage) -> UIImage {
+        let size = CGSize(width: cg.width, height: cg.height)
+        let f = UIGraphicsImageRendererFormat.default()
+        f.scale = 1
+        f.opaque = true
+        return UIGraphicsImageRenderer(size: size, format: f).image { ctx in
+            UIColor.white.setFill()
+            ctx.fill(CGRect(origin: .zero, size: size))
+            UIImage(cgImage: cg).draw(in: CGRect(origin: .zero, size: size))
+        }
     }
 
     /// Removes a deck and its saved marks.

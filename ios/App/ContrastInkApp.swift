@@ -17,7 +17,8 @@ struct ContrastInkApp: App {
         // the app's own UI test: a sample deck, and a finger that draws (the simulator has no Apple Pencil)
         if args.contains("-uitest") {
             var s = Lecture.shared.settings
-            s.fingerDraws = true; s.tool = .pen; s.color = 0; s.width = 2; s.fadingInk = false
+            // -pencilOnly: the iPad's default, a finger swipes slides and doesn't draw
+            s.fingerDraws = !args.contains("-pencilOnly"); s.tool = .pen; s.color = 0; s.width = 2; s.fadingInk = false
             Lecture.shared.settings = s
             Lecture.shared.open(Library.sampleDeck())
         }
