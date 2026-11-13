@@ -223,6 +223,9 @@ class PadTest {
 
     @Before fun setUp() {
         shots.mkdirs()
+        // Android 15 explains full screen ("Viewing full screen ... Got it") over the pad the first time: a person
+        // reads it once; the test says it has been seen, so it doesn't cover the pad's buttons
+        device.executeShellCommand("settings put secure immersive_mode_confirmations confirmed")
         // no PC remembered from an earlier test
         prefs.edit().apply { prefs.all.keys.filter { it.startsWith(PadActivity.PIN_PREFIX) }.forEach { remove(it) } }.commit()
         pc = FakePc("123456")
