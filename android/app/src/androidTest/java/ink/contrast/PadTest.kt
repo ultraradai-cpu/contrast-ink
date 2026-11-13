@@ -16,6 +16,7 @@ import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import ink.contrast.core.Json
 import ink.contrast.core.PadCrypto
+import ink.contrast.core.PadHints
 import ink.contrast.core.PadProtocol
 import ink.contrast.core.PadSeal
 import org.junit.After
@@ -317,16 +318,57 @@ class PadTest {
     }
 
     /**
-     * No PC in the list (the emulator's network has none): after about 8 s the connect screen says why that often
-     * happens (hospital Wi-Fi keeping devices apart) and what to do instead. Not before.
+     * No PC in the list (the emulator's network has none), Wi-Fi on: after about 8 s the connect screen says why that
+     * often happens (hospital Wi-Fi keeping devices apart) and what to do instead. Not before: looked at until 6.5 s.
      */
     @Test fun saysToTryAHotspotWhenNoPcIsFound() {
+        device.executeShellCommand("svc wifi enable")
         openPadEmpty()
         assertNotNull("the connect screen", device.wait(Until.findObject(By.text("PCs on this network")), 8000))
-        assertNull("no hint while it has only just started looking", device.findObject(By.text(PadActivity.HOTSPOT_HINT)))
-        val hint = device.wait(Until.findObject(By.text(PadActivity.HOTSPOT_HINT)), (PadActivity.NO_PC_HINT_MS + 6000))
+        val shownAt = System.currentTimeMillis()
+        val quietUntil = shownAt + PadActivity.NO_PC_HINT_MS - 1500
+        while (System.currentTimeMillis() < quietUntil) {
+            val early = device.findObject(By.text(PadActivity.HOTSPOT_HINT))
+            if (early != null) shot("18a the hotspot hint too early")
+            assertNull("no hint ${(System.currentTimeMillis() - shownAt) / 100 / 10.0} s after the connect screen opened " +
+                "(it waits ${PadActivity.NO_PC_HINT_MS / 1000} s for a PC)", early)
+            Thread.sleep(250)
+        }
+        val hint = device.wait(Until.findObject(By.text(PadActivity.HOTSPOT_HINT)), 6000)
         shot("18 no PC found, the hotspot hint")
         assertNotNull("with no PC found for ${PadActivity.NO_PC_HINT_MS / 1000} s, the hotspot hint shows", hint)
+        assertNull("Wi-Fi is on: not told to turn it on", device.findObject(By.text(PadHints.Hint.TURN_ON_WIFI.text!!)))
+    }
+
+    /** Wi-Fi off and no PC found: told to turn Wi-Fi on, not sent to a hotspot. */
+    @Test fun saysToTurnOnWifiWhenItIsOff() {
+        device.executeShellCommand("svc wifi disable")
+        try {
+            Thread.sleep(2000)
+            openPadEmpty()
+            val hint = device.wait(Until.findObject(By.text(PadHints.Hint.TURN_ON_WIFI.text!!)), PadActivity.NO_PC_HINT_MS + 6000)
+            shot("18b Wi-Fi off")
+            assertNotNull("Wi-Fi off: \"turn on Wi-Fi\"", hint)
+            assertNull("not the hotspot hint", device.findObject(By.text(PadActivity.HOTSPOT_HINT)))
+        } finally {
+            device.executeShellCommand("svc wifi enable")
+            Thread.sleep(2000)
+        }
+    }
+
+    /** A typed address where nothing listens (the PC's tablet link off): told to switch it on, not sent to a hotspot. */
+    @Test fun saysThePcIsNotAcceptingTabletsWhenRefused() {
+        device.executeShellCommand("svc wifi enable")
+        val closedPort = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }
+        ctx.startActivity(Intent(ctx, PadActivity::class.java)
+            .putExtra(PadActivity.EXTRA_ADDRESS, "127.0.0.1:$closedPort")
+            .putExtra(PadActivity.EXTRA_CODE, "123456")
+            .putExtra(PadActivity.EXTRA_TEST_SCREENSHOTS, true)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+        val hint = device.wait(Until.findObject(By.text(PadHints.Hint.NOT_ACCEPTING.text!!)), 10000)
+        shot("18c refused, the PC isn't accepting tablets")
+        assertNotNull("refused: \"the PC isn't accepting tablets yet\"", hint)
+        assertNull("not the hotspot hint", device.findObject(By.text(PadActivity.HOTSPOT_HINT)))
     }
 
     @Test fun drawsOnThePcsPictureAndSendsCommands() {

@@ -55,6 +55,8 @@ class VideoCompositor(
         fun failed(problem: Throwable, whileRunning: Boolean)
         /** What Android records (or whether it is final, or how it was decided) changed. */
         fun mode(mode: Mode, settled: Boolean, bySize: Boolean, guessed: Boolean)
+        /** Back in sight, the picture held is black: Android is asked to draw the app into [input] afresh. */
+        fun wantPicture() {}
     }
 
     /** Where Android draws what it records (the recording's VirtualDisplay draws into this), once [Events.ready]. */
@@ -73,14 +75,49 @@ class VideoCompositor(
             if (field == v) return
             field = v
             gl.post {
-                // back in sight: the picture held meanwhile may be black (Android 14): no marks over it until Android
-                // sends the app's picture again (or, should none come, a moment later)
-                if (v) { awaitingPicture = true; gl.postDelayed({ if (awaitingPicture && running && !released) { awaitingPicture = false; safely { draw(look = false) } } }, PICTURE_WAIT_MS) }
-                if (!released && haveFrame && mode == Mode.SINGLE_APP) safely { draw(look = false) }
+                if (released || !running) return@post
+                if (v) {
+                    // back in sight: the picture held meanwhile may be black (Android 14). No marks, and no new frame
+                    // (the video holds its last one), until Android sends a picture of the app that isn't black
+                    awaitingPicture = true
+                    pictureAsks = 0
+                    gl.removeCallbacks(pictureCheck)
+                    gl.postDelayed(pictureCheck, PICTURE_WAIT_MS)
+                } else {
+                    awaitingPicture = false
+                    gl.removeCallbacks(pictureCheck)
+                    // a black slide is black of its own: then black after coming back is no sign of a held picture.
+                    // Looked up from before the app went (Android may already have sent its black picture)
+                    val now = SystemClock.uptimeMillis()
+                    blackBeforeHidden = if (lastLookAt in 1..now - LOOK_BEFORE_HIDDEN_MS) lastLookBlack else earlierLookBlack
+                    if (haveFrame && mode == Mode.SINGLE_APP) safely { draw(look = false) }   // the marks come off
+                }
             }
         }
-    /** Back in sight, no new picture from Android yet (on the video thread). */
+    /** Back in sight, no picture of the app from Android yet (on the video thread). */
     private var awaitingPicture = false
+    private var pictureAsks = 0
+    private var blackBeforeHidden = false
+    /** About once a second, whether Android's picture of the app was black (and the look before that). */
+    private var lastLookAt = 0L
+    private var lastLookBlack = false
+    private var earlierLookBlack = false
+    /** The wait after coming back is over without a picture of the app: look at what is held (CleanRecording.afterShown). */
+    private val pictureCheck: Runnable = Runnable {
+        if (!awaitingPicture || !running || released) return@Runnable
+        safely {
+            val black = haveFrame && mode == Mode.SINGLE_APP && heldPictureBlack()
+            when (CleanRecording.afterShown(haveFrame, mode, black, pictureAsks, blackBeforeHidden)) {
+                CleanRecording.AfterShown.DRAW_MARKS -> { awaitingPicture = false; if (haveFrame) draw(look = false) }
+                CleanRecording.AfterShown.ASK_AGAIN -> {
+                    pictureAsks++
+                    events.wantPicture()
+                    gl.postDelayed(pictureCheck, PICTURE_WAIT_MS)
+                }
+                CleanRecording.AfterShown.NO_MARKS -> Log.w(TAG, "back in sight, Android still holds a black picture: no marks until it sends one")
+            }
+        }
+    }
 
     private val thread = HandlerThread("Contrast Ink video").apply { start() }
     private val gl = Handler(thread.looper)
@@ -127,7 +164,7 @@ class VideoCompositor(
     }
 
     /** The main thread put a new picture of the marks in [inkFrames]: redraw the last frame with it. */
-    fun inkChanged() = gl.post { if (running && haveFrame && mode == Mode.SINGLE_APP) safely { draw(look = false) } }
+    fun inkChanged() = gl.post { if (running && haveFrame && mode == Mode.SINGLE_APP && !awaitingPicture) safely { draw(look = false) } }
 
     /** Stops drawing and frees everything. Waits (briefly) for the video thread to finish; false when it didn't in time. */
     fun release(): Boolean {
@@ -209,7 +246,16 @@ class VideoCompositor(
             if (failNextFrameForTest) { failNextFrameForTest = false; throw IllegalStateException("OpenGL made to fail by the app's test") }
             texture.updateTexImage()
             haveFrame = true
-            awaitingPicture = false
+            if (mode == Mode.SINGLE_APP && contentVisible && SystemClock.uptimeMillis() - lastLookAt >= 1000) {
+                earlierLookBlack = lastLookBlack
+                lastLookBlack = heldPictureBlack()
+                lastLookAt = SystemClock.uptimeMillis()
+            }
+            // back in sight: the first pictures may still be the held black one
+            if (awaitingPicture && (blackBeforeHidden || !(mode == Mode.SINGLE_APP && heldPictureBlack()))) {
+                awaitingPicture = false
+                gl.removeCallbacks(pictureCheck)
+            }
             draw(look = true)
         }
     }
@@ -275,6 +321,21 @@ class VideoCompositor(
     }
 
     /** The frame's pixels inside [box] (top-left origin, frame pixels) as ARGB, rows top to bottom, and its width. */
+    /** Draws Android's held picture (not handed to the encoder) and looks at nine points of it: all black? */
+    private fun heldPictureBlack(): Boolean {
+        GLES20.glViewport(0, 0, width, height)
+        GLES20.glDisable(GLES20.GL_BLEND)
+        texture.getTransformMatrix(texMatrix)
+        quad(frameProgram, GLES11Ext.GL_TEXTURE_EXTERNAL_OES, frameTex, FRAME_COORDS, texMatrix)
+        val samples = IntArray(9)
+        for (i in 0 until 9) {
+            val x = width * (1 + 2 * (i % 3)) / 6f
+            val y = height * (1 + 2 * (i / 3)) / 6f
+            samples[i] = readPixels(Box(x, y, 1f, 1f)).first.firstOrNull() ?: 0
+        }
+        return CleanRecording.isBlack(samples)
+    }
+
     private fun readPixels(box: Box): Pair<IntArray, Int> {
         val left = box.left.toInt().coerceIn(0, width)
         val right = box.right.toInt().coerceIn(0, width)
@@ -386,8 +447,10 @@ class VideoCompositor(
         private const val TAG = "ContrastInk"
         /** No frame looked at this long after the start: the marks go into the video, to be safe. */
         const val GIVE_UP_MS = 4000L
-        /** Back in sight with no new picture from Android: the marks come back after this long all the same. */
+        /** Back in sight: how long to wait for Android's picture of the app before looking at what is held. */
         const val PICTURE_WAIT_MS = 500L
+        /** A look at the picture this long before the app went out of sight is from before Android blacked it out. */
+        const val LOOK_BEFORE_HIDDEN_MS = 500L
         /** TEST ONLY: the next compositor's OpenGL fails to start (the recorder must still record). */
         @Volatile var failSetUpForTest = false
         /** TEST ONLY: the next frame's OpenGL work fails, mid-recording (the recording must go on). */

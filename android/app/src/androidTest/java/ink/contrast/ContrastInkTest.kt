@@ -213,9 +213,9 @@ class ContrastInkTest {
             val px = highlight.getPixel(x, y)
             assertTrue("highlighter: the slide under it is light (${hex(bg)} at ($x, $y)), to see it blend", Color.red(bg) > 200 && Color.green(bg) > 200 && Color.blue(bg) > 200)
             val a = coverage(px, green, bg)
-            // the app lays the highlighter on at 40%: see-through, about half the colour, never solid or missing
-            assertTrue("highlighter: green ${hex(green)} blended over the slide ${hex(bg)} at about half (40%): ${hex(px)} at ($x, $y) is ${(a * 100).toInt()}%",
-                a in 0.3f..0.6f && close(px, Color.rgb(
+            // the app lays the highlighter on at 40% (told from 50%: within 5 points)
+            assertTrue("highlighter: green ${hex(green)} blended over the slide ${hex(bg)} at 40%: ${hex(px)} at ($x, $y) is ${(a * 100).toInt()}%",
+                a in 0.35f..0.45f && close(px, Color.rgb(
                     (Color.red(bg) + a * (Color.red(green) - Color.red(bg))).toInt(),
                     (Color.green(bg) + a * (Color.green(green) - Color.green(bg))).toInt(),
                     (Color.blue(bg) + a * (Color.blue(green) - Color.blue(bg))).toInt()), 20))
@@ -280,8 +280,8 @@ class ContrastInkTest {
                 val a = coverage(half.getPixel(x, yy), green, beforeHalf.getPixel(x, yy))
                 if (best.isNaN() || a > best) { best = a; bestPx = half.getPixel(x, yy); bestBg = beforeHalf.getPixel(x, yy) }
             }
-            assertTrue("opacity 50%: green ${hex(green)} over ${hex(bestBg)} shows at about half: ${hex(bestPx)} at ($x, $y) is ${(best * 100).toInt()}%",
-                best in 0.38f..0.65f)
+            assertTrue("opacity 50%: green ${hex(green)} over ${hex(bestBg)} shows at 50% (told from 40%: within 5 points): ${hex(bestPx)} at ($x, $y) is ${(best * 100).toInt()}%",
+                best in 0.45f..0.55f)
         }
         inst.runOnMainSync { InkService.running?.update { it.copy(opacity = 1f) } }
 
@@ -735,6 +735,14 @@ class ContrastInkTest {
         press("Stop recording")
         val (_, uri) = savedVideo("62 saved")
         ctx.contentResolver.openInputStream(uri)!!.use { input -> File(shots, "62 the recording, app out of sight midway.mp4").outputStream().use { input.copyTo(it) } }
+        // coming back (a still stand-in app): every frame from out of sight to 1.5 s after the return. Android 14
+        // holds a black picture meanwhile; no frame may have the marks over it
+        val overBlack = framesBetween(uri, hiddenFrom, hiddenTo + 1500).filter { (_, f) -> mostlyBlack(f) && redPixels(f) >= 20 }
+        overBlack.firstOrNull()?.let { (us, f) ->
+            File(shots, "62d marks over black at ${us / 1000} ms.png").outputStream().use { f.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        }
+        assertTrue("coming back in sight: no frame has the marks over Android's held black picture " +
+            "(${overBlack.size} did, at ${overBlack.map { it.first / 1000 }} ms)", overBlack.isEmpty())
         val middle = (hiddenFrom + hiddenTo) / 2
         val hidden = frameAt(uri, middle, "62b frame at $middle ms, the recorded app out of sight ($hiddenFrom to $hiddenTo ms)")
         val last = lastFrame(uri, "62c last frame, back in sight")
@@ -745,11 +753,37 @@ class ContrastInkTest {
             val (x, y) = inFrame(hidden, 0.15f + 0.7f * t, 0.55f + 0.1f * t)
             assertTrue("out of sight ($middle ms into the video): no red line at (${x.toInt()}, ${y.toInt()})", !redNear(hidden, x, y))
         }
-        val pixels = IntArray(hidden.width * hidden.height)
-        hidden.getPixels(pixels, 0, hidden.width, 0, 0, hidden.width, hidden.height)
-        val reds = pixels.count { Color.red(it) > 170 && Color.green(it) < 110 && Color.blue(it) < 110 }
+        val reds = redPixels(hidden)
         assertTrue("out of sight ($middle ms into the video): no red anywhere in the frame ($reds red pixels)", reds < 20)
         assertRedLine(last, "back in sight", screen, bar)
+    }
+
+    private fun pixelsOf(f: Bitmap) = IntArray(f.width * f.height).also { f.getPixels(it, 0, f.width, 0, 0, f.width, f.height) }
+
+    private fun redPixels(f: Bitmap) = pixelsOf(f).count { Color.red(it) > 170 && Color.green(it) < 110 && Color.blue(it) < 110 }
+
+    /** Over 80% black, not counting red (the marks): Android's held picture of an app out of sight (Android 14). */
+    private fun mostlyBlack(f: Bitmap): Boolean {
+        val p = pixelsOf(f).filterNot { Color.red(it) > 170 && Color.green(it) < 110 && Color.blue(it) < 110 }
+        return p.isNotEmpty() && p.count { Color.red(it) + Color.green(it) + Color.blue(it) < 40 } > p.size * 0.8
+    }
+
+    /** Every video frame that starts between [fromMs] and [toMs], with its time in µs. */
+    private fun framesBetween(uri: Uri, fromMs: Long, toMs: Long): List<Pair<Long, Bitmap>> {
+        val times = MediaExtractor().run {
+            setDataSource(ctx, uri, null)
+            val video = (0 until trackCount).first { getTrackFormat(it).getString(MediaFormat.KEY_MIME)!!.startsWith("video/") }
+            selectTrack(video)
+            val t = ArrayList<Long>()
+            while (sampleTrackIndex >= 0) { if (sampleTime in fromMs * 1000..toMs * 1000) t += sampleTime; advance() }
+            release(); t.sorted()
+        }
+        assertTrue("the video has frames between $fromMs and $toMs ms", times.isNotEmpty())
+        return MediaMetadataRetriever().run {
+            setDataSource(ctx, uri)
+            val frames = times.mapNotNull { us -> getFrameAtTime(us, MediaMetadataRetriever.OPTION_CLOSEST)?.let { us to it } }
+            release(); frames
+        }
     }
 
     /** How long the video is so far by the recorder's clock (paused time left out), in ms. */

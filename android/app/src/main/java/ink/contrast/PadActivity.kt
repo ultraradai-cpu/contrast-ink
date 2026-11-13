@@ -35,6 +35,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import ink.contrast.core.PadCrypto
+import ink.contrast.core.PadHints
 import ink.contrast.core.PadLinks
 import ink.contrast.core.PadProtocol
 import ink.contrast.core.PcMessage
@@ -79,9 +80,8 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
         const val MAX_PICTURE_PX = 4096
         /** After a session drops, quiet tries before "Lost the PC" shows (a Wi-Fi blip is usually over by then). */
         const val QUIET_RETRIES = 2
-        /** On the connect screen when no PC turns up in the list, or a typed address can't be reached. */
-        const val HOTSPOT_HINT = "Can't find the PC? Hospital Wi-Fi often blocks this. Join the PC's hotspot (Windows: Mobile hotspot, " +
-            "usually 192.168.137.1) or your phone's hotspot, or use the USB cable."
+        /** On the connect screen when no PC turns up and Wi-Fi is on (see [PadHints]). */
+        val HOTSPOT_HINT = PadHints.Hint.HOTSPOT.text!!
         /** How long the list may stay empty before [HOTSPOT_HINT] shows. */
         const val NO_PC_HINT_MS = 8000L
         private const val DONT_CONNECT = "Don't connect: this may not be your PC."
@@ -103,7 +103,7 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
     private lateinit var foundList: LinearLayout
     private lateinit var hotspotHint: TextView
     /** The list stayed empty: the hint about networks that block finding the PC. */
-    private val noPcFound = Runnable { if (found.isEmpty() && connectScreen.visibility == View.VISIBLE) showHotspotHint() }
+    private val noPcFound = Runnable { if (found.isEmpty() && connectScreen.visibility == View.VISIBLE) showHint(PadHints.noPcFound(wifiOn())) }
     private lateinit var addressField: EditText
     private lateinit var codeField: EditText
     private lateinit var connectButton: Button
@@ -276,7 +276,7 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
         col.addView(text("PCs on this network", 18f, bold = true))
         foundList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(foundList)
-        hotspotHint = text(HOTSPOT_HINT, 14f).apply { setTextColor(warn); visibility = View.GONE }
+        hotspotHint = text("", 14f).apply { setTextColor(warn); visibility = View.GONE }
         col.addView(hotspotHint)
         col.addView(space(8))
         col.addView(text("Or the PC's address (shown under its code)", 15f))
@@ -654,8 +654,8 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
             else -> {
                 if (end.why == PadConnection.Why.REJECTED) links.codeRefused()   // not worth going back to after the cable
                 showConnect(sentence(end))
-                // a typed address that never answered: often a network that keeps devices apart
-                if (!end.everConnected && end.why in setOf(PadConnection.Why.UNREACHABLE, PadConnection.Why.LOST)) showHotspotHint()
+                // a typed address never connected to: why, as far as the tablet can tell (refused, no answer, Wi-Fi off)
+                if (!end.everConnected && end.why == PadConnection.Why.UNREACHABLE) showHint(PadHints.connectFailed(wifiOn(), end.cause))
             }
         }
     }
@@ -698,7 +698,14 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
         catch (e: Exception) { discovering = null }
     }
 
-    private fun showHotspotHint() { hotspotHint.visibility = View.VISIBLE }
+    private fun showHint(h: PadHints.Hint) {
+        hotspotHint.text = h.text ?: ""
+        hotspotHint.visibility = if (h.text == null) View.GONE else View.VISIBLE
+    }
+
+    @Suppress("DEPRECATION")   // isWifiEnabled: still the plain "is Wi-Fi switched on"
+    private fun wifiOn(): Boolean =
+        (applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager)?.isWifiEnabled != false
 
     private fun stopDiscovery() {
         main.removeCallbacks(noPcFound)

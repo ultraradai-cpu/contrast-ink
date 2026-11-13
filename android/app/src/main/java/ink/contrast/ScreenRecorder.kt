@@ -361,6 +361,15 @@ class ScreenRecorder(private val service: InkService) {
         override fun mode(mode: Mode, settled: Boolean, bySize: Boolean, guessed: Boolean) {
             main.post { modeFound(mode, settled, bySize, guessed) }
         }
+        override fun wantPicture() { main.post { redrawDisplay() } }
+    }
+
+    /** The recording's display drawn afresh: its surface let go and given back (Android then sends a new picture). */
+    private fun redrawDisplay() {
+        val d = display ?: return
+        val s = d.surface ?: return
+        if (!active || compositor == null) return
+        try { d.surface = null; d.surface = s } catch (e: Exception) { Log.w(TAG, "the recording's display couldn't be redrawn", e) }
     }
 
     private var pendingInput: Surface? = null
