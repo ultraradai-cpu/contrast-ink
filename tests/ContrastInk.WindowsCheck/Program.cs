@@ -326,7 +326,7 @@ static class Program
     const string AdbRan = "adb-ran.txt";
     const string PlantedAdbDir = @"C:\platform-tools";
     static bool plantedAdb;
-    static string PathAdbDir => Path.Combine(outDir, "adb-on-path");
+    static string PathAdbDir => Path.Combine(Path.GetTempPath(), "contrastink-check-adb-on-path");
 
     static bool SafeExists(string f) { try { return File.Exists(f); } catch (ArgumentException) { return false; } }
 
@@ -960,7 +960,7 @@ static class Program
             ppt.SlideShowWindows.Show.View.Hidden = 2;               // two hidden slides: position 3 in the show is slide 5
             ppt.SlideShowWindows.Show.View.HiddenFrom = 3;
             ppt.SlideShowWindows.Show.View.CurrentShowPosition = 3; Thread.Sleep(11000);
-            Check(OnToolbar("0:0"), "the toolbar shows the recording time", OnToolbar("0:0") ? "timer shown" : "no timer");
+            Check(OnToolbar("0:"), "the toolbar shows the recording time", ToolbarName("0:") ?? "no timer");
             var names = string.Join(", ", obs.ChapterNames);
             Check(names == "Slide 2, Slide 5", "each slide change is a chapter in OBS's video, named by PowerPoint's own slide number", "chapters asked: " + names);
 
@@ -986,7 +986,7 @@ static class Program
             Check(OnToolbar("Lost contact with OBS"), "the line to OBS dropping mid-recording: the toolbar says so", OnToolbar("Lost contact with OBS") ? "said" : "silent");
             WaitFor(() => obs.Identified && OnToolbar("Stop recording"), 12000);
             Check(OnToolbar("Stop recording"), "OBS reached again while still recording: the toolbar takes the recording over (⏹)", OnToolbar("Stop recording") ? "⏹ shown" : "still ⏺");
-            Press("Lost contact with OBS");   // dismissed
+            if (OnToolbar("Lost contact with OBS")) Press("Lost contact with OBS");   // dismissed (if a hover hint is not showing instead)
 
             Press("Stop recording");
             WaitFor(() => !obs.Recording, 3000);

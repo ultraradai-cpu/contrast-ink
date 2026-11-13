@@ -258,6 +258,14 @@ sealed class PadServer : IDisposable
         if (tcs != null) Answer(allow, tcs);
     }
 
+    /// <summary>The connection that asked ended before an answer: no question left on the toolbar to allow later.</summary>
+    void Withdraw(Task<bool> question)
+    {
+        TaskCompletionSource<bool>? tcs;
+        lock (gate) tcs = asking != null && ReferenceEquals(asking.Task, question) ? asking : null;
+        if (tcs != null) Answer(false, tcs);
+    }
+
     void Answer(bool allow, TaskCompletionSource<bool> tcs)
     {
         lock (gate)
@@ -352,6 +360,7 @@ sealed class PadServer : IDisposable
         finally
         {
             if (counted) admitted();
+            if (allowed is { IsCompleted: false }) Withdraw(allowed);   // gone before an answer: the question goes too
             conn.Close();
             bool wasCurrent;
             lock (gate) { wasCurrent = ReferenceEquals(current, conn); if (wasCurrent) current = null; }
