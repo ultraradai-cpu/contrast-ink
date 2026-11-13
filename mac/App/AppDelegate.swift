@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import ContrastInkCore
 import ContrastInkPC
 
@@ -21,8 +22,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// a tablet's stroke drawn and seen in the layer's pixels, undo, a tablet command, and the audit's fixes: the keyboard
 /// given back when drawing goes off, only a stroke's own area drawn again, ✕ asking first, the pen tablet's
 /// proximity watched), prints "SMOKE OK" and quits.
-/// Run by the Mac workflow on GitHub, where no Screen Recording permission can be given: pictures of the screen are
-/// not taken there (only their JPEG encoding is checked).
+/// Run by the Mac workflow on GitHub. Where Screen Recording is allowed (GitHub's Macs allow it), the tablet's picture
+/// is captured for real with ScreenCaptureKit and must not show the toolbar; where it isn't, that is said in the log
+/// and only the toolbar's capture flag is checked.
 enum SmokeTest {
     private static var failures: [String] = []
 
@@ -40,7 +42,8 @@ enum SmokeTest {
         check(o.ignoresMouseEvents, "drawing off: clicks go through to the app below")
         let t = c.toolbar.panel
         check(t.isVisible, "the toolbar is on screen")
-        check(t.sharingType == .none, "the toolbar asks to be left out of screen capture")
+        // a flag only: ScreenCaptureKit ignores it (mac/README.md), so the live capture check below is the real one
+        check(t.sharingType == .none, "flag check: the toolbar's sharingType is .none (asks to be left out of screen capture)")
         check(t.level.rawValue > o.level.rawValue, "the toolbar is above the drawing layer")
         check(t.styleMask.contains(.nonactivatingPanel) && !t.canBecomeKey, "the toolbar never takes the keyboard")
         print("     F9 hot key registered: \(HotKey.registered)")
@@ -75,6 +78,10 @@ enum SmokeTest {
         let px = pixel(c.ink, 0.375, 0.375)
         check(px.map { $0.alphaComponent > 0.8 && $0.redComponent > 0.8 && $0.greenComponent < 0.4 } ?? false,
               "the mark is drawn in red where it was drawn (\(px.map { "r \($0.redComponent) g \($0.greenComponent) a \($0.alphaComponent)" } ?? "no pixels"))")
+        // the swatch's own sRGB numbers (#FF3B30), not device RGB (more saturated on a P3 display)
+        let swatch = Ink.rgb(Settings.colors[0]) ?? (1, 0, 0)
+        check(px.map { abs($0.redComponent - swatch.r) < 0.05 && abs($0.greenComponent - swatch.g) < 0.05 && abs($0.blueComponent - swatch.b) < 0.05 } ?? false,
+              "the red ink is the swatch's sRGB red \(Settings.colors[0]) (\(px.map { "r \($0.redComponent) g \($0.greenComponent) b \($0.blueComponent)" } ?? "no pixels"))")
         let empty = pixel(c.ink, 0.8, 0.2)
         check(empty.map { $0.alphaComponent < 0.05 } ?? false, "the rest of the layer is see-through")
 
@@ -116,11 +123,10 @@ enum SmokeTest {
         c.toolbar.cancelAsk()
         check(!c.toolbar.asking && answered == false, "a question taken away unanswered is a Deny")
 
-        // the tablet's pictures: only the encoding (no Screen Recording permission on GitHub's Macs)
+        // the tablet's pictures: the encoding here; a live capture at the end (captureCheck)
         let jpeg = ScreenGrabber.encode(testImage())
         check(jpeg.map { $0.starts(with: [0xFF, 0xD8]) } ?? false, "a picture encodes as JPEG")
         check(ScreenGrabber.scaled(3024, 1964) == (1600, 1039), "pictures are at most 1600 px wide")
-        print("     pictures of the screen: skipped (Screen Recording permission: \(Permissions.screenRecording))")
 
         // the pen tablet's eraser end, through the app's own event queue (the local proximity monitor)
         if let near = proximity(eraser: true, entering: true) {
@@ -129,12 +135,81 @@ enum SmokeTest {
                 check(c.ink.eraserEnd, "the pen's eraser end coming near is seen (proximity event)")
                 if let away = proximity(eraser: true, entering: false) { c.ink.proximity(away) }
                 check(!c.ink.eraserEnd, "the pen leaving is seen")
-                finish()
+                captureCheck(c) { finish() }
             }
         } else {
             check(false, "a proximity event could be made")
-            finish()
+            captureCheck(c) { finish() }
         }
+    }
+
+    /// The tablet's picture, taken for real by ScreenGrabber (ScreenCaptureKit, the toolbar's windows left out by
+    /// number, as the tablet link does): the toolbar must be absent. The same capture leaving nothing out must show
+    /// the toolbar, so the check can fail (and sharingType .none is seen to be ignored). Without Screen Recording
+    /// permission this says so and checks nothing more.
+    private static func captureCheck(_ c: AppController, then done: @escaping () -> Void) {
+        let t = c.toolbar.panel
+        guard #available(macOS 14.0, *) else {
+            print("     LIVE CAPTURE NOT TESTED: macOS 13 (no ScreenCaptureKit screenshots); only the sharingType flag was checked")
+            done(); return
+        }
+        guard Permissions.screenRecording, let screen = t.screen ?? NSScreen.main else {
+            print("     LIVE CAPTURE NOT TESTED: no Screen Recording permission on this Mac; only the sharingType flag was checked")
+            done(); return
+        }
+        let scale = screen.backingScaleFactor
+        func target(_ exclude: [Int]) -> ScreenGrabber.Target {
+            ScreenGrabber.Target(display: AppController.displayNumber(screen), pixelWidth: Int(screen.frame.width * scale),
+                                 pixelHeight: Int(screen.frame.height * scale), exclude: exclude)
+        }
+        let grabber = ScreenGrabber()
+        var ended = false
+        func end() { if !ended { ended = true; done() } }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
+            if !ended { check(false, "live capture: ScreenCaptureKit gave pictures within 20 s"); end() }
+        }
+        grabber.jpeg(target([])) { all in
+            grabber.jpeg(target(c.toolbar.windowNumbers)) { tablet in
+                DispatchQueue.main.async {
+                    guard !ended else { return }
+                    let shown = toolbarShare(all, panel: t.frame, screen: screen.frame)
+                    let left = toolbarShare(tablet, panel: t.frame, screen: screen.frame)
+                    func pct(_ v: Double?) -> String { v.map { "\(Int($0 * 100))% of its box is its colour" } ?? "no picture" }
+                    check((shown ?? 0) > 0.3, "live capture, nothing left out: the toolbar is in the picture (\(pct(shown))), so this check can fail")
+                    check(left.map { $0 < 0.05 } ?? false, "live capture (ScreenCaptureKit): the toolbar is absent from the tablet's picture (\(pct(left)))")
+                    end()
+                }
+            }
+        }
+    }
+
+    /// The share of the toolbar's box (its edges left out) in a captured JPEG that is the toolbar's background colour.
+    private static func toolbarShare(_ jpeg: Data?, panel: NSRect, screen: NSRect) -> Double? {
+        guard let jpeg, let src = CGImageSourceCreateWithData(jpeg as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(src, 0, nil),
+              let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let ctx = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: image.width * 4,
+                                  space: space, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        guard let data = ctx.data else { return nil }
+        let px = data.bindMemory(to: UInt8.self, capacity: image.width * image.height * 4)
+        let sx = Double(image.width) / Double(screen.width), sy = Double(image.height) / Double(screen.height)
+        let box = panel.insetBy(dx: panel.width * 0.15, dy: panel.height * 0.15)
+        // screen points (origin bottom left) to the picture's pixels (origin top left)
+        let x0 = max(0, Int((box.minX - screen.minX) * sx)), x1 = min(image.width, Int((box.maxX - screen.minX) * sx))
+        let y0 = max(0, Int((screen.maxY - box.maxY) * sy)), y1 = min(image.height, Int((screen.maxY - box.minY) * sy))
+        guard x1 > x0, y1 > y0 else { return nil }
+        let bar = Ink.rgb(MacPalette.bar) ?? (0.08, 0.1, 0.13)
+        let want = (Int(bar.r * 255), Int(bar.g * 255), Int(bar.b * 255))
+        var n = 0, total = 0
+        for y in y0..<y1 {
+            for x in x0..<x1 {
+                let i = (y * image.width + x) * 4
+                total += 1
+                if abs(Int(px[i]) - want.0) <= 24 && abs(Int(px[i + 1]) - want.1) <= 24 && abs(Int(px[i + 2]) - want.2) <= 24 { n += 1 }
+            }
+        }
+        return total > 0 ? Double(n) / Double(total) : nil
     }
 
     private static func finish() {
@@ -161,9 +236,9 @@ enum SmokeTest {
     }
 
     private static func testImage() -> CGImage {
-        let ctx = CGContext(data: nil, width: 64, height: 32, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+        let ctx = CGContext(data: nil, width: 64, height: 32, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
                             bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue)!
-        ctx.setFillColor(red: 0.1, green: 0.2, blue: 0.8, alpha: 1)
+        ctx.setFillColor(CGColor(srgbRed: 0.1, green: 0.2, blue: 0.8, alpha: 1))
         ctx.fill(CGRect(x: 0, y: 0, width: 64, height: 32))
         return ctx.makeImage()!
     }

@@ -106,7 +106,8 @@ The Mac is the PC for the tablet, exactly as Windows is: the tablet shows a live
 what you draw on it is drawn on the Mac, so OBS records it.
 
 1. On the Mac: **⚙ → Let a Tablet Draw Here**. It shows a 6-digit **code** (new each time Contrast Ink starts), a
-   **PC check** (16 digits, XXXX-XXXX-XXXX-XXXX, always the same for this Mac) and the Mac's address. macOS asks for Screen Recording (and on
+   **PC check** (16 digits, XXXX-XXXX-XXXX-XXXX, always the same for this Mac) and the Mac's addresses (every network
+   it is on, including Internet Sharing's). macOS asks for Screen Recording (and on
    macOS 15, Local Network): allow both, then quit and reopen Contrast Ink once.
 2. On the tablet (same Wi-Fi): Contrast Ink → **Use as a pad for a PC** → pick the Mac → type the code.
 3. The first time, the tablet shows a PC check: tap **It matches** only if it is the same as on the Mac.
@@ -154,6 +155,9 @@ the Mac's own hotspot is safer still. The link itself is described in [docs/pad-
   and reopen Contrast Ink. Just after an update, remove Contrast Ink from the list and add it again (above).
 - The tablet doesn't find the Mac: type the address shown in ⚙ into the tablet instead (some networks hide names),
   and check macOS 15's Local Network permission and the firewall.
+- No shared Wi-Fi (hospital Wi-Fi often keeps devices apart): turn on **Internet Sharing** to Wi-Fi (System
+  Settings → General → Sharing) and join the tablet to it (⚙ then lists its address too, usually 192.168.2.1), or use
+  a phone hotspot or the USB cable.
 
 Errors are written to `~/Library/Logs/Contrast Ink.log` (kept under 1 MB; the part before is in
 `Contrast Ink.old.log`). Send them along with what you were doing. ✕ asks before quitting when there are marks on

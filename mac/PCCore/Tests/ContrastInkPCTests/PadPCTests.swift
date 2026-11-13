@@ -179,4 +179,18 @@ final class PadPCTests: XCTestCase {
                                               ("en5", "169.254.3.3"), ("en1", "192.168.1.20"), ("bridge100", "10.0.0.1")]),
                        ["192.168.1.20", "10.0.0.1"])
     }
+
+    /// Internet Sharing on: the Mac is 192.168.2.1 on bridge100, and a tablet on that shared Wi-Fi needs that address.
+    func testAddressListKeepsInternetSharingsBridge() {
+        let all = PadPC.usableAddresses([("lo0", "127.0.0.1"), ("en0", "10.20.30.40"), ("bridge100", "192.168.2.1"),
+                                         ("bridge100", "fe80::1"), ("awdl0", "169.254.9.9")])
+        XCTAssertEqual(all, ["10.20.30.40", "192.168.2.1"])
+        XCTAssertEqual(PadPC.addressLine(all, port: PadProtocol.defaultPort), "Or type the address 10.20.30.40 or 192.168.2.1.")
+        XCTAssertEqual(PadPC.addressLine(all, port: 47900), "Or type the address 10.20.30.40:47900 or 192.168.2.1:47900.")
+        XCTAssertEqual(PadPC.addressLine(["192.168.2.1"], port: 0), "Or type the address 192.168.2.1.")
+        XCTAssertNil(PadPC.addressLine([], port: 0))
+        // only Internet Sharing's network: still listed
+        XCTAssertEqual(PadPC.usableAddresses([("bridge100", "192.168.2.1")]), ["192.168.2.1"])
+        XCTAssertEqual(MacTexts.noSharedWifi, "No shared Wi-Fi? Turn on Internet Sharing to Wi-Fi, or use a phone hotspot or the USB cable.")
+    }
 }

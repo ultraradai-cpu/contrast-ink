@@ -343,9 +343,8 @@ final class AppController {
         } else {
             let ports = p.server.ports
             lines.append("On the tablet: Contrast Ink → Use as a pad → \(PadHost.macName), code \(p.server.code). The first time, the tablet shows a PC check: it must be \(p.server.pcCheck).")
-            if let a = PadHost.addresses().first {
-                lines.append("Or type the address \(a)" + (ports.wifi != 0 && ports.wifi != PadProtocol.defaultPort ? ":\(ports.wifi)" : "") + ".")
-            }
+            if let line = PadPC.addressLine(PadHost.addresses(), port: ports.wifi) { lines.append(line) }
+            lines.append(MacTexts.noSharedWifi)
             lines.append("By USB cable, by itself when plugged in: an iPad in pad mode just needs the cable; an Android tablet needs USB debugging on and Google's platform-tools (adb) on this Mac"
                          + (p.adbFound ? " (found)." : " (not found yet: brew install android-platform-tools)."))
             if ports.usb != nil {

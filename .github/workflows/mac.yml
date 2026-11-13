@@ -37,12 +37,12 @@ jobs:
       - name: Test the Mac's rules and the tablet link's server
         run: swift test --package-path PCCore
       - name: Make the Xcode project
-        if: hashFiles('mac/project.yml') != ''
         run: |
+          # no project.yml is a broken checkout, not a reason to skip the build, the smoke test and the release
+          if [ ! -f project.yml ]; then echo "::error::mac/project.yml is missing: nothing to build"; exit 1; fi
           brew install xcodegen
           xcodegen
       - name: Build (Release, unsigned)
-        if: hashFiles('mac/project.yml') != ''
         run: |
           set -o pipefail
           xcodebuild build -project ContrastInk.xcodeproj -scheme ContrastInk -configuration Release \
@@ -50,9 +50,9 @@ jobs:
             CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO | tail -60
           ls -la build/Build/Products/Release/
       - name: Start the app once (smoke test)
-        if: hashFiles('mac/project.yml') != ''
         run: |
-          # No screen-recording permission on GitHub's Macs: the smoke test skips taking pictures of the screen.
+          # GitHub's Macs allow Screen Recording: the smoke test captures the screen as the tablet does (ScreenCaptureKit)
+          # and checks the toolbar is left out. Where it isn't allowed, the log says "LIVE CAPTURE NOT TESTED".
           app=build/Build/Products/Release/ContrastInk.app/Contents/MacOS/ContrastInk
           "$app" --smoke-test > smoke.log 2>&1 &
           pid=$!
@@ -66,18 +66,16 @@ jobs:
           test $code -eq 0
           grep -q "SMOKE OK" smoke.log
       - name: Zip ContrastInk-Mac.zip
-        if: hashFiles('mac/project.yml') != ''
         run: |
           cd build/Build/Products/Release
           ditto -c -k --sequesterRsrc --keepParent ContrastInk.app "$GITHUB_WORKSPACE/mac/ContrastInk-Mac.zip"
           ls -la "$GITHUB_WORKSPACE/mac/ContrastInk-Mac.zip"
       - uses: actions/upload-artifact@v4
-        if: hashFiles('mac/project.yml') != ''
         with:
           name: ContrastInk-Mac
           path: mac/ContrastInk-Mac.zip
       - name: Update the mac-latest release (main only)
-        if: github.ref == 'refs/heads/main' && hashFiles('mac/project.yml') != ''
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

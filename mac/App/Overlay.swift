@@ -394,6 +394,13 @@ final class InkView: NSView {
         drawLaser(in: ctx, now: now, width: Laser.width(st.lineWidth))
     }
 
+    /// An ink colour in sRGB, as the toolbar's swatches (NSColor(hex:)), the tablet and the Windows app define it.
+    /// `setStrokeColor(red:green:blue:alpha:)` would be device RGB: on a P3 display the same numbers come out more
+    /// saturated, so the ink wouldn't match its swatch, the projector or the recording.
+    static func srgb(_ r: Double, _ g: Double, _ b: Double, _ a: Double) -> CGColor {
+        CGColor(srgbRed: CGFloat(r), green: CGFloat(g), blue: CGFloat(b), alpha: CGFloat(a))
+    }
+
     private func draw(_ m: InkMark, alpha: Double, in ctx: CGContext, finished: Bool = true) {
         guard alpha > 0, let first = m.points.first else { return }
         if finished { marksDrawn += 1 }
@@ -406,8 +413,8 @@ final class InkView: NSView {
             ctx.setAlpha(CGFloat(alpha))
             ctx.beginTransparencyLayer(auxiliaryInfo: nil)
         }
-        ctx.setStrokeColor(red: c.r, green: c.g, blue: c.b, alpha: 1)
-        ctx.setFillColor(red: c.r, green: c.g, blue: c.b, alpha: 1)
+        ctx.setStrokeColor(Self.srgb(c.r, c.g, c.b, 1))
+        ctx.setFillColor(Self.srgb(c.r, c.g, c.b, 1))
         ctx.setLineCap(.round)
         ctx.setLineJoin(.round)
         if m.points.count == 1 || m.points.allSatisfy({ $0 == first }) {
@@ -438,9 +445,9 @@ final class InkView: NSView {
         for pass in 0..<3 {
             for s in segments {
                 switch pass {
-                case 0: ctx.setStrokeColor(red: red.r, green: red.g, blue: red.b, alpha: s.alpha * 0.25); ctx.setLineWidth(width * 2.4)
-                case 1: ctx.setStrokeColor(red: red.r, green: red.g, blue: red.b, alpha: s.alpha); ctx.setLineWidth(width)
-                default: ctx.setStrokeColor(red: 1, green: 1, blue: 1, alpha: s.alpha * 0.8); ctx.setLineWidth(width * 0.3)
+                case 0: ctx.setStrokeColor(Self.srgb(red.r, red.g, red.b, s.alpha * 0.25)); ctx.setLineWidth(width * 2.4)
+                case 1: ctx.setStrokeColor(Self.srgb(red.r, red.g, red.b, s.alpha)); ctx.setLineWidth(width)
+                default: ctx.setStrokeColor(Self.srgb(1, 1, 1, s.alpha * 0.8)); ctx.setLineWidth(width * 0.3)
                 }
                 ctx.move(to: CGPoint(x: s.a.x, y: s.a.y))
                 ctx.addLine(to: CGPoint(x: s.b.x, y: s.b.y))
@@ -449,7 +456,7 @@ final class InkView: NSView {
         }
         if let d = laser.dot {
             func dot(_ r: Double, _ col: (Double, Double, Double), _ a: Double) {
-                ctx.setFillColor(red: col.0, green: col.1, blue: col.2, alpha: a)
+                ctx.setFillColor(Self.srgb(col.0, col.1, col.2, a))
                 ctx.fillEllipse(in: CGRect(x: d.x - r, y: d.y - r, width: r * 2, height: r * 2))
             }
             dot(width * 1.3, (red.r, red.g, red.b), 0.25)

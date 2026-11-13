@@ -143,6 +143,16 @@ public enum PadPC {
         return String(format: "%06d", n)
     }
 
+    /// The pad panel's line with every usable address (Wi-Fi, Ethernet, and bridge100 when Internet Sharing is on: the
+    /// tablet may be on any of them), with the port when it isn't the usual one. Nil when there is none.
+    public static func addressLine(_ addresses: [String], port: UInt16) -> String? {
+        guard !addresses.isEmpty else { return nil }
+        let suffix = port != 0 && port != PadProtocol.defaultPort ? ":\(port)" : ""
+        let all = addresses.map { $0 + suffix }
+        let list = all.count == 1 ? all[0] : all.dropLast().joined(separator: ", ") + " or " + all.last!
+        return "Or type the address \(list)."
+    }
+
     /// The Mac's addresses a tablet can be given by hand, from interface names and addresses (IPv4, not loopback,
     /// not self-assigned 169.254).
     public static func usableAddresses(_ all: [(interface: String, address: String)]) -> [String] {
