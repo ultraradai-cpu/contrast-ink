@@ -524,6 +524,7 @@ class ContrastInkTest {
         answerRecordingQuestion(singleApp = false, shotName = "40")
         assertNotNull("recording all the same", device.wait(Until.findObject(By.desc("Stop recording")), 10000))
         assertTrue("it says the video drawing failed", device.wait(Until.hasObject(By.desc(Pattern.compile("(?s).*graphics failed.*"))), 6000))
+        dismissNotice()   // a long message makes the toolbar tall: out of the way of the line drawn next
         assertTrue("straight to the encoder", recorder { it.active && !it.compositing })
         press("Draw on / off")
         drag(0.15f, 0.55f, 0.85f, 0.65f)
@@ -554,6 +555,7 @@ class ContrastInkTest {
         assertTrue("the video drawing gave up", waitFor { !it.compositing })
         assertTrue("still recording", recorder { it.active })
         assertTrue("it says so", device.wait(Until.hasObject(By.desc(Pattern.compile("(?s).*graphics failed.*"))), 6000))
+        dismissNotice()   // a long message makes the toolbar tall: out of the way of the line drawn next
         drag(0.15f, 0.55f, 0.85f, 0.65f)
         Thread.sleep(2000)
         shot("44 recording after the graphics failed")
@@ -637,6 +639,14 @@ class ContrastInkTest {
         val frame = lastFrame(uri, "56c last frame, stopped for space")
         ctx.contentResolver.delete(uri, null, null)
         assertRedLine(frame, "stopped for space")
+    }
+
+    /** Taps the toolbar's message about the graphics away (as a presenter would), so the toolbar is small again. */
+    private fun dismissNotice() {
+        val notice = Pattern.compile("(?s).*graphics failed.*")
+        device.findObject(By.desc(notice))?.click()
+        assertTrue("the message goes when tapped", device.wait(Until.gone(By.desc(notice)), 4000))
+        Thread.sleep(500)
     }
 
     private fun waitFor(check: (ScreenRecorder) -> Boolean): Boolean {

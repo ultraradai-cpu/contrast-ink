@@ -408,10 +408,11 @@ class ScreenRecorder(private val service: InkService) {
         val wasOneApp = mode == Mode.SINGLE_APP
         encoderSurface?.let { showTo(it) }
         if (!active) return
+        Log.w(TAG, "video drawing off: ${problem.message}")
         service.notice(if (wasOneApp)
-            "Your marks can't be drawn into this video any more (the tablet's graphics failed: ${problem.message ?: problem.javaClass.simpleName}). The recording goes on: to have the marks, stop and record the entire screen."
+            "The tablet's graphics failed: still recording, but new marks aren't in this one-app video. For marks, record the entire screen."
         else
-            "The recording goes on without Contrast Ink's video drawing (the tablet's graphics failed: ${problem.message ?: problem.javaClass.simpleName}). With \"A single app\" the marks aren't in the video: record the entire screen to have them.")
+            "The tablet's graphics failed: still recording. With \"A single app\" marks wouldn't be in the video: record the entire screen.")
         service.refreshBar()
     }
 
