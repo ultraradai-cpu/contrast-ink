@@ -338,8 +338,11 @@ struct KeyboardShortcuts: View {
         case "up": return .upArrow
         case "down": return .downArrow
         case "space": return .space
-        // the stage's own key commands (Stage.keyCommands), which ask for priority over the system's use of them
-        case "pageDown", "pageUp", "return": return nil
+        // also the stage's own key commands (Stage.keyCommands), which ask for priority over the system's use of them;
+        // only one of the two runs for a press
+        case "pageDown": return .pageDown
+        case "pageUp": return .pageUp
+        case "return": return .return
         default: return key.count == 1 ? KeyEquivalent(Character(key)) : nil
         }
     }

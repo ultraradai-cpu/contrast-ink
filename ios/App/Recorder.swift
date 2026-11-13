@@ -283,6 +283,22 @@ final class CaptureSink: @unchecked Sendable {
         return CaptureSink.size(of: u)
     }
 
+    /// A BGRA frame read with its alpha ignored. The screen is opaque, but a frame can come with alpha 0, and Core
+    /// Image takes such pixels as premultiplied: their colour would be dropped and the slide come out black. (Frames
+    /// in other formats, ReplayKit's usual YUV, have no alpha: nil, read as they are.)
+    static func opaque(_ pixels: CVPixelBuffer) -> CIImage? {
+        guard CVPixelBufferGetPixelFormatType(pixels) == kCVPixelFormatType_32BGRA else { return nil }
+        CVPixelBufferLockBaseAddress(pixels, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixels, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(pixels),
+              let ctx = CGContext(data: base, width: CVPixelBufferGetWidth(pixels), height: CVPixelBufferGetHeight(pixels),
+                                  bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(pixels),
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.noneSkipFirst.rawValue),
+              let cg = ctx.makeImage() else { return nil }
+        return CIImage(cgImage: cg)
+    }
+
     /// A file's size as it is now on disk. (Not URL resource values: those are cached, and a file being written
     /// would seem to stay at its first size.)
     static func size(of url: URL) -> Int64 {
@@ -321,7 +337,7 @@ final class CaptureSink: @unchecked Sendable {
 
     private func writeVideo(_ buffer: CMSampleBuffer) {
         guard let pixels = CMSampleBufferGetImageBuffer(buffer) else { return }
-        var image = CIImage(cvPixelBuffer: pixels)
+        var image = CaptureSink.opaque(pixels) ?? CIImage(cvPixelBuffer: pixels)
         // frames may arrive turned; turn them the way the screen is
         if let raw = CMGetAttachment(buffer, key: RPVideoSampleOrientationKey as CFString, attachmentModeOut: nil) as? NSNumber,
            let o = CGImagePropertyOrientation(rawValue: raw.uint32Value) {
