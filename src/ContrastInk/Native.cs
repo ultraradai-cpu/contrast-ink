@@ -76,7 +76,12 @@ static class Native
     [DllImport("user32.dll")] static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr clip, MonitorEnumProc proc, IntPtr data);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool GetMonitorInfo(IntPtr monitor, ref MONITORINFOEX info);
 
-    public sealed record Monitor(RECT Bounds, RECT Work, bool Primary);
+    /// <summary>A screen: where it is, its work area, whether it is the main one, and Windows' name for it ("\\.\DISPLAY2").</summary>
+    public sealed record Monitor(RECT Bounds, RECT Work, bool Primary, string Device)
+    {
+        public ContrastInk.Core.Box Box => new(Bounds.Left, Bounds.Top, Bounds.Right, Bounds.Bottom);
+        public ContrastInk.Core.Display Display => new(Device, Box);
+    }
 
     /// <summary>Monitors, the main one first, then left to right.</summary>
     public static List<Monitor> Monitors()
@@ -85,7 +90,7 @@ static class Native
         EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr m, IntPtr dc, ref RECT r, IntPtr d) =>
         {
             var mi = new MONITORINFOEX { cbSize = Marshal.SizeOf<MONITORINFOEX>(), szDevice = "" };
-            if (GetMonitorInfo(m, ref mi)) list.Add(new Monitor(mi.rcMonitor, mi.rcWork, (mi.dwFlags & 1) != 0));
+            if (GetMonitorInfo(m, ref mi)) list.Add(new Monitor(mi.rcMonitor, mi.rcWork, (mi.dwFlags & 1) != 0, mi.szDevice ?? ""));
             return true;
         }, IntPtr.Zero);
         return list.OrderByDescending(m => m.Primary).ThenBy(m => m.Bounds.Left).ThenBy(m => m.Bounds.Top).ToList();
@@ -157,12 +162,66 @@ static class Native
     [DllImport("user32.dll", SetLastError = true)] static extern uint SendInput(uint n, INPUT[] inputs, int size);
     public const ushort VK_LEFT = 0x25, VK_RIGHT = 0x27;
 
-    /// <summary>Presses and releases a key, as if typed: PowerPoint, a PDF viewer or a DICOM viewer turns the page.</summary>
-    public static void PressKey(ushort vk)
+    /// <summary>
+    /// Presses and releases a key, as if typed: PowerPoint, a PDF viewer or a DICOM viewer turns the page. False when
+    /// Windows refused it. (Microsoft, SendInput: a key blocked because the app in front runs as administrator is NOT
+    /// reported here; <see cref="ForegroundElevated"/> tells that case.)
+    /// </summary>
+    public static bool PressKey(ushort vk)
     {
         const uint KEYUP = 0x2, EXTENDED = 0x1;   // the arrow keys are "extended" keys
         var down = new INPUT { type = 1, ki = new KEYBDINPUT { wVk = vk, dwFlags = EXTENDED } };
         var up = new INPUT { type = 1, ki = new KEYBDINPUT { wVk = vk, dwFlags = EXTENDED | KEYUP } };
-        SendInput(2, new[] { down, up }, Marshal.SizeOf<INPUT>());
+        return SendInput(2, new[] { down, up }, Marshal.SizeOf<INPUT>()) == 2;
+    }
+
+    // ---------- an app in front that runs as administrator ----------
+    // Windows keeps keys sent by a normal app from reaching it, and keeps its keys from a normal app's keyboard watcher.
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr token, int cls, out int value, int size, out int returned);
+    const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000, TOKEN_QUERY = 0x8;
+    const int TokenElevation = 20;
+
+    /// <summary>Whether a process runs as administrator; null when Windows won't say (a token a normal app may not read).</summary>
+    static bool? Elevated(IntPtr process)
+    {
+        if (!OpenProcessToken(process, TOKEN_QUERY, out var token)) return null;
+        try { return GetTokenInformation(token, TokenElevation, out int e, sizeof(int), out _) ? e != 0 : null; }
+        finally { CloseHandle(token); }
+    }
+
+    /// <summary>Contrast Ink itself runs as administrator (then nothing is kept from it).</summary>
+    public static readonly bool SelfElevated = Elevated(GetCurrentProcess()) == true;
+
+    static uint lastPid;
+    static bool lastElevated;
+
+    /// <summary>
+    /// The app in front runs as administrator (and Contrast Ink doesn't): Contrast Ink's keys and the tablet's ‹ ›
+    /// can't reach it, and the keyboard watcher doesn't see keys typed into it. A process whose token can't even be
+    /// read by a normal app counts as such. Asked every 1.5 s: remembered for the last process asked about.
+    /// </summary>
+    public static bool ForegroundElevated()
+    {
+        if (SelfElevated) return false;
+        var hwnd = GetForegroundWindow();
+        if (hwnd == IntPtr.Zero || GetWindowThreadProcessId(hwnd, out uint pid) == 0 || pid == 0) return false;
+        if (pid == (uint)Environment.ProcessId) return false;
+        if (pid == lastPid) return lastElevated;
+        var p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        bool elevated;
+        if (p == IntPtr.Zero) elevated = true;
+        else
+        {
+            try { elevated = Elevated(p) ?? true; }
+            finally { CloseHandle(p); }
+        }
+        lastPid = pid; lastElevated = elevated;
+        return elevated;
     }
 }

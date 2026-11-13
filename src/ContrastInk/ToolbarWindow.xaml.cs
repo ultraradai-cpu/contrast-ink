@@ -78,6 +78,8 @@ public partial class ToolbarWindow : Window
         ScreenBtn.Click += (_, _) => ScreenClicked?.Invoke();
         FoldBtn.Click += (_, _) => FoldClicked?.Invoke();
         CloseBtn.Click += (_, _) => CloseClicked?.Invoke();
+        AllowBtn.Click += (_, _) => AskAnswered?.Invoke(true);
+        DenyBtn.Click += (_, _) => AskAnswered?.Invoke(false);
         RecBtn.Click += (_, _) => RecordClicked?.Invoke();
         PauseBtn.Click += (_, _) => PauseClicked?.Invoke();
         SettingsBtn.Click += (_, _) =>
@@ -176,11 +178,40 @@ public partial class ToolbarWindow : Window
     public void Warn(string text)
     {
         // a second warning joins the first instead of replacing it (both are about this computer)
-        warning = warning == null || warning == text ? text : warning + "\n" + text;
-        GripText.Foreground = Brushes.Red;
-        Grip.ToolTip = warning;
+        if (!warnings.Contains(text)) warnings.Add(text);
+        ShowWarnings();
+    }
+
+    /// <summary>A warning that is no longer true (the keyboard watcher is back) goes.</summary>
+    public void Unwarn(string text)
+    {
+        if (warnings.Remove(text)) ShowWarnings();
+    }
+
+    readonly List<string> warnings = new();
+
+    void ShowWarnings()
+    {
+        warning = warnings.Count == 0 ? null : string.Join("\n", warnings);
+        GripText.Foreground = warning != null ? Brushes.Red : (Brush)Resources["Blue"];
+        Grip.ToolTip = warning ?? "Contrast Ink. Drag to move. The toolbar is hidden from OBS recordings.";
         Standing();
     }
+
+    /// <summary>Clears the notice only if it is still this one (another may have replaced it since).</summary>
+    public void ClearNotice(string text)
+    {
+        if (notice == text) Notice(null);
+    }
+
+    /// <summary>A tablet on the cable asks to draw: <paramref name="text"/> with Allow and Deny (null: the question is gone).</summary>
+    public void Ask(string? text)
+    {
+        AskText.Text = text ?? "";
+        AskPanel.Visibility = text == null ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    public event Action<bool>? AskAnswered;
 
     /// <summary>Every ToolTip becomes a hint line inside the toolbar; no tooltip window ever opens.</summary>
     void HintsInside(DependencyObject root)
@@ -223,7 +254,9 @@ public partial class ToolbarWindow : Window
     }
 
     /// <summary>Shows the current state: which tool, colour, width, and whether drawing is on.</summary>
-    public void Refresh(bool drawing, Settings s, int screens, bool folded)
+    /// <param name="screen">The screen the drawing layer is on now (0 = the first): the presenter's choice, or the
+    /// main screen while the chosen one is unplugged.</param>
+    public void Refresh(bool drawing, Settings s, int screens, int screen, bool folded)
     {
         Mark(DrawBtn, drawing);
         DrawText.Text = drawing ? " On" : " Off";
@@ -237,7 +270,7 @@ public partial class ToolbarWindow : Window
         for (int i = 0; i < colorButtons.Count; i++) colorButtons[i].BorderThickness = new Thickness(i == s.Color ? 2 : 0);
         for (int i = 0; i < widthButtons.Count; i++) Mark(widthButtons[i], i == s.Width);
         ScreenBtn.Visibility = screens > 1 ? Visibility.Visible : Visibility.Collapsed;
-        ScreenText.Text = (s.Screen + 1).ToString();
+        ScreenText.Text = (screen + 1).ToString();
         Full.Visibility = folded ? Visibility.Collapsed : Visibility.Visible;
         if (folded) { SettingsPanel.Visibility = Visibility.Collapsed; Mark(SettingsBtn, false); }
         refreshing = true;

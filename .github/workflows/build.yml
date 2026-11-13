@@ -10,6 +10,13 @@ on:
 permissions:
   contents: write
 
+# A newer push cancels an older build still running: an older build finishing last once replaced the download
+# with older code. (The release step also checks it is still the branch's newest commit, for a build already past
+# the point where cancelling can stop it.)
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-latest
@@ -57,6 +64,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # an older build never replaces a newer one: only the branch's newest commit is published
+          tip=$(git ls-remote origin "$GITHUB_REF" | cut -f1)
+          if [ "$tip" != "$GITHUB_SHA" ]; then
+            echo "Not published: ${GITHUB_SHA::7} is no longer the newest commit on $GITHUB_REF (${tip::7} is)."
+            exit 0
+          fi
           # replace the file in place: never a moment (or a failed step) with no download at all
           notes="Built from ${GITHUB_SHA::7}, passed the Windows check. Download ContrastInk.exe and run it (no install needed)."
           if gh release view latest >/dev/null 2>&1; then

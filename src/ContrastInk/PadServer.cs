@@ -33,6 +33,13 @@ sealed class PadServer : IDisposable
     public event Action? CodeChanged;
     /// <summary>Messages from the tablet (strokes, hover, commands), in order. On the UI thread.</summary>
     public event Action<byte, byte[]>? Received;
+    /// <summary>adb was found or is gone (for the ⚙ text). On the UI thread.</summary>
+    public event Action? UsbToolsChanged;
+    /// <summary>
+    /// The question for the presenter: a tablet on the Android cable door wants to draw (the text), answered with
+    /// <see cref="Answer"/>; null: no question any more (answered, or 30 s passed). On the UI thread.
+    /// </summary>
+    public event Action<string?>? CableAsk;
 
     const int MaxPending = 4;             // strangers not yet past the code, at once
     const int MaxQueued = 4000;           // messages from the tablet waiting for the UI: more is a flood
@@ -44,7 +51,7 @@ sealed class PadServer : IDisposable
     readonly Func<System.Windows.Media.Imaging.BitmapSource?> marks;   // the drawing layer's picture, on the UI thread
     readonly System.Security.Cryptography.ECDiffieHellman pcKey;       // this PC's own key (kept between runs)
     readonly byte[] pcPoint;
-    /// <summary>What the tablet shows the first time, to compare with this PC: "6FC6-6A90".</summary>
+    /// <summary>What the tablet shows the first time, to compare with this PC: "6FC6-6A90-4861-71CA".</summary>
     public string PcCheck { get; }
     readonly PadGuard guard = new();
     readonly object gate = new();       // guards current, Code, guard
@@ -56,6 +63,10 @@ sealed class PadServer : IDisposable
     readonly Dictionary<IPAddress, int> pendingByAddress = new();
     const int MaxPendingPerAddress = 2, MaxPendingUsb = 2;
     readonly bool usbDoorAlways;   // the Windows check: the cable door open with no Android tablet attached
+    // the Android cable door: any program on this PC, and any app on the tablet, can reach it, so the presenter allows
+    // the first session there in each run (docs/pad-protocol.md, "USB"); one question at a time
+    bool cableAllowed;
+    TaskCompletionSource<bool>? asking;
     volatile bool running;
     DnsSd? advert;
 
@@ -134,7 +145,8 @@ sealed class PadServer : IDisposable
         if (usbDoorAlways) UsbDoor(true);
         Run("pad frames", FrameLoop);
         Run("pad ipad usb", () => UsbMux.Watch(() => running, OpenedOverUsb));
-        Run("pad android usb", () => Adb.Watch(() => running, any => { if (!usbDoorAlways) UsbDoor(any); }));
+        Run("pad android usb", () => Adb.Watch(() => running, any => { if (!usbDoorAlways) UsbDoor(any); },
+            () => ui.BeginInvoke(() => UsbToolsChanged?.Invoke())));
         try { advert = DnsSd.Register(Environment.MachineName, Port); } catch (Exception e) { App.Log(e); }
     }
 
@@ -203,7 +215,7 @@ sealed class PadServer : IDisposable
                 }
             }
             if (!room) { try { c.Close(); } catch (Exception) { } continue; }
-            Run("pad tablet", () => Serve(c, usb, () =>
+            Run("pad tablet", () => Serve(c, usb, askFirst: usb, () =>
             {
                 lock (gate)
                 {
@@ -216,16 +228,58 @@ sealed class PadServer : IDisposable
     }
 
     /// <summary>An iPad's USB connection, opened by this PC through Apple's USB service (one per iPad, so no count);
-    /// ends when the session ends.</summary>
-    void OpenedOverUsb(TcpClient c) => Serve(c, usb: true, () => { });
+    /// ends when the session ends. Apple's service vouches for the device: no question for the presenter.</summary>
+    void OpenedOverUsb(TcpClient c) => Serve(c, usb: true, askFirst: false, () => { });
+
+    /// <summary>
+    /// Asks the presenter (on the toolbar) whether the tablet on the Android cable door may draw: true at once when
+    /// one was allowed earlier in this run. A second session meanwhile waits for the same answer. No answer in 30 s is no.
+    /// </summary>
+    Task<bool> AskPresenter(string device)
+    {
+        TaskCompletionSource<bool> tcs;
+        lock (gate)
+        {
+            if (cableAllowed) return Task.FromResult(true);
+            if (asking != null) return asking.Task;
+            tcs = asking = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+        string text = $"An Android tablet on the USB cable wants to draw (\"{device}\"). Allow it?";
+        ui.BeginInvoke(() => CableAsk?.Invoke(text));
+        _ = Task.Delay(ProofWithin).ContinueWith(_ => Answer(false, tcs), TaskScheduler.Default);
+        return tcs.Task;
+    }
+
+    /// <summary>The presenter's answer to <see cref="CableAsk"/> (Allow: true).</summary>
+    public void Answer(bool allow)
+    {
+        TaskCompletionSource<bool>? tcs;
+        lock (gate) tcs = asking;
+        if (tcs != null) Answer(allow, tcs);
+    }
+
+    void Answer(bool allow, TaskCompletionSource<bool> tcs)
+    {
+        lock (gate)
+        {
+            if (!ReferenceEquals(asking, tcs)) return;   // answered already (or timed out)
+            asking = null;
+            if (allow) cableAllowed = true;
+        }
+        tcs.TrySetResult(allow);
+        ui.BeginInvoke(() => CableAsk?.Invoke(null));
+    }
 
     /// <summary>A tablet is connected by the cable (not over Wi-Fi).</summary>
     public bool OverUsb => current?.Usb == true;
 
+    /// <param name="askFirst">The Android cable door: the presenter allows the first session there in each run.</param>
     /// <param name="admitted">Called once when the connection stops being a stranger (let in, or ended).</param>
-    void Serve(TcpClient tcp, bool usb, Action admitted)
+    void Serve(TcpClient tcp, bool usb, bool askFirst, Action admitted)
     {
         var conn = new Connection(tcp) { Usb = usb };
+        string from = ((tcp.Client.RemoteEndPoint as IPEndPoint)?.Address ?? IPAddress.None).ToString();
+        Task<bool>? allowed = null;
         var reader = new PadReader { MaxLength = Pad.HelloMax };   // a stranger's first messages are small
         var buf = new byte[64 * 1024];
         int step = 0;   // 0: waiting for HELLO, 1: CHALLENGE sent, waiting for PROOF, 2: in
@@ -260,18 +314,20 @@ sealed class PadServer : IDisposable
                         var hello = type == Pad.Hello ? Pad.ReadHelloV2(payload) : null;
                         tabletKey = hello == null ? null : PadCrypto.ReadPoint(hello.Value.key);
                         string? why = tabletKey == null ? Pad.UpdateTablet : null;
-                        lock (gate) if (why == null && !usb && guard.Locked(DateTime.UtcNow)) why = Pad.TooManyWrong;
+                        lock (gate) if (why == null && !usb && guard.Locked(from, DateTime.UtcNow)) why = Pad.TooManyWrong;
                         if (why != null) { Refuse(conn, why); return; }
                         device = hello!.Value.device;
                         salt = System.Security.Cryptography.RandomNumberGenerator.GetBytes(16);
                         conn.Stream.Write(Pad.ChallengeMessage(pcPoint, salt, Environment.MachineName));
                         step = 1;
                         deadline = DateTime.UtcNow + ProofWithin;
+                        // asked now, so the presenter answers while the tablet's presenter compares the PC check
+                        if (askFirst) allowed = AskPresenter(device);
                         continue;
                     }
                     if (step == 1)
                     {
-                        if (!Prove(conn, type, payload, tabletKey!, salt!, device)) return;
+                        if (!Prove(conn, type, payload, tabletKey!, salt!, device, from, allowed, deadline)) return;
                         step = 2;
                         reader.MaxLength = Pad.MaxLength;
                         admitted(); counted = false;
@@ -303,6 +359,14 @@ sealed class PadServer : IDisposable
         }
     }
 
+    /// <summary>The presenter's answer, waited for until <paramref name="deadline"/> (no answer by then is no).</summary>
+    bool Wait(Task<bool> answer, DateTime deadline)
+    {
+        var left = deadline - DateTime.UtcNow;
+        try { return left > TimeSpan.Zero && answer.Wait(left) && answer.Result && running; }
+        catch (AggregateException) { return false; }
+    }
+
     static void Refuse(Connection conn, string why)
     {
         try { conn.Stream.Write(Pad.Message(Pad.Reject, why)); } catch (Exception) { }
@@ -313,29 +377,33 @@ sealed class PadServer : IDisposable
     /// network) and the session starts, replacing a connected tablet (the same one, back after a Wi-Fi drop before
     /// this PC noticed). Not opened: a wrong code, counted against guessing.
     /// </summary>
-    bool Prove(Connection conn, byte type, byte[] payload, System.Security.Cryptography.ECDiffieHellmanPublicKey tabletKey, byte[] salt, string device)
+    bool Prove(Connection conn, byte type, byte[] payload, System.Security.Cryptography.ECDiffieHellmanPublicKey tabletKey, byte[] salt,
+        string device, string from, Task<bool>? allowed, DateTime deadline)
     {
         string code;
-        lock (gate) code = conn.Usb ? "" : Code;   // over the cable the code is empty: being plugged in is the proof
+        lock (gate) code = conn.Usb ? "" : Code;   // over the cable the code is empty (the Android door: the presenter allows it)
         var (toPc, toTablet) = PadCrypto.Keys(pcKey, tabletKey, salt, code);
         var open = new PadSeal(toPc);
         var proof = type == PadCrypto.Proof ? open.Open(payload) : null;
         var said = proof == null ? null : new PadReader().Add(proof);
         bool right = said is { Count: 1 } && said[0].type == Pad.Command && System.Text.Encoding.UTF8.GetString(said[0].payload) == PadCrypto.ProofText;
+        // the Android cable door: in only once the presenter has said Allow (waiting here, within the PROOF's 30 s)
+        bool let = allowed == null || (right && Wait(allowed, deadline));
         Connection? old = null;
         bool newCode = false;
         string? why = null;
         lock (gate)
         {
-            if (!conn.Usb && guard.Locked(DateTime.UtcNow)) why = Pad.TooManyWrong;
+            if (!conn.Usb && guard.Locked(from, DateTime.UtcNow)) why = Pad.TooManyWrong;
             else if (!right)
             {
                 why = Pad.WrongCode;
-                if (!conn.Usb && guard.Wrong(DateTime.UtcNow)) { Code = Pad.NewCode(); newCode = true; }
+                if (!conn.Usb && guard.Wrong(from, DateTime.UtcNow)) { Code = Pad.NewCode(); newCode = true; }
             }
+            else if (!let) why = Pad.NotAllowed;
             else
             {
-                guard.Right();
+                if (!conn.Usb) guard.Right(from);
                 conn.Name = device;
                 conn.In = open;
                 conn.Out = new PadSeal(toTablet);
@@ -476,6 +544,7 @@ sealed class PadServer : IDisposable
     public void Dispose()
     {
         running = false;
+        Answer(false);   // a question still on the toolbar: no
         advert?.Dispose();
         try { listener?.Stop(); } catch (Exception) { }
         UsbDoor(false);

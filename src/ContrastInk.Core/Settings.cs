@@ -25,6 +25,13 @@ public sealed class Settings
     public double Opacity { get; set; } = 1;
     public const double MinOpacity = 0.1;
     public int Screen { get; set; }
+    /// <summary>
+    /// The screen the presenter chose for the drawing layer, by Windows' name for it ("\\.\DISPLAY2") and where it
+    /// was (left, top, right, bottom): found again after it drops out and comes back (<see cref="ScreenChoice"/>).
+    /// Null in a file from before these existed (then <see cref="Screen"/> is used).
+    /// </summary>
+    public string? ScreenDevice { get; set; }
+    public int[]? ScreenBounds { get; set; }
     /// <summary>Where the toolbar was left; empty until it is first dragged (never NaN: JSON cannot store it).</summary>
     public double? ToolbarX { get; set; }
     public double? ToolbarY { get; set; }
@@ -62,6 +69,8 @@ public sealed class Settings
         Opacity = double.IsFinite(Opacity) ? Math.Clamp(Opacity, MinOpacity, 1) : 1;
         if (ToolbarX is { } x && !double.IsFinite(x)) ToolbarX = null;
         if (ToolbarY is { } y && !double.IsFinite(y)) ToolbarY = null;
+        if (ScreenBounds is not { Length: 4 }) ScreenBounds = null;
+        if (ScreenDevice is { Length: > 64 }) ScreenDevice = null;
         return this;
     }
 
@@ -78,16 +87,44 @@ public sealed class Settings
     /// Writes the settings. Never throws: settings are a convenience, and a failure here once stopped the app
     /// half way through starting (a NaN position cannot be written as JSON), leaving a toolbar with dead buttons.
     /// </summary>
-    public bool Save(string path)
+    public bool Save(string path) => Serialize() is { } json && Write(path, json);
+
+    /// <summary>The settings as the file holds them (null if they can't be written). Cheap: the UI thread calls it,
+    /// and the file is written elsewhere (<see cref="Write"/>).</summary>
+    public string? Serialize()
     {
         try
         {
             Clean(int.MaxValue);   // never write a value that can't be read back
+            return JsonSerializer.Serialize(this, Json);
+        }
+        catch (Exception e) when (e is ArgumentException or NotSupportedException or JsonException) { return null; }
+    }
+
+    /// <summary>
+    /// Writes a settings file whole or not at all: into a file beside it, then moved over it in one step. Written in
+    /// place, a crash or a full disk mid-write left half a file, and every setting went back to its default.
+    /// Never throws.
+    /// </summary>
+    public static bool Write(string path, string json)
+    {
+        string temp = path + ".tmp";
+        try
+        {
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.WriteAllText(path, JsonSerializer.Serialize(this, Json));
+            using (var f = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                var bytes = System.Text.Encoding.UTF8.GetBytes(json);
+                f.Write(bytes, 0, bytes.Length);
+                f.Flush(flushToDisk: true);
+            }
+            File.Move(temp, path, overwrite: true);
             return true;
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or JsonException)
-        { return false; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            try { if (File.Exists(temp)) File.Delete(temp); } catch (Exception d) when (d is IOException or UnauthorizedAccessException) { }
+            return false;
+        }
     }
 }

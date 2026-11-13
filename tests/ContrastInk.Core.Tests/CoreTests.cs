@@ -268,6 +268,47 @@ public class SettingsTests
 
     [Fact]
     public void ScreenFallsBackWhenAMonitorIsUnplugged() => Assert.Equal(0, new Settings { Screen = 1 }.Clean(screens: 1).Screen);
+
+    [Fact]
+    public void ACutOffFileLoadsTheDefaults()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "contrastink-" + Guid.NewGuid() + "/settings.json");
+        new Settings { Color = 3 }.Save(path);
+        var whole = File.ReadAllText(path);
+        File.WriteAllText(path, whole[..(whole.Length / 2)]);   // power lost mid-write (the old way of saving)
+        var s = Settings.Load(path, 1);
+        Assert.Equal(0, s.Color);
+        Assert.Equal(Tool.Pen, s.Tool);
+    }
+
+    [Fact]
+    public void SavingIsWholeOrNothing()
+    {
+        // written to a file beside it and moved over it: a write that fails leaves the old settings as they were.
+        // (Written in place, as before, a failure part way left a cut-off file and every setting went back to its default.)
+        var dir = Path.Combine(Path.GetTempPath(), "contrastink-" + Guid.NewGuid());
+        var path = Path.Combine(dir, "settings.json");
+        Assert.True(new Settings { Color = 3 }.Save(path));
+        Assert.False(File.Exists(path + ".tmp"));   // nothing left beside it
+        var before = File.ReadAllText(path);
+        Directory.CreateDirectory(path + ".tmp");    // the file beside it can't be written: this save must fail
+        Assert.False(new Settings { Color = 5 }.Save(path));
+        Assert.Equal(before, File.ReadAllText(path));
+        Assert.Equal(3, Settings.Load(path, 1).Color);
+        Directory.Delete(path + ".tmp");
+        Assert.True(new Settings { Color = 5 }.Save(path));
+        Assert.Equal(5, Settings.Load(path, 1).Color);
+    }
+
+    [Fact]
+    public void TheChosenScreenIsKeptByName()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "contrastink-" + Guid.NewGuid() + "/settings.json");
+        new Settings { Screen = 1, ScreenDevice = @"\\.\DISPLAY2", ScreenBounds = new[] { 1920, 0, 2944, 768 } }.Save(path);
+        var s = Settings.Load(path, screens: 1);   // started with the projector unplugged
+        Assert.Equal(@"\\.\DISPLAY2", s.ScreenDevice);
+        Assert.Equal(new[] { 1920, 0, 2944, 768 }, s.ScreenBounds);
+    }
 }
 
 public class ColorTests
@@ -440,6 +481,41 @@ public class PlacementTests
         => Assert.Equal((300, 40), Placement.KeepInside(new Box(300, 40, 1170, 90), Both));
 }
 
+public class ScreenChoiceTests
+{
+    static readonly Display Laptop = new(@"\\.\DISPLAY1", new Box(0, 0, 1920, 1080)), Projector = new(@"\\.\DISPLAY2", new Box(1920, 0, 2944, 768));
+
+    [Fact]
+    public void TheChosenScreenGoneFallsBackAndComesBack()
+    {
+        // the audit: a projector dropping out for a moment moved the layer to the laptop for good
+        var chosen = Projector;
+        Assert.Equal(1, ScreenChoice.Resolve(new[] { Laptop, Projector }, chosen.Device, chosen.Bounds, 1));
+        Assert.Equal(0, ScreenChoice.Resolve(new[] { Laptop }, chosen.Device, chosen.Bounds, 1));               // gone: the laptop
+        Assert.Equal(1, ScreenChoice.Resolve(new[] { Laptop, Projector }, chosen.Device, chosen.Bounds, 1));    // back: the projector again
+    }
+
+    [Fact]
+    public void FoundByNameWhenItMovedOrByPlaceWhenRenamed()
+    {
+        var moved = Projector with { Bounds = new Box(-1024, 0, 0, 768) };   // the projector now set to the laptop's left
+        Assert.Equal(1, ScreenChoice.Resolve(new[] { Laptop, moved }, Projector.Device, Projector.Bounds, 1));
+        var renamed = Projector with { Device = @"\\.\DISPLAY5" };            // plugged into another port
+        Assert.Equal(1, ScreenChoice.Resolve(new[] { Laptop, renamed }, Projector.Device, Projector.Bounds, 1));
+        // the name and the place both matching win over a name alone
+        var twin = new Display(@"\\.\DISPLAY2", new Box(0, 0, 1920, 1080));
+        Assert.Equal(2, ScreenChoice.Resolve(new[] { twin, Laptop, Projector }, Projector.Device, Projector.Bounds, 0));
+    }
+
+    [Fact]
+    public void ASettingsFileFromBeforeUsesTheNumber()
+    {
+        Assert.Equal(1, ScreenChoice.Resolve(new[] { Laptop, Projector }, null, null, 1));
+        Assert.Equal(0, ScreenChoice.Resolve(new[] { Laptop }, null, null, 1));
+        Assert.Equal(0, ScreenChoice.Resolve(Array.Empty<Display>(), Projector.Device, Projector.Bounds, 1));
+    }
+}
+
 public class ObsTests
 {
     [Fact]
@@ -506,6 +582,75 @@ public class ObsTests
         var text = Obs.Chapters(new[] { (TimeSpan.FromSeconds(0.2), "Slide 1"), (TimeSpan.FromSeconds(65), "Slide 2"),
                                         (TimeSpan.FromSeconds(65.4), "Slide 3"), (TimeSpan.FromSeconds(130), "Slide 4") });
         Assert.Equal("0:00 Slide 1\n1:05 Slide 3\n2:10 Slide 4\n", text);
+    }
+
+    [Fact]
+    public void ChaptersShorterThanTenSecondsAreMerged()
+    {
+        // YouTube ignores the whole list when one chapter is under 10 s; before, only chapters under 1 s were merged
+        var text = Obs.Chapters(new[] { (TimeSpan.FromSeconds(0), "Slide 1"), (TimeSpan.FromSeconds(40), "Slide 2"),
+                                        (TimeSpan.FromSeconds(44), "Slide 3"), (TimeSpan.FromSeconds(47), "Slide 4"),
+                                        (TimeSpan.FromSeconds(90), "Slide 5") });
+        Assert.Equal("0:00 Slide 1\n0:40 Slide 4\n1:30 Slide 5\n", text);
+        foreach (var gap in Gaps(text)) Assert.True(gap >= Obs.MinChapterSeconds, "a chapter of " + gap + " s");
+    }
+
+    [Fact]
+    public void TheFirstAndLastChaptersAreSensible()
+    {
+        // the first slide 5 s in: it starts at 0:00 (no 5-second "Start"); later than 10 s, a Start line comes first
+        Assert.Equal("0:00 Slide 1\n1:00 Slide 2\n", Obs.Chapters(new[] { (TimeSpan.FromSeconds(5), "Slide 1"), (TimeSpan.FromSeconds(60), "Slide 2") }));
+        Assert.Equal("0:00 Start\n0:12 Slide 1\n", Obs.Chapters(new[] { (TimeSpan.FromSeconds(12), "Slide 1") }));
+        // stopped 4 s after the last slide change: that last slide is left to the one before
+        Assert.Equal("0:00 Slide 1\n1:00 Slide 2\n",
+            Obs.Chapters(new[] { (TimeSpan.Zero, "Slide 1"), (TimeSpan.FromSeconds(60), "Slide 2"), (TimeSpan.FromSeconds(120), "Slide 3") }, end: TimeSpan.FromSeconds(124)));
+        Assert.Equal("0:00 Slide 1\n", Obs.Chapters(new[] { (TimeSpan.Zero, "Slide 1") }, end: TimeSpan.FromSeconds(3)));
+    }
+
+    static IEnumerable<double> Gaps(string chapters)
+    {
+        var times = chapters.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(l => l.Split(' ')[0].Split(':').Select(int.Parse).Aggregate(0, (a, b) => a * 60 + b)).ToList();
+        return times.Zip(times.Skip(1), (a, b) => (double)(b - a));
+    }
+
+    [Fact]
+    public void ARecordingTakenOverGetsItsFirstChapterWhereItIs()
+    {
+        // the audit: after an OBS reconnect or a restart, "Slide n" was stamped at 0:00 of a recording 5 minutes in
+        var log = new ChapterLog();
+        log.Begin(TimeSpan.FromMinutes(5), @"C:\x.pptx#3#3");
+        Assert.Equal("0:00 Start\n5:00 Slide 3\n", Obs.Chapters(log.Items));
+    }
+
+    [Fact]
+    public void TheSameRecordingTakenOverAgainKeepsItsChapters()
+    {
+        var log = new ChapterLog();
+        log.Begin(TimeSpan.Zero, @"C:\x.pptx#1#1");
+        log.Add(TimeSpan.FromSeconds(60), @"C:\x.pptx#2#2");
+        log.Seen(TimeSpan.FromSeconds(90));
+        // the line to OBS dropped and came back; OBS kept recording (now 2:00 in), the slide moved on meanwhile
+        Assert.True(log.Begin(TimeSpan.FromSeconds(120), @"C:\x.pptx#4#4"));
+        Assert.Equal("0:00 Slide 1\n1:00 Slide 2\n2:00 Slide 4\n", Obs.Chapters(log.Items));
+        // the same slide still showing: no second chapter for it
+        Assert.True(log.Begin(TimeSpan.FromSeconds(150), @"C:\x.pptx#4#4"));
+        Assert.Equal(3, log.Items.Count);
+    }
+
+    [Fact]
+    public void ANewRecordingStartsANewChapterList()
+    {
+        var log = new ChapterLog();
+        log.Begin(TimeSpan.Zero, @"C:\x.pptx#1#1");
+        log.Add(TimeSpan.FromSeconds(60), @"C:\x.pptx#2#2");
+        Assert.False(log.Begin(TimeSpan.FromSeconds(20), @"C:\x.pptx#2#2"));   // its time is behind the last one seen: another recording
+        Assert.Equal("0:00 Start\n0:20 Slide 2\n", Obs.Chapters(log.Items));
+        log.Ended();
+        Assert.False(log.Begin(TimeSpan.FromSeconds(300), @"C:\x.pptx#2#2"));  // after a stop, never the same
+        Assert.Single(log.Items);
+        Assert.False(log.Begin(TimeSpan.Zero, @"C:\x.pptx#5#5"));              // started now: always new
+        Assert.Equal("0:00 Slide 5\n", Obs.Chapters(log.Items));
     }
 
     [Fact]
@@ -714,15 +859,38 @@ public class PadSafetyTests
     }
 
     [Fact]
-    public void FiveWrongCodesLockEveryoneOutForThirtySeconds()
+    public void FiveWrongCodesFromOneAddressLockThatAddressOutForThirtySeconds()
     {
         var g = new PadGuard();
         var t = new DateTime(2026, 11, 12, 10, 0, 0, DateTimeKind.Utc);
-        for (int i = 0; i < 4; i++) Assert.False(g.Wrong(t));
-        Assert.False(g.Locked(t));
-        g.Wrong(t);
-        Assert.True(g.Locked(t.AddSeconds(29)));
-        Assert.False(g.Locked(t.AddSeconds(31)));
+        for (int i = 0; i < 4; i++) Assert.False(g.Wrong("10.0.0.9", t));
+        Assert.False(g.Locked("10.0.0.9", t));
+        g.Wrong("10.0.0.9", t);
+        Assert.True(g.Locked("10.0.0.9", t.AddSeconds(29)));
+        Assert.False(g.Locked("10.0.0.9", t.AddSeconds(31)));
+    }
+
+    [Fact]
+    public void OneAddressGuessingDoesNotLockOutTheTablet()
+    {
+        // the audit: one device's wrong codes locked everyone out, the presenter's own tablet included
+        var g = new PadGuard();
+        var t = new DateTime(2026, 11, 12, 10, 0, 0, DateTimeKind.Utc);
+        for (int i = 0; i < 5; i++) g.Wrong("10.0.0.66", t);
+        Assert.True(g.Locked("10.0.0.66", t));
+        Assert.False(g.Locked("10.0.0.20", t));
+    }
+
+    [Fact]
+    public void FifteenWrongInARowFromManyAddressesLockEveryoneOut()
+    {
+        var g = new PadGuard();
+        var t = new DateTime(2026, 11, 12, 10, 0, 0, DateTimeKind.Utc);
+        for (int i = 0; i < 14; i++) g.Wrong("10.0.1." + i, t);   // a different address each time: none locked alone
+        Assert.False(g.Locked("10.0.0.20", t));
+        g.Wrong("10.0.1.99", t);
+        Assert.True(g.Locked("10.0.0.20", t.AddSeconds(29)));
+        Assert.False(g.Locked("10.0.0.20", t.AddSeconds(31)));
     }
 
     [Fact]
@@ -731,7 +899,7 @@ public class PadSafetyTests
         var g = new PadGuard();
         var t = DateTime.UtcNow;
         int newCodes = 0;
-        for (int i = 0; i < 40; i++) if (g.Wrong(t)) newCodes++;
+        for (int i = 0; i < 40; i++) if (g.Wrong("10.0.2." + (i % 7), t)) newCodes++;
         Assert.Equal(2, newCodes);
     }
 
@@ -740,12 +908,13 @@ public class PadSafetyTests
     {
         var g = new PadGuard();
         var t = DateTime.UtcNow;
-        for (int i = 0; i < 4; i++) g.Wrong(t);
-        g.Right();
-        for (int i = 0; i < 4; i++) g.Wrong(t);
-        Assert.False(g.Locked(t));   // never five in a row
-        for (int i = 0; i < 11; i++) g.Wrong(t);
-        Assert.True(g.Wrong(t));     // the 20th wrong for this code
+        for (int i = 0; i < 4; i++) g.Wrong("a", t);
+        g.Right("a");
+        for (int i = 0; i < 4; i++) g.Wrong("a", t);
+        Assert.False(g.Locked("a", t));   // never five in a row
+        g.Right("a");
+        for (int i = 0; i < 11; i++) g.Wrong("b" + i, t);
+        Assert.True(g.Wrong("c", t));     // the 20th wrong for this code
     }
 }
 
@@ -798,7 +967,7 @@ public class PadCryptoTests
 
     [Fact]
     public void ThePcCheckIsTheSpecs() =>
-        Assert.Equal("6FC6-6A90", Pad.PcCheck(Convert.FromHexString("04D65A93977CAA3D1B081852FF57A79E465F1660577304BAEAD505DD3A48589CF350185E895372DF6221EA3A137557E473FDDB6755F05BD507C3C533FCE9C91285")));
+        Assert.Equal("6FC6-6A90-4861-71CA", Pad.PcCheck(Convert.FromHexString("04D65A93977CAA3D1B081852FF57A79E465F1660577304BAEAD505DD3A48589CF350185E895372DF6221EA3A137557E473FDDB6755F05BD507C3C533FCE9C91285")));
 
     [Fact]
     public void TheSpecsVectorsHold()

@@ -31,6 +31,14 @@ static class Program
     [STAThread]
     static int Main(string[] args)
     {
+        // a copy of this program named adb.exe: a stand-in adb that writes down that it was run (and finds no tablet)
+        if (string.Equals(Path.GetFileNameWithoutExtension(Environment.ProcessPath), "adb", StringComparison.OrdinalIgnoreCase))
+        {
+            try { File.AppendAllText(Path.Combine(AppContext.BaseDirectory, AdbRan), string.Join(" ", args) + "\n"); } catch (IOException) { }
+            Console.WriteLine("List of devices attached");
+            Console.WriteLine();
+            return 0;
+        }
         if (args.Length < 3) { Console.Error.WriteLine("usage: <ContrastInk.exe> <out dir> normal|control"); return 2; }
         (exe, outDir, runMode) = (Path.GetFullPath(args[0]), Path.GetFullPath(args[1]), args[2]);
         Directory.CreateDirectory(outDir);
@@ -77,6 +85,11 @@ static class Program
         psi.Environment["CONTRASTINK_STATUS"] = status;
         psi.Environment["CONTRASTINK_TEST_PADCODE"] = PadCode;   // the tablet link, with a code this check knows
         if (runMode == "control") psi.Environment["CONTRASTINK_TEST_NOHIDE"] = "1";
+        // adb: none on the app's PATH; a stand-in in C:\platform-tools, a folder any user of a PC can create, which
+        // the app must never run (the restart in ToolbarAndPromises puts one on the PATH, which it must run)
+        psi.Environment["PATH"] = string.Join(Path.PathSeparator, (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator)
+            .Where(d => d.Trim().Length > 0 && !SafeExists(Path.Combine(d.Trim().Trim('"'), "adb.exe"))));
+        if (runMode == "normal") PlantAdb();
         app = Process.Start(psi)!;
         startInfo = psi; statusPath = status;
         try
@@ -116,6 +129,7 @@ static class Program
         {
             Log("      app still running at the end: " + !app.HasExited + (app.HasExited ? ", exit code " + app.ExitCode : ""));
             try { if (!app.HasExited) app.Kill(); } catch (InvalidOperationException) { }
+            if (plantedAdb) try { Directory.Delete(PlantedAdbDir, recursive: true); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
             // the app's own error log, if it wrote one
             var errLog = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ContrastInk", "error.log");
             bool errors = File.Exists(errLog);
@@ -308,6 +322,81 @@ static class Program
     // ---------------------------------------------------------------- a tablet used as a pad
     const string PadCode = "246810";
 
+    // ---------------------------------------------------------------- which adb.exe the app runs
+    const string AdbRan = "adb-ran.txt";
+    const string PlantedAdbDir = @"C:\platform-tools";
+    static bool plantedAdb;
+    static string PathAdbDir => Path.Combine(outDir, "adb-on-path");
+
+    static bool SafeExists(string f) { try { return File.Exists(f); } catch (ArgumentException) { return false; } }
+
+    /// <summary>This program, copied into <paramref name="dir"/> as adb.exe (it then only writes down that it ran).</summary>
+    static void CopyStandInAdb(string dir)
+    {
+        Directory.CreateDirectory(dir);
+        foreach (var f in Directory.GetFiles(AppContext.BaseDirectory)) File.Copy(f, Path.Combine(dir, Path.GetFileName(f)), overwrite: true);
+        File.Copy(Environment.ProcessPath!, Path.Combine(dir, "adb.exe"), overwrite: true);
+        File.Delete(Path.Combine(dir, AdbRan));
+    }
+
+    static void PlantAdb()
+    {
+        try
+        {
+            if (Directory.Exists(PlantedAdbDir)) { Log("      C:\\platform-tools already exists on this machine: left as it is"); }
+            else { CopyStandInAdb(PlantedAdbDir); plantedAdb = true; }
+            CopyStandInAdb(PathAdbDir);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Log("      couldn't plant the stand-in adb: " + e.Message); }
+    }
+
+    /// <summary>The app must never run an adb.exe from C:\platform-tools (any user may create that folder).</summary>
+    static void CheckPlantedAdbNotRun()
+    {
+        if (!plantedAdb) { Check(false, "adb: a stand-in adb.exe could be put in C:\\platform-tools", "not planted"); return; }
+        var ran = Path.Combine(PlantedAdbDir, AdbRan);
+        Check(!File.Exists(ran), "adb: an adb.exe in C:\\platform-tools (a folder any user can create) is never run",
+              File.Exists(ran) ? "it ran: " + File.ReadAllText(ran).Trim() : "not run in " + (DateTime.Now - app.StartTime).TotalSeconds.ToString("0") + " s");
+    }
+
+    /// <summary>
+    /// The opacity slider dragged to 10% and back to 100%: dozens of values on the way. The settings file must be
+    /// written about once after it stops (each write was on the UI thread, which runs the keyboard watcher), not once per value.
+    /// </summary>
+    static void OpacityDragSavesOnce()
+    {
+        var box = ToolbarBox("Opacity");
+        if (box.IsEmpty) { Check(false, "toolbar: the opacity slider is there", "not found"); return; }
+        var file = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ContrastInk", "settings.json");
+        Thread.Sleep(1000);   // earlier changes saved first
+        int writes = 0;
+        using (var w = new FileSystemWatcher(Path.GetDirectoryName(file)!, "settings.json")
+               { NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.Size })
+        {
+            w.Changed += (_, _) => Interlocked.Increment(ref writes);
+            w.Created += (_, _) => Interlocked.Increment(ref writes);
+            w.Renamed += (_, _) => Interlocked.Increment(ref writes);
+            w.EnableRaisingEvents = true;
+            int y = box.Top + box.Height / 2;
+            Drag(new Point(box.Right - 3, y), new Point(box.Left - 20, y));
+            Drag(new Point(box.Left + 3, y), new Point(box.Right + 20, y));
+            Thread.Sleep(1500);
+        }
+        double saved = Settings.Load(file, 1).Opacity;
+        Check(writes >= 1 && writes <= 6 && saved > 0.95, "toolbar: dragging the opacity slider writes the settings once it stops, not on every step",
+              $"{writes} change(s) to settings.json, opacity saved {saved:0.00}");
+    }
+
+    /// <summary>The ⚙ panel's text about the tablet link (open while read), or "".</summary>
+    static string PadPanelText()
+    {
+        if (!Press("Settings")) return "";
+        Thread.Sleep(300);
+        var text = ToolbarName("Code ") ?? "";
+        Press("Settings");
+        return text;
+    }
+
     static byte[] PadPoint(float x, float y)
     {
         var b = new byte[8];
@@ -349,8 +438,9 @@ static class Program
         /// <summary>On a connection that is already open (the iPad's end of a USB connection the PC opened).</summary>
         public TestTablet(System.Net.Sockets.TcpClient open) { Tcp = open; Net = Tcp.GetStream(); }
 
-        /// <summary>The handshake with this code; true when the PC let it in (WELCOME opened).</summary>
-        public bool Pair(string code)
+        /// <summary>The handshake with this code; true when the PC let it in (WELCOME opened). The answer to the
+        /// PROOF is waited for up to <paramref name="answerMs"/> (longer where the presenter is asked first).</summary>
+        public bool Pair(string code, int answerMs = 5000)
         {
             using var mine = PadCrypto.NewKey();
             Net.Write(Pad.Message(Pad.Hello, JsonSerializer.Serialize(new { device = "check", version = 2, key = Convert.ToBase64String(PadCrypto.PublicPoint(mine)) })));
@@ -363,7 +453,7 @@ static class Program
             var (a, b) = PadCrypto.Keys(mine, PadCrypto.ReadPoint(PcKey)!, salt, code);
             toPc = new PadSeal(a); fromPc = new PadSeal(b);
             Net.Write(Pad.Message(PadCrypto.Proof, toPc.Seal(Pad.Message(Pad.Command, PadCrypto.ProofText))));
-            var answer = Read(g => g.Count > 0, 5000);
+            var answer = Read(g => g.Count > 0, answerMs);
             if (answer.Count == 0) return false;
             if (answer[0].type == Pad.Reject) { Refused = System.Text.Encoding.UTF8.GetString(answer[0].payload); return false; }
             return answer[0].type == Pad.Welcome;
@@ -425,7 +515,7 @@ static class Program
             bool paired = t.Pair(PadCode);
             Check(paired, "tablet link: the right code is let in, everything sealed from then on", paired ? "WELCOME opened" : "refused: " + t.Refused);
             if (!paired) return;
-            Check(t.PcKey != null && Pad.PcCheck(t.PcKey).Length == 9, "tablet link: the PC sends its own key (the tablet's PC check)", t.PcKey == null ? "none" : Pad.PcCheck(t.PcKey));
+            Check(t.PcKey != null && Pad.PcCheck(t.PcKey).Length == 19, "tablet link: the PC sends its own key (the tablet's 16-digit PC check)", t.PcKey == null ? "none" : Pad.PcCheck(t.PcKey));
             var got = t.Read(g => g.Any(x => x.type == Pad.Frame) && g.Any(x => x.type == Pad.State), 8000);
             var frame = got.FirstOrDefault(x => x.type == Pad.Frame);
             Size size = default;
@@ -485,15 +575,15 @@ static class Program
             }
             Thread.Sleep(500);
 
-            // by the cable: Android's USB link reaches the PC's loopback USB door, where the code is empty
-            using (var cable = new TestTablet(Pad.UsbPort))
-                Check(cable.Pair(""), "USB: on the cable door (Android's adb reverse), no code is needed", cable.Refused);
+            // by the cable: an iPad through Apple's USB service needs no Allow (Apple's service vouches for it); then
+            // Android's USB link, which reaches the PC's loopback door, where the code is empty but the presenter allows it
+            IPadByCable();
+            CableDoorAsksFirst();
             using (var noCode = new TestTablet(port))
             {
                 noCode.Pair("");
                 Check(noCode.Refused == Pad.WrongCode, "USB: on the Wi-Fi port an empty code is still wrong", noCode.Refused);
             }
-            IPadByCable();
 
             // strangers holding places: two from one address at most, and the cable still works while they wait
             var stalled = new List<System.Net.Sockets.TcpClient>();
@@ -533,6 +623,16 @@ static class Program
                     last = g.Refused;
                 }
             Check(last == Pad.TooManyWrong, "tablet link: after five wrong codes, guessing is locked out", last);
+
+            // ...only for that address: a tablet at another address still gets in with the right code
+            // (127.0.0.2 is this machine too, seen by the PC as a different address)
+            var fromOther = new System.Net.Sockets.TcpClient(new System.Net.IPEndPoint(System.Net.IPAddress.Parse("127.0.0.2"), 0));
+            fromOther.Connect(System.Net.IPAddress.Loopback, port);
+            using (var other = new TestTablet(fromOther))
+            {
+                bool otherIn = other.Pair(PadCode);
+                Check(otherIn, "tablet link: wrong codes from one address don't lock out a tablet at another address", otherIn ? "let in" : "refused: " + other.Refused);
+            }
         }
         catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException or JsonException or ArgumentException or InvalidDataException or KeyNotFoundException or FormatException)
         {
@@ -591,7 +691,8 @@ static class Program
             if (tunnel == null) return;
             using var ipad = new TestTablet(tunnel);
             bool inByCable = ipad.Pair("");
-            Check(inByCable, "USB: the iPad is let in by the cable with no code", ipad.Refused);
+            Check(inByCable && ToolbarName("Allow") == null, "USB: the iPad is let in by the cable with no code, and no question for the presenter",
+                  inByCable ? "let in, " + (ToolbarName("Allow") == null ? "nothing asked" : "Allow shown") : ipad.Refused);
             if (!inByCable) return;
             ipad.Send(Pad.Command, "clear");
             ipad.Send(Pad.Command, "tool:pen");
@@ -614,6 +715,44 @@ static class Program
             Check(false, "USB: the stand-in iPad's conversation", e.Message);
         }
         finally { service.Stop(); }
+    }
+
+    /// <summary>
+    /// The Android cable door (127.0.0.1:47830, where adb reverse arrives): any program on the PC, or any app on the
+    /// tablet, can reach it, so the first session there in each run waits for the presenter's Allow on the toolbar.
+    /// Deny turns it away; Allow lets it in; after that the run doesn't ask again.
+    /// </summary>
+    static void CableDoorAsksFirst()
+    {
+        using (var denied = new TestTablet(Pad.UsbPort))
+        {
+            var pairing = System.Threading.Tasks.Task.Run(() => denied.Pair("", answerMs: 20000));
+            WaitFor(() => ToolbarName("Allow") != null || pairing.IsCompleted, 8000);
+            bool asked = ToolbarName("An Android tablet on the USB cable") != null && ToolbarName("Allow") != null;
+            bool inEarly = pairing.IsCompleted && pairing.Result;
+            Shot("43-cable-door-asks");
+            Press("Deny");
+            bool done = pairing.Wait(8000);
+            Check(asked && !inEarly && done && !pairing.Result && denied.Refused == Pad.NotAllowed,
+                  "USB: the first tablet on the Android cable door waits for the presenter, and Deny turns it away",
+                  $"asked {asked}, let in before an answer {inEarly}, answered {done}, refused: {denied.Refused}");
+        }
+        WaitFor(() => ToolbarName("Allow") == null, 2000);
+        Check(ToolbarName("Allow") == null, "USB: the question goes once answered", ToolbarName("Allow") == null ? "gone" : "still shown");
+        using (var cable = new TestTablet(Pad.UsbPort))
+        {
+            var pairing = System.Threading.Tasks.Task.Run(() => cable.Pair("", answerMs: 20000));
+            WaitFor(() => ToolbarName("Allow") != null || pairing.IsCompleted, 8000);
+            bool asked = ToolbarName("Allow") != null;
+            Press("Allow");
+            bool ok = pairing.Wait(8000) && pairing.Result;
+            Check(asked && ok, "USB: Allow lets the tablet on the Android cable door in, with no code", $"asked {asked}, let in {ok} {cable.Refused}");
+        }
+        using (var again = new TestTablet(Pad.UsbPort))
+        {
+            bool ok = again.Pair("");
+            Check(ok && ToolbarName("Allow") == null, "USB: once allowed, the cable door doesn't ask again in this run", ok ? "let in at once" : again.Refused);
+        }
     }
 
     static byte[] ReadN(System.Net.Sockets.NetworkStream s, int n)
@@ -815,11 +954,12 @@ static class Program
             Check(obs.Recording && obs.Count("StartRecord") == 1, "⏺ starts OBS recording", $"recording {obs.Recording}, StartRecord asked {obs.Count("StartRecord")} time(s)");
             WaitFor(() => OnToolbar("Stop recording"), 2000);
             Check(OnToolbar("Stop recording") && !OnToolbar("OBS refused"), "the toolbar shows ⏹ while recording, and the old message is gone", OnToolbar("Stop recording") ? "⏹ shown" : "no ⏹");
-            Thread.Sleep(1500);
-            ppt.SlideShowWindows.Show.View.CurrentShowPosition = 2; Thread.Sleep(1500);
+            // slides 11 s apart: YouTube drops a chapter list with a chapter under 10 s, so shorter ones are merged
+            Thread.Sleep(11000);
+            ppt.SlideShowWindows.Show.View.CurrentShowPosition = 2; Thread.Sleep(11000);
             ppt.SlideShowWindows.Show.View.Hidden = 2;               // two hidden slides: position 3 in the show is slide 5
             ppt.SlideShowWindows.Show.View.HiddenFrom = 3;
-            ppt.SlideShowWindows.Show.View.CurrentShowPosition = 3; Thread.Sleep(1300);
+            ppt.SlideShowWindows.Show.View.CurrentShowPosition = 3; Thread.Sleep(11000);
             Check(OnToolbar("0:0"), "the toolbar shows the recording time", OnToolbar("0:0") ? "timer shown" : "no timer");
             var names = string.Join(", ", obs.ChapterNames);
             Check(names == "Slide 2, Slide 5", "each slide change is a chapter in OBS's video, named by PowerPoint's own slide number", "chapters asked: " + names);
@@ -837,6 +977,16 @@ static class Program
             Check(!obs.Paused && obs.Recording, "▶ resumes", $"paused {obs.Paused}, recording {obs.Recording}");
             WaitFor(() => obs.ChapterNames.Contains("Slide 6"), 2000);
             Check(obs.ChapterNames.Contains("Slide 6"), "after ▶, the slide moved to while paused gets its chapter", string.Join(", ", obs.ChapterNames));
+            Thread.Sleep(11000);
+
+            // the line to OBS drops while OBS goes on recording; Contrast Ink connects again and takes the same
+            // recording over: its chapters so far are kept (before, they were cleared and "Slide 6" stamped at 0:00)
+            obs.DropLine();
+            WaitFor(() => OnToolbar("Lost contact with OBS"), 4000);
+            Check(OnToolbar("Lost contact with OBS"), "the line to OBS dropping mid-recording: the toolbar says so", OnToolbar("Lost contact with OBS") ? "said" : "silent");
+            WaitFor(() => obs.Identified && OnToolbar("Stop recording"), 12000);
+            Check(OnToolbar("Stop recording"), "OBS reached again while still recording: the toolbar takes the recording over (⏹)", OnToolbar("Stop recording") ? "⏹ shown" : "still ⏺");
+            Press("Lost contact with OBS");   // dismissed
 
             Press("Stop recording");
             WaitFor(() => !obs.Recording, 3000);
@@ -845,7 +995,10 @@ static class Program
             var chaptersFile = Path.Combine(outDir, "lecture-check chapters.txt");
             var lines = File.Exists(chaptersFile) ? File.ReadAllLines(chaptersFile) : Array.Empty<string>();
             Check(lines.Length == 4 && lines[0] == "0:00 Slide 1" && lines[1].EndsWith(" Slide 2") && lines[2].EndsWith(" Slide 5") && lines[3].EndsWith(" Slide 6") && lines[1] != "0:00 Slide 2",
-                  "a chapters file is saved beside the video, ready for a YouTube description", File.Exists(chaptersFile) ? string.Join(" | ", lines) : "no file");
+                  "a chapters file is saved beside the video, ready for a YouTube description (the chapters before the line dropped kept)",
+                  File.Exists(chaptersFile) ? string.Join(" | ", lines) : "no file");
+            var times = lines.Select(l => l.Split(' ')[0].Split(':').Select(int.Parse).Aggregate(0, (a, b) => a * 60 + b)).ToList();
+            Check(times.Count > 1 && times.Zip(times.Skip(1), (a, b) => b - a).All(g => g >= 10), "no chapter is shorter than 10 s (YouTube ignores the list otherwise)", string.Join(", ", times) + " s");
 
             ppt.SlideShowWindows.Show.View.HiddenFrom = int.MaxValue;
             // started from OBS itself: the toolbar follows
@@ -873,6 +1026,20 @@ static class Program
             Press("OBS stopped recording by itself");
             Check(!OnToolbar("OBS stopped recording by itself"), "clicking a message dismisses it", OnToolbar("OBS stopped recording by itself") ? "still there" : "gone");
 
+            // ⏹ answered late (OBS busy finishing the file): "OBS didn't stop" shows after 5 s, and goes when OBS
+            // then reports it stopped (it stayed, wrong, before)
+            Press("Record with OBS");
+            WaitFor(() => obs.Recording, 3000);
+            obs.StopLate = true;
+            Press("Stop recording");
+            WaitFor(() => OnToolbar("OBS didn't stop"), 7000);
+            bool saidLate = OnToolbar("OBS didn't stop");
+            WaitFor(() => !obs.Recording && !OnToolbar("OBS didn't stop"), 5000);
+            Thread.Sleep(300);
+            Check(saidLate && !OnToolbar("OBS didn't stop") && OnToolbar("Record with OBS"), "OBS answering ⏹ late: once it reports it stopped, \"OBS didn't stop\" goes",
+                  $"said after 5 s {saidLate}, still said {OnToolbar("OBS didn't stop")}, ready to record {OnToolbar("Record with OBS")}");
+            obs.StopLate = false;
+
             // the disk filling up
             obs.DiskMB = 900;
             Press("Record with OBS");
@@ -889,12 +1056,12 @@ static class Program
 
             // OBS closes while recording (after a slide change, so there are chapters to keep)
             ppt.SlideShowWindows.Show.View.CurrentShowPosition = 2; Thread.Sleep(1300);
-            var orphansBefore = Directory.GetFiles(outDir, "Contrast Ink chapters *.txt").Length;
+            var closedAt = DateTime.Now.AddSeconds(-1);   // (a file of the same minute, from the dropped line above, is written over)
             obs.Dispose(); obs = null;
             WaitFor(() => OnToolbar("Lost contact with OBS"), 4000);
             Check(OnToolbar("Lost contact with OBS") && OnToolbar("Record with OBS"), "OBS closing mid-recording: the toolbar says so", OnToolbar("Lost contact with OBS") ? "said" : "silent");
-            var orphans = Directory.GetFiles(outDir, "Contrast Ink chapters *.txt");
-            Check(orphans.Length > orphansBefore && OnToolbar("Lost contact with OBS"), "OBS closing mid-recording: the chapters are still saved in its recording folder",
+            var orphans = Directory.GetFiles(outDir, "Contrast Ink chapters *.txt").Where(f => File.GetLastWriteTime(f) >= closedAt).ToArray();
+            Check(orphans.Length > 0 && OnToolbar("Lost contact with OBS"), "OBS closing mid-recording: the chapters are still saved in its recording folder",
                   orphans.Length > 0 ? string.Join(" | ", File.ReadAllLines(orphans[^1])) : "no chapters file");
             Press("Lost contact with OBS");
         }
@@ -979,6 +1146,18 @@ static class Program
         var big = Native.WindowBox("Contrast Ink");
         Check(Math.Abs(big.Width - before.Width) <= 2, "› makes it big again", $"{small.Width} px -> {big.Width} px");
 
+        // the opacity slider dragged end to end: the settings file is written once it stops, not on every step
+        // (each write was on the thread that runs the keyboard watcher)
+        OpacityDragSavesOnce();
+
+        // ⚙: the tablet link's lines, with the 16-digit PC check; no adb found (none on the PATH, and the one in
+        // C:\platform-tools must not count)
+        var padText = PadPanelText();
+        Check(System.Text.RegularExpressions.Regex.IsMatch(padText, @"PC check [0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}\b"),
+              "⚙: the PC check shown is 16 digits (XXXX-XXXX-XXXX-XXXX)", padText.Replace("\n", " | "));
+        Check(padText.Contains("(not found)"), "⚙: adb only in C:\\platform-tools counts as not found", padText.Replace("\n", " | "));
+        CheckPlantedAdbNotRun();
+
         // settings remembered: green pen chosen above; quit with ✕, start again, draw without choosing
         Press("Green (3)"); Press("Pen (P)"); Press("Draw on / off");   // drawing off before quitting
         Press("Quit Contrast Ink");
@@ -986,11 +1165,17 @@ static class Program
         Check(quit, "✕ quits the app", quit ? "exited" : "still running after 5 s");
         if (!quit) return;
         File.Delete(statusPath);
+        startInfo.Environment["PATH"] = PathAdbDir + Path.PathSeparator + startInfo.Environment["PATH"];   // now adb is on the PATH
         app = Process.Start(startInfo)!;
         var sw = Stopwatch.StartNew();
         while (!File.Exists(statusPath) && sw.Elapsed.TotalSeconds < 20) Thread.Sleep(200);
         Thread.Sleep(800);
         Check(File.Exists(statusPath), "it starts again after quitting", File.Exists(statusPath) ? "status written" : "no status");
+        WaitFor(() => File.Exists(Path.Combine(PathAdbDir, AdbRan)), 8000);
+        var pathRan = Path.Combine(PathAdbDir, AdbRan);
+        Check(File.Exists(pathRan), "adb: an adb.exe on the PATH is used (asked for the tablets plugged in)", File.Exists(pathRan) ? File.ReadAllText(pathRan).Trim().Replace("\n", " | ") : "never run");
+        padText = PadPanelText();
+        Check(padText.Contains("(found)"), "⚙: adb on the PATH shows as found", padText.Replace("\n", " | "));
         Key(VK.F9); Thread.Sleep(300);
         Drag(new Point(x1, Row(4)), new Point(x2, Row(4)));
         Thread.Sleep(400);
@@ -1062,6 +1247,34 @@ static class Program
     }
 
     // ---------------------------------------------------------------- finding the toolbar's button
+    /// <summary>The whole accessible name of the first toolbar element whose name starts so (visible ones only), or null.</summary>
+    static string? ToolbarName(string nameStarts)
+    {
+        foreach (var hwnd in Native.ProcessWindows("Contrast Ink"))
+        {
+            var root = System.Windows.Automation.AutomationElement.FromHandle(hwnd);
+            foreach (System.Windows.Automation.AutomationElement e in root.FindAll(System.Windows.Automation.TreeScope.Descendants, System.Windows.Automation.Condition.TrueCondition))
+                if (e.Current.Name.StartsWith(nameStarts, StringComparison.Ordinal)) return e.Current.Name;
+        }
+        return null;
+    }
+
+    /// <summary>The on-screen rectangle of the first toolbar element whose name starts so, or empty.</summary>
+    static Rectangle ToolbarBox(string nameStarts)
+    {
+        foreach (var hwnd in Native.ProcessWindows("Contrast Ink"))
+        {
+            var root = System.Windows.Automation.AutomationElement.FromHandle(hwnd);
+            foreach (System.Windows.Automation.AutomationElement e in root.FindAll(System.Windows.Automation.TreeScope.Descendants, System.Windows.Automation.Condition.TrueCondition))
+                if (e.Current.Name.StartsWith(nameStarts, StringComparison.Ordinal))
+                {
+                    var r = e.Current.BoundingRectangle;
+                    return new Rectangle((int)r.Left, (int)r.Top, (int)r.Width, (int)r.Height);
+                }
+        }
+        return Rectangle.Empty;
+    }
+
     static Point? FindToolbarButton(string nameStarts)
     {
         foreach (var hwnd in Native.ProcessWindows("Contrast Ink"))

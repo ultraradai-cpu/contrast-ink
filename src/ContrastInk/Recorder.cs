@@ -35,7 +35,12 @@ sealed class Recorder
 
     /// <summary>OBS is recording (or paused) as far as Contrast Ink knows.</summary>
     public bool Active => state is State.Recording or State.Paused or State.Stopping;
-    readonly List<(TimeSpan at, string name)> chapters = new();
+    readonly ChapterLog chapters = new();
+    const string DidntStop = "OBS didn't stop. Stop it in OBS itself.";
+
+    /// <summary>How far into the recording OBS is (its outputDuration), or null when it didn't say.</summary>
+    static TimeSpan? Duration(JsonObject? status) =>
+        status?["outputDuration"] is JsonNode ms ? TimeSpan.FromMilliseconds(ms.GetValue<double>()) : null;
 
     public Recorder(ToolbarWindow toolbar, Func<string> currentSlide, Dispatcher ui)
     {
@@ -69,13 +74,13 @@ sealed class Recorder
             {
                 // already recording (started in OBS itself): take it over rather than start a second one
                 state = status["outputPaused"]?.GetValue<bool>() == true ? State.Paused : State.Recording;
+                Began(Duration(status) ?? TimeSpan.Zero);
             }
             else if (await obs.Request("StartRecord") == null)
             {
                 state = State.Idle; toolbar.Notice("OBS didn't start recording. Look at OBS for the reason (often the recording folder or the disk)."); Show(); return;
             }
-            else state = State.Recording;
-            Began();
+            else { state = State.Recording; Began(TimeSpan.Zero); }
             if (scene != null) toolbar.Notice(scene);
             Show();
             await CheckDisk();
@@ -83,16 +88,18 @@ sealed class Recorder
         catch (Exception e) { App.Log(e); state = State.Idle; Show(); }
     }
 
-    /// <summary>A recording began (here, or in OBS itself): start its chapter list on the slide showing now.</summary>
-    void Began()
+    /// <summary>
+    /// A recording began (here, or in OBS itself), or one already running is taken over <paramref name="at"/> into it
+    /// (after the line to OBS came back, or Contrast Ink was started again): the slide showing now gets its chapter at
+    /// that time, not at 0:00, and the same recording taken over again keeps its chapters so far.
+    /// </summary>
+    void Began(TimeSpan at)
     {
         stopAsked = false;
         diskWarned = false;
-        elapsed = TimeSpan.Zero;
-        chapters.Clear();
-        lastChapterSlide = "";
-        var slide = currentSlide();
-        if (Obs.SlideNumber(slide) is int n) { chapters.Add((TimeSpan.Zero, "Slide " + n)); lastChapterSlide = slide; }
+        elapsed = at;
+        chapters.Begin(at, currentSlide());
+        lastChapterSlide = chapters.LastKey;
         LearnRecordFolder();
     }
 
@@ -123,7 +130,11 @@ sealed class Recorder
     {
         state = State.Stopping; stopAsked = true; Show();
         var r = await obs.Request("StopRecord");
-        if (r == null) { state = State.Recording; toolbar.Notice("OBS didn't stop. Stop it in OBS itself."); Show(); return; }
+        if (r == null)
+        {
+            if (state == State.Idle) return;   // OBS's "stopped" event came while waiting: it did stop
+            state = State.Recording; toolbar.Notice(DidntStop); Show(); return;
+        }
         Finished(r["outputPath"]?.GetValue<string>());
     }
 
@@ -132,6 +143,7 @@ sealed class Recorder
         if (state == State.Idle) return;   // already handled (the reply and OBS's event both say so)
         state = State.Idle;
         WriteChapters(path);
+        chapters.Ended();
         Show();
     }
 
@@ -143,8 +155,7 @@ sealed class Recorder
             if (state != State.Recording || Obs.SlideNumber(key) is not int n || key == lastChapterSlide) return;
             lastChapterSlide = key;
             var status = await obs.Request("GetRecordStatus");
-            var at = status?["outputDuration"] is JsonNode ms ? TimeSpan.FromMilliseconds(ms.GetValue<double>()) : elapsed;
-            chapters.Add((at, "Slide " + n));
+            chapters.Add(Duration(status) ?? elapsed, key);
             await obs.Request("CreateRecordChapter", new JsonObject { ["chapterName"] = "Slide " + n });   // older OBS / other formats: says no, fine
         }
         catch (Exception e) { App.Log(e); }
@@ -156,9 +167,10 @@ sealed class Recorder
         {
             case "OBS_WEBSOCKET_OUTPUT_STARTED":
                 // started from OBS itself (its button or its hotkey): follow it, so ⏹, the timer and chapters work too
-                if (state == State.Idle) { state = State.Recording; Began(); Show(); }
+                if (state == State.Idle) { state = State.Recording; Began(TimeSpan.Zero); Show(); }
                 break;
             case "OBS_WEBSOCKET_OUTPUT_STOPPED":
+                toolbar.ClearNotice(DidntStop);   // OBS answered ⏹ late, but it did stop: that notice is no longer true
                 if (state == State.Idle) return;
                 if (!stopAsked) toolbar.Notice("OBS stopped recording by itself. What was recorded is saved" + (path != null ? ": " + path : "") + ". Press ⏺ to record again.");
                 Finished(path);
@@ -184,12 +196,12 @@ sealed class Recorder
     /// <summary>The chapters, saved in OBS's recording folder (else Documents) with the time in the name. Null if none.</summary>
     string? SaveOrphanChapters()
     {
-        if (chapters.Count < 2) return null;
+        if (chapters.Items.Count < 2) return null;
         try
         {
             string folder = recordFolder is { Length: > 0 } f && Directory.Exists(f) ? f : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
             string path = Path.Combine(folder, $"Contrast Ink chapters {DateTime.Now:yyyy-MM-dd HHmm}.txt");
-            File.WriteAllText(path, Obs.Chapters(chapters));
+            File.WriteAllText(path, Obs.Chapters(chapters.Items));
             return path;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { App.Log(e); return null; }
@@ -204,11 +216,14 @@ sealed class Recorder
             if (state is State.Recording or State.Paused)
             {
                 var status = await obs.Request("GetRecordStatus");
-                if (status?["outputDuration"] is JsonNode ms) elapsed = TimeSpan.FromMilliseconds(ms.GetValue<double>());
+                if (Duration(status) is { } d) { elapsed = d; chapters.Seen(d); }
                 if (++ticks % 15 == 0) await CheckDisk();
             }
-            else if (!obs.Connected && ++ticks % 5 == 0 && Obs.ReadConfig(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData)) is { Enabled: true }
-                     && await obs.Connect() == null)   // quietly, so ⏺ shows whether OBS is ready
+            // quietly, so ⏺ shows whether OBS is ready. OBS's settings file is read on a worker thread: this thread
+            // also runs the keyboard watcher, which Windows drops if it stalls (a slow or locked disk)
+            else if (!obs.Connected && ++ticks % 5 == 0
+                     && await Task.Run(() => Obs.ReadConfig(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData))) is { Enabled: true }
+                     && await obs.Connect() == null)
             {
                 if (connectNotice) { toolbar.Notice(null); connectNotice = false; }   // "can't reach OBS" is no longer true
                 // OBS may already be recording (started before Contrast Ink, or before the line dropped): follow it
@@ -216,7 +231,7 @@ sealed class Recorder
                 if (state == State.Idle && status?["outputActive"]?.GetValue<bool>() == true)
                 {
                     state = status["outputPaused"]?.GetValue<bool>() == true ? State.Paused : State.Recording;
-                    Began();
+                    Began(Duration(status) ?? TimeSpan.Zero);
                 }
             }
             Show();
@@ -264,8 +279,8 @@ sealed class Recorder
 
     void WriteChapters(string? video)
     {
-        if (video == null || chapters.Count < 2) return;
-        try { File.WriteAllText(Path.ChangeExtension(video, null) + " chapters.txt", Obs.Chapters(chapters)); }
+        if (video == null || chapters.Items.Count < 2) return;
+        try { File.WriteAllText(Path.ChangeExtension(video, null) + " chapters.txt", Obs.Chapters(chapters.Items, end: elapsed)); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { App.Log(e); }
     }
 }

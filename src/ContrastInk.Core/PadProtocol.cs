@@ -40,7 +40,8 @@ public static class Pad
     /// <summary>The REJECT texts (docs/pad-protocol.md lists them; the tablets show them as they are).</summary>
     public const string UpdateTablet = "Please update Contrast Ink on the tablet.",
         TooManyWrong = "Too many wrong codes: wait 30 seconds, then try again.",
-        WrongCode = "Wrong code: type the code Contrast Ink shows on the PC (⚙ Settings).";
+        WrongCode = "Wrong code: type the code Contrast Ink shows on the PC (⚙ Settings).",
+        NotAllowed = "Not allowed on the PC: press Allow on Contrast Ink's toolbar when it asks, then try again.";
 
     public static byte[] StateMessage(Settings s, bool canUndo) =>
         Message(State, JsonSerializer.Serialize(new
@@ -75,11 +76,14 @@ public static class Pad
     public static byte[] ChallengeMessage(byte[] pcKey, byte[] salt, string name) =>
         Message(PadCrypto.Challenge, JsonSerializer.Serialize(new { key = Convert.ToBase64String(pcKey), salt = Convert.ToBase64String(salt), name }));
 
-    /// <summary>The PC check shown beside the code: the first 4 bytes of SHA-256 of the PC's public key, "6FC6-6A90".</summary>
+    /// <summary>
+    /// The PC check shown beside the code: the first 8 bytes of SHA-256 of the PC's public key, "6FC6-6A90-4861-71CA".
+    /// (4 bytes were too few: a fake key matching them could be searched for offline in about 2^32 tries.)
+    /// </summary>
     public static string PcCheck(byte[] pcKey)
     {
         var h = System.Security.Cryptography.SHA256.HashData(pcKey);
-        return $"{h[0]:X2}{h[1]:X2}-{h[2]:X2}{h[3]:X2}";
+        return string.Join("-", Enumerable.Range(0, 4).Select(i => $"{h[2 * i]:X2}{h[2 * i + 1]:X2}"));
     }
 
     /// <summary>The longest HELLO accepted (a stranger's first message: small, so it can't be used to fill memory).</summary>
@@ -183,30 +187,44 @@ public sealed class PadReader
 }
 
 /// <summary>
-/// Wrong codes: a 6-digit code must not be guessable by a script on the same Wi-Fi. Five wrong in a row lock
-/// everyone out for 30 s; twenty wrong in all make a new code (the presenter sees it change). At most about
-/// 10 guesses a minute, against a code that changes every 20: guessing it is a 1 in 50,000 chance.
+/// Wrong codes: a 6-digit code must not be guessable by a script on the same Wi-Fi. Counted per address, so one
+/// tablet's typos (or one stranger's guesses) don't lock out everyone: five wrong in a row from one address lock
+/// that address out for 30 s. A backstop against guessing from many addresses: fifteen wrong in a row from all of
+/// them lock everyone out for 30 s. Twenty wrong in all make a new code (the presenter sees it change).
+/// docs/pad-protocol.md, "Limits the PC enforces".
 /// </summary>
 public sealed class PadGuard
 {
-    public const int InARow = 5, BeforeNewCode = 20;
+    public const int InARow = 5, AllInARow = 15, BeforeNewCode = 20;
     public static readonly TimeSpan Lockout = TimeSpan.FromSeconds(30);
-    int wrongInARow, wrongForThisCode;
-    DateTime lockedUntil = DateTime.MinValue;
+    const int MaxAddresses = 1024;   // addresses remembered at most: a flood of new ones can't fill memory
+    readonly Dictionary<string, (int row, DateTime until)> byAddress = new();
+    int allInARow, wrongForThisCode;
+    DateTime allUntil = DateTime.MinValue;
 
-    /// <summary>Whether a HELLO may be tried at all right now.</summary>
-    public bool Locked(DateTime now) => now < lockedUntil;
+    /// <summary>Whether a HELLO from this address may be tried at all right now.</summary>
+    public bool Locked(string from, DateTime now) =>
+        now < allUntil || (byAddress.TryGetValue(from, out var a) && now < a.until);
 
-    /// <summary>A wrong code was given. True: time for a new code.</summary>
-    public bool Wrong(DateTime now)
+    /// <summary>A wrong code was given from this address. True: time for a new code.</summary>
+    public bool Wrong(string from, DateTime now)
     {
-        wrongForThisCode++;
-        if (++wrongInARow >= InARow) { wrongInARow = 0; lockedUntil = now + Lockout; }
-        if (wrongForThisCode < BeforeNewCode) return false;
+        if (!byAddress.ContainsKey(from) && byAddress.Count >= MaxAddresses)
+            foreach (var old in byAddress.Where(kv => now >= kv.Value.until).Select(kv => kv.Key).ToList()) byAddress.Remove(old);
+        var (row, until) = byAddress.GetValueOrDefault(from);
+        if (++row >= InARow) { row = 0; until = now + Lockout; }
+        if (byAddress.ContainsKey(from) || byAddress.Count < MaxAddresses) byAddress[from] = (row, until);
+        else allUntil = now + Lockout;   // a thousand addresses locked out at once: guessing from everywhere
+        if (++allInARow >= AllInARow) { allInARow = 0; allUntil = now + Lockout; }
+        if (++wrongForThisCode < BeforeNewCode) return false;
         wrongForThisCode = 0;
         return true;
     }
 
-    /// <summary>The right code: the count of guesses in a row starts again.</summary>
-    public void Right() => wrongInARow = 0;
+    /// <summary>The right code from this address: its run of guesses, and the run from all addresses, start again.</summary>
+    public void Right(string from)
+    {
+        byAddress.Remove(from);
+        allInARow = 0;
+    }
 }

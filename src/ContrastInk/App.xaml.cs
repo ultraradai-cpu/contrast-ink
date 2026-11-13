@@ -34,7 +34,15 @@ public partial class App : Application
     InputHooks? hooks;
     PadServer? pad;   // a tablet used as a pad, when switched on (⚙ Settings)
     List<Native.Monitor> monitors = new();
+    // the screen the layer is on now: the presenter's choice (settings), or the main screen while that one is unplugged
+    int screen;
+    volatile Native.Monitor? padScreen;   // the same, for the tablet link's threads
     bool ctrl, shift, alt, win;
+    bool hooksWarned;          // the toolbar says the keyboard watcher couldn't be put back
+    bool frontWarned;          // the toolbar says the app in front runs as administrator
+    DispatcherTimer saveTimer = null!;
+    readonly object saving = new();
+    long saveAsked, saveWritten;   // the newest settings asked to be written, and the newest written
     readonly HashSet<int> swallowed = new();   // keys we kept from PowerPoint: their key-up is kept too
 
 
@@ -49,6 +57,8 @@ public partial class App : Application
         monitors = Native.Monitors();
         CarryOverOldSettings();
         settings = Settings.Load(SettingsPath, monitors.Count);
+        saveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+        saveTimer.Tick += (_, _) => { saveTimer.Stop(); SaveNow(); };
         // a pen tablet beside the keyboard (Wacom Intuos, XP-Pen Deco, Huion...): WPF's own pen handling is left out,
         // so its pen reaches every window as the mouse it moves (Core's PenTablet explains why). Decided once, before
         // the first window: WPF reads it only then.
@@ -67,7 +77,7 @@ public partial class App : Application
         toolbar.Show();
         KeepToolbarOnScreen();
         toolbar.SizeChanged += (_, _) => KeepToolbarOnScreen();   // made big again, or a warning line appeared
-        toolbar.Moved += () => { settings.ToolbarX = toolbar.Left; settings.ToolbarY = toolbar.Top; settings.Save(SettingsPath); };
+        toolbar.Moved += () => { settings.ToolbarX = toolbar.Left; settings.ToolbarY = toolbar.Top; SaveSoon(); };
 
         // Everything after the toolbar appears. A failure here once left a toolbar with dead buttons and nothing said
         // (the global handler above swallowed it): now the toolbar says so in red, and the error goes to the log.
@@ -88,15 +98,15 @@ public partial class App : Application
 
             bool testRun = Environment.GetEnvironmentVariable("CONTRASTINK_TEST") == "1";
             hooks = new InputHooks { Key = OnKey, Pointer = OnPointer, AcceptInjectedKeys = testRun };
-            if (!hooks.Working)   // on the toolbar, not a message box: a message box would be in the recording
-                toolbar.Warn("Windows didn't allow Contrast Ink to watch the keyboard and pen: F9, Ctrl, the letter keys and pen drawing won't work. Use the toolbar buttons.");
+            if (!hooks.Working) { toolbar.Warn(HooksWarning); hooksWarned = true; }   // on the toolbar, not a message box: a message box would be in the recording
 
-            // a projector plugged in or out, or the resolution changed: cover the right screen again.
+            // a projector plugged in or out, or the resolution changed: cover the chosen screen again (or the main
+            // screen while the chosen one is gone; back on the chosen one when it returns).
             // after sleep, Windows may have dropped the keyboard and mouse hooks without a word: put them back.
-            Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (_, _) => Dispatcher.BeginInvoke(() => { monitors = Native.Monitors(); Cover(); hooks?.Reinstall(); Refresh(); });
+            Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (_, _) => Dispatcher.BeginInvoke(() => { monitors = Native.Monitors(); Cover(); Rehook(); Refresh(); });
             Microsoft.Win32.SystemEvents.PowerModeChanged += (_, ev) =>
             {
-                if (ev.Mode == Microsoft.Win32.PowerModes.Resume) Dispatcher.BeginInvoke(() => { hooks?.Reinstall(); mode.Escape(); });
+                if (ev.Mode == Microsoft.Win32.PowerModes.Resume) Dispatcher.BeginInvoke(() => { Rehook(); mode.Escape(); });
             };
 
             // the tablet link: switched on in ⚙ Settings; the Windows check starts it with a code it knows
@@ -123,10 +133,10 @@ public partial class App : Application
                 try { File.WriteAllText(statusPath, json); } catch (Exception ex) { Log(ex); }
             }
             var top = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
-            top.Tick += (_, _) => { overlay.KeepOnTop(); undoButton.KeepOnTop(); toolbar.KeepOnTop(); };
+            top.Tick += (_, _) => { overlay.KeepOnTop(); undoButton.KeepOnTop(); toolbar.KeepOnTop(); CheckFront(); };
             top.Start();
             var rehook = new DispatcherTimer { Interval = TimeSpan.FromMinutes(2) };
-            rehook.Tick += (_, _) => hooks?.Reinstall();
+            rehook.Tick += (_, _) => Rehook();
             rehook.Start();
             var penClock = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
             penClock.Tick += (_, _) =>
@@ -148,9 +158,64 @@ public partial class App : Application
     {
         hooks?.Dispose();
         pad?.Dispose();
-        settings.Save(SettingsPath);
+        // (not when this was a second copy that found one already running: it never read the settings)
+        if (saveTimer != null) { saveTimer.Stop(); SaveNow(wait: true); }
         single?.Dispose();
         base.OnExit(e);
+    }
+
+    // ---------- saving the settings ----------
+    // Not on every change: the opacity slider changes the settings on every pixel it moves, and this thread also runs
+    // the keyboard watcher, which Windows drops if it stalls. Half a second after the last change, written on a
+    // worker thread (whole or not at all: Settings.Write).
+
+    void SaveSoon() { saveTimer.Stop(); saveTimer.Start(); }
+
+    void SaveNow(bool wait = false)
+    {
+        var json = settings.Serialize();
+        if (json == null) return;
+        long n = ++saveAsked;
+        void Write()
+        {
+            lock (saving)
+            {
+                if (n <= saveWritten) return;   // a newer one was written already
+                if (Settings.Write(SettingsPath, json)) saveWritten = n;
+            }
+        }
+        if (wait) Write();
+        else System.Threading.Tasks.Task.Run(Write);
+    }
+
+    // ---------- the keyboard watcher, and an app in front that runs as administrator ----------
+    const string HooksWarning = "Windows didn't allow Contrast Ink to watch the keyboard and pen: F9, Ctrl, the letter keys and pen drawing won't work. Use the toolbar buttons.";
+    const string FrontElevated = "The app in front runs as administrator: Contrast Ink's keys and the tablet's ‹ › can't reach it. Open it normally, or start Contrast Ink as administrator too.";
+
+    /// <summary>Puts the keyboard and mouse watcher back; when Windows refuses, the toolbar says so (and stops saying so once it works again).</summary>
+    void Rehook()
+    {
+        if (hooks == null) return;
+        bool ok = hooks.Reinstall();
+        if (!ok && !hooksWarned) toolbar.Warn(HooksWarning);
+        else if (ok && hooksWarned) toolbar.Unwarn(HooksWarning);
+        hooksWarned = !ok;
+    }
+
+    /// <summary>Every 1.5 s: says on the toolbar while the app in front runs as administrator (Windows keeps
+    /// Contrast Ink's keys from it, and its keys from Contrast Ink's watcher, without a word).</summary>
+    void CheckFront()
+    {
+        bool blocked = Native.ForegroundElevated();
+        if (blocked && !frontWarned) toolbar.Notice(FrontElevated);
+        else if (!blocked && frontWarned) toolbar.ClearNotice(FrontElevated);
+        frontWarned = blocked;
+    }
+
+    /// <summary>The tablet's ‹ ›: the key for the app in front, or why it can't get there.</summary>
+    void PressForTablet(ushort vk)
+    {
+        if (!Native.PressKey(vk) || Native.ForegroundElevated()) { toolbar.Notice(FrontElevated); frontWarned = true; }
     }
 
     void Wire()
@@ -188,10 +253,11 @@ public partial class App : Application
         {
             pad?.SendState(settings, overlay.CanUndo);   // the tablet's undo button follows marks made here too
             if (!settings.UndoButtonByPen || !mode.Drawing || monitors.Count == 0) return;
-            undoButton.ShowAt(p.X + 12, p.Y + 12, monitors[settings.Screen].Bounds);
+            undoButton.ShowAt(p.X + 12, p.Y + 12, monitors[Math.Min(screen, monitors.Count - 1)].Bounds);
             toolbar.KeepOnTop();
         };
         toolbar.ScreenClicked += NextScreen;
+        toolbar.AskAnswered += allow => pad?.Answer(allow);
         toolbar.FoldClicked += () => { settings.ToolbarCollapsed = !settings.ToolbarCollapsed; ApplySettings(); };
         toolbar.CloseClicked += () =>
         {
@@ -214,7 +280,7 @@ public partial class App : Application
         overlay.SetOpacity(settings.Opacity);
         overlay.FadingInk = settings.FadingInk;
         overlay.SetPenEraserEnd(settings.PenEraserEnd);
-        settings.Save(SettingsPath);
+        SaveSoon();
         Refresh();
         pad?.SendState(settings, overlay.CanUndo);
     }
@@ -235,6 +301,8 @@ public partial class App : Application
             toolbar.Notice(name != null ? $"Tablet connected ({name}): what you draw on it appears here." : "The tablet disconnected.");
             ShowPad();
         };
+        pad.UsbToolsChanged += ShowPad;
+        pad.CableAsk += toolbar.Ask;   // the Android cable door: the presenter allows the first tablet there in each run
         try { pad.Start(); }
         catch (Exception e)
         {
@@ -245,25 +313,21 @@ public partial class App : Application
         ShowPad();
     }
 
-    void StopPad() { pad?.Dispose(); pad = null; overlay.RemoteCancel(); ShowPad(); }
+    void StopPad() { pad?.Dispose(); pad = null; overlay.RemoteCancel(); toolbar.Ask(null); ShowPad(); }
 
-    /// <summary>The screen being drawn on, for the tablet link's threads: the list of screens is read once (the UI
-    /// thread may replace it when a projector is plugged in).</summary>
-    Native.RECT ScreenForPad()
-    {
-        var m = monitors;
-        return m.Count == 0 ? default : m[Math.Clamp(settings.Screen, 0, m.Count - 1)].Bounds;
-    }
+    /// <summary>The screen being drawn on, for the tablet link's threads (set by the UI thread when it changes).</summary>
+    Native.RECT ScreenForPad() => padScreen?.Bounds ?? default;
 
     /// <summary>Three short lines (a long text here once made ⚙ Settings tall enough to cover the slide); the
-    /// details are in the README.</summary>
+    /// details are in the README, and in the hint shown while the pointer rests on them. Whether adb is found is
+    /// what the tablet link last saw (looking at the disk here, on every change, held up the keyboard watcher).</summary>
     void ShowPad() => toolbar.ShowPad(pad == null ? null
         : pad.Connected != null ? $"Connected: {pad.Connected}" + (pad.OverUsb ? ", by the USB cable." : ", over Wi-Fi (plug in its cable to switch).")
-        : $"Code {pad.Code}   ·   PC check {pad.PcCheck}"
-          + (PadServer.Addresses() is { Count: > 0 } a ? $"   ·   {a[0]}" + (pad.Port != Pad.Port ? $":{pad.Port}" : "") : "")
+        : $"Code {pad.Code}  ·  PC check {pad.PcCheck}"
+          + (PadServer.Addresses() is { Count: > 0 } a ? $"  ·  {a[0]}" + (pad.Port != Pad.Port ? $":{pad.Port}" : "") : "")
           + $"\nOn the tablet: Use as a pad → {Environment.MachineName} → the code. Encrypted."
-          + "\nUSB cable: iPad needs iTunes; Android needs USB debugging and platform-tools"
-          + (Adb.Find() != null ? " (found)." : " (not found)."));
+          + "\nUSB: iPad needs iTunes; Android needs USB debugging and platform-tools"
+          + (Adb.Found != null ? " (found)." : " (not found)."));
 
     void OnPad(byte type, byte[] payload)
     {
@@ -285,8 +349,8 @@ public partial class App : Application
         {
             case PadAction.Undo: Undo(); pad?.SendState(settings, overlay.CanUndo); break;
             case PadAction.Clear: overlay.ClearAll(); pad?.SendState(settings, overlay.CanUndo); break;
-            case PadAction.Next: Native.PressKey(Native.VK_RIGHT); break;      // the app in front turns the page
-            case PadAction.Previous: Native.PressKey(Native.VK_LEFT); break;
+            case PadAction.Next: PressForTablet(Native.VK_RIGHT); break;      // the app in front turns the page
+            case PadAction.Previous: PressForTablet(Native.VK_LEFT); break;
             case PadAction.Fade: settings.FadingInk = c.Value == 1; ApplySettings(); break;
             case PadAction.Tool: SetTool((Tool)c.Value); break;
             case PadAction.Color: SetColor(c.Value); break;
@@ -302,23 +366,36 @@ public partial class App : Application
         if (!overlay.CanUndo) undoButton.Park();
     }
 
-    void Refresh() => toolbar.Refresh(mode.Drawing, settings, monitors.Count, settings.ToolbarCollapsed);
+    void Refresh() => toolbar.Refresh(mode.Drawing, settings, monitors.Count, screen, settings.ToolbarCollapsed);
 
     // ---------- screens ----------
+    /// <summary>
+    /// Covers the presenter's chosen screen, found by its name and place (Core's ScreenChoice): while it is unplugged,
+    /// the main screen, and the chosen one again when it comes back. The fallback is never saved as the choice (a
+    /// projector dropping out for a moment once moved the layer to the laptop for good).
+    /// </summary>
     void Cover()
     {
         if (monitors.Count == 0) return;
-        settings.Screen = Math.Clamp(settings.Screen, 0, monitors.Count - 1);
-        overlay.Cover(monitors[settings.Screen].Bounds);
+        var b = settings.ScreenBounds;
+        screen = ScreenChoice.Resolve(monitors.Select(m => m.Display).ToList(), settings.ScreenDevice,
+            b is { Length: 4 } ? new Box(b[0], b[1], b[2], b[3]) : null, settings.Screen);
+        padScreen = monitors[screen];
+        overlay.Cover(monitors[screen].Bounds);
         toolbar?.KeepOnTop();   // moving the layer puts it on top: the toolbar must be above it again at once
     }
 
+    /// <summary>🖥 pressed: the next screen becomes the presenter's choice, remembered by its name and place.</summary>
     void NextScreen()
     {
         monitors = Native.Monitors();   // a projector may have been plugged in or out
-        settings.Screen = monitors.Count == 0 ? 0 : (settings.Screen + 1) % monitors.Count;
+        if (monitors.Count == 0) return;
+        var next = monitors[(screen + 1) % monitors.Count];
+        settings.Screen = (screen + 1) % monitors.Count;
+        settings.ScreenDevice = next.Device;
+        settings.ScreenBounds = new[] { next.Bounds.Left, next.Bounds.Top, next.Bounds.Right, next.Bounds.Bottom };
         Cover();
-        settings.Save(SettingsPath);
+        SaveSoon();
         Refresh();
     }
 

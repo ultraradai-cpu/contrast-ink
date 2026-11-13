@@ -41,7 +41,8 @@ sealed class ObsLink
 
     async Task<string?> ConnectOnce()
     {
-        var cfg = Obs.ReadConfig(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData));
+        // read on a worker thread: the caller is the UI thread, which also runs the keyboard watcher
+        var cfg = await Task.Run(() => Obs.ReadConfig(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData)));
         if (cfg == null) return "OBS isn't set up on this computer yet. Install OBS Studio 28 or newer and open it once.";
         if (!cfg.Enabled) return "In OBS, open Tools → WebSocket Server Settings and tick Enable WebSocket Server. Then press ⏺ again.";
         var socket = new ClientWebSocket();

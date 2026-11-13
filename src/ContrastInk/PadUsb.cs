@@ -145,30 +145,44 @@ static class UsbMux
 /// </summary>
 static class Adb
 {
-    /// <summary>adb.exe, or null: on the PATH, in Android Studio's SDK, or unpacked to C:\platform-tools.</summary>
+    /// <summary>
+    /// adb.exe, or null: on the PATH, or in the user's own Android SDK folder (%LOCALAPPDATA%\Android\Sdk\platform-tools,
+    /// where Android Studio puts it and where the README says to unzip platform-tools). Never C:\platform-tools: any
+    /// user of this PC may create that folder, and whatever adb.exe is there would run as the presenter.
+    /// Looks at the disk (the PATH may name slow network folders): never on the UI thread, which reads <see cref="Found"/>.
+    /// </summary>
     public static string? Find()
     {
         var places = (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator)
-            .Concat(new[]
-            {
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Android", "Sdk", "platform-tools"),
-                @"C:\platform-tools",
-            });
-        foreach (var dir in places.Where(d => d.Length > 0))
+            .Append(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Android", "Sdk", "platform-tools"));
+        foreach (var dir in places.Select(d => d.Trim().Trim('"')).Where(d => d.Length > 0 && Path.IsPathFullyQualified(d)))
         {
-            try { var f = Path.Combine(dir.Trim('"'), "adb.exe"); if (File.Exists(f)) return f; }
+            try { var f = Path.Combine(dir, "adb.exe"); if (File.Exists(f)) return f; }
             catch (ArgumentException) { }
         }
         return null;
     }
 
+    static volatile string? found;
+    /// <summary>The adb.exe last found (looked for every 30 s by <see cref="Watch"/>), or null.</summary>
+    public static string? Found => found;
+    public static readonly TimeSpan LookEvery = TimeSpan.FromSeconds(30);
+
     /// <param name="any">Told every few seconds whether at least one tablet is set up (the PC's cable door opens only then).</param>
-    public static void Watch(Func<bool> running, Action<bool> any)
+    /// <param name="foundChanged">adb was found, or is gone (for the ⚙ text).</param>
+    public static void Watch(Func<bool> running, Action<bool> any, Action foundChanged)
     {
         var done = new HashSet<string>();
+        var looked = DateTime.MinValue;
         while (running())
         {
-            var adb = Find();
+            if (DateTime.UtcNow - looked >= LookEvery)
+            {
+                looked = DateTime.UtcNow;
+                var now = Find();
+                if (now != found) { found = now; foundChanged(); }
+            }
+            var adb = found;
             if (adb == null) done.Clear();
             else
             {
