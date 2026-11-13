@@ -320,6 +320,18 @@ class ContrastInkTest {
 
     private fun shows(o: UiObject2, p: Pattern) = o.text?.let { p.matcher(it).matches() } == true || o.hasObject(By.text(p))
 
+    /**
+     * Taps [o] at once and says when (elapsedRealtime, just before the tap). UiObject2.click() first waits for the
+     * screen to settle, which the recording's ticking clock delays by up to 10 s: the time taken before it would be
+     * that much off. The button's place is read first, then the tap goes straight in.
+     */
+    private fun clickTimed(o: UiObject2): Long {
+        val p = o.visibleCenter
+        val at = SystemClock.elapsedRealtime()
+        device.click(p.x, p.y)
+        return at
+    }
+
     private fun dump(name: String) { runCatching { device.dumpWindowHierarchy(File(shots, "$name.xml")) } }
 
     /**
@@ -356,15 +368,13 @@ class ContrastInkTest {
         }
         val start = device.wait(Until.findObject(By.text(Pattern.compile("(?i)start( now| recording)?|next|share screen|record( screen| app)?"))), 8000)
         assertNotNull("Android asks before recording, with a Start button", start)
-        startPressedAt = SystemClock.elapsedRealtime()
-        start.click()
+        startPressedAt = clickTimed(start)
         if (singleApp) { pickOtherApp(shotName); return }
         // some versions ask in two steps
         // (the question may close as it is found: then there was no second step)
         runCatching {
             device.wait(Until.findObject(By.text(Pattern.compile("(?i)start( now| recording)?"))), 1500)?.let {
-                startPressedAt = SystemClock.elapsedRealtime()
-                it.click()
+                startPressedAt = clickTimed(it)
             }
         }
     }
@@ -559,14 +569,12 @@ class ContrastInkTest {
         // paused for about 5 s, timed by the test itself (not by the app's clock)
         val pauseButton = device.wait(Until.findObject(By.desc("Pause recording")), 4000)
         assertNotNull("the pause button", pauseButton)
-        val pausedAt = SystemClock.elapsedRealtime()
-        pauseButton.click()
+        val pausedAt = clickTimed(pauseButton)
         assertTrue("paused", waitFor { it.paused })
         Thread.sleep(maxOf(0L, pausedAt + 5000 - SystemClock.elapsedRealtime()))
         val resumeButton = device.wait(Until.findObject(By.desc("Resume recording")), 4000)
         assertNotNull("the resume button", resumeButton)
-        val resumedAt = SystemClock.elapsedRealtime()
-        resumeButton.click()
+        val resumedAt = clickTimed(resumeButton)
         val pause = resumedAt - pausedAt
         assertTrue("resumed", waitFor { it.active && !it.paused })
         drag(0.15f, 0.75f, 0.85f, 0.7f)
@@ -576,8 +584,7 @@ class ContrastInkTest {
 
         val stopButton = device.wait(Until.findObject(By.desc("Stop recording")), 4000)
         assertNotNull("the stop button", stopButton)
-        val stoppedAt = SystemClock.elapsedRealtime()
-        stopButton.click()
+        val stoppedAt = clickTimed(stopButton)
         val wall = stoppedAt - startPressedAt
         val (name, uri) = savedVideo("11 saved")
         // it is really there, complete, and plays for a few seconds
@@ -733,11 +740,7 @@ class ContrastInkTest {
         val last = lastFrame(uri, "62c last frame, back in sight")
         ctx.contentResolver.delete(uri, null, null)
 
-        // a real picture of the stand-in app (its blue lower half), not an empty frame
-        val (bx, by) = inFrame(hidden, 0.5f, 0.9f)
-        val blue = hidden.getPixel(bx.toInt(), by.toInt())
-        assertTrue("the frame from while the app was out of sight shows the app's last picture (its blue button), not ${hex(blue)}",
-            Color.blue(blue) > 150 && Color.red(blue) < 120)
+        // (what Android holds meanwhile differs: the app's last picture on Android 15, black on Android 14)
         for (t in floatArrayOf(0.25f, 0.5f, 0.75f)) {
             val (x, y) = inFrame(hidden, 0.15f + 0.7f * t, 0.55f + 0.1f * t)
             assertTrue("out of sight ($middle ms into the video): no red line at (${x.toInt()}, ${y.toInt()})", !redNear(hidden, x, y))
@@ -757,14 +760,26 @@ class ContrastInkTest {
         return ms
     }
 
-    /** The video's frame at [ms], saved as [shotName].png for a person to look at. */
+    /**
+     * The frame the video shows at [ms]: the last one that starts at or before it (a still app sends no frames for
+     * a while, and the closest frame may be one from after), saved as [shotName].png for a person to look at.
+     */
     private fun frameAt(uri: Uri, ms: Long, shotName: String): Bitmap {
+        val us = MediaExtractor().run {
+            setDataSource(ctx, uri, null)
+            val video = (0 until trackCount).first { getTrackFormat(it).getString(MediaFormat.KEY_MIME)!!.startsWith("video/") }
+            selectTrack(video)
+            var shown = -1L
+            while (sampleTrackIndex >= 0) { if (sampleTime <= ms * 1000) shown = maxOf(shown, sampleTime); advance() }
+            release(); shown
+        }
+        assertTrue("the video has a frame at or before $ms ms", us >= 0)
         val frame = MediaMetadataRetriever().run {
             setDataSource(ctx, uri)
-            val f = getFrameAtTime(ms * 1000, MediaMetadataRetriever.OPTION_CLOSEST)
+            val f = getFrameAtTime(us, MediaMetadataRetriever.OPTION_CLOSEST)
             release(); f
         }
-        assertNotNull("a frame from the video at $ms ms", frame)
+        assertNotNull("a frame from the video at ${us / 1000} ms (shown at $ms ms)", frame)
         File(shots, "$shotName.png").outputStream().use { frame!!.compress(Bitmap.CompressFormat.PNG, 100, it) }
         return frame!!
     }

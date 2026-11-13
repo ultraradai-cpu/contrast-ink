@@ -72,8 +72,15 @@ class VideoCompositor(
         set(v) {
             if (field == v) return
             field = v
-            gl.post { if (!released && haveFrame && mode == Mode.SINGLE_APP) safely { draw(look = false) } }
+            gl.post {
+                // back in sight: the picture held meanwhile may be black (Android 14): no marks over it until Android
+                // sends the app's picture again (or, should none come, a moment later)
+                if (v) { awaitingPicture = true; gl.postDelayed({ if (awaitingPicture && running && !released) { awaitingPicture = false; safely { draw(look = false) } } }, PICTURE_WAIT_MS) }
+                if (!released && haveFrame && mode == Mode.SINGLE_APP) safely { draw(look = false) }
+            }
         }
+    /** Back in sight, no new picture from Android yet (on the video thread). */
+    private var awaitingPicture = false
 
     private val thread = HandlerThread("Contrast Ink video").apply { start() }
     private val gl = Handler(thread.looper)
@@ -202,6 +209,7 @@ class VideoCompositor(
             if (failNextFrameForTest) { failNextFrameForTest = false; throw IllegalStateException("OpenGL made to fail by the app's test") }
             texture.updateTexImage()
             haveFrame = true
+            awaitingPicture = false
             draw(look = true)
         }
     }
@@ -232,7 +240,7 @@ class VideoCompositor(
             }
         }
 
-        if (CleanRecording.drawInk(mode, contentVisible)) {
+        if (CleanRecording.drawInk(mode, contentVisible) && !awaitingPicture) {
             inkFrames.take()?.let { bitmap ->
                 try {
                     GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, inkTex)
@@ -378,6 +386,8 @@ class VideoCompositor(
         private const val TAG = "ContrastInk"
         /** No frame looked at this long after the start: the marks go into the video, to be safe. */
         const val GIVE_UP_MS = 4000L
+        /** Back in sight with no new picture from Android: the marks come back after this long all the same. */
+        const val PICTURE_WAIT_MS = 500L
         /** TEST ONLY: the next compositor's OpenGL fails to start (the recorder must still record). */
         @Volatile var failSetUpForTest = false
         /** TEST ONLY: the next frame's OpenGL work fails, mid-recording (the recording must go on). */
