@@ -84,7 +84,9 @@ jobs:
         if: always()
         with:
           name: mac-smoke-captures-${{ matrix.os }}
-          path: mac/smoke-capture-*.jpg
+          path: |
+            mac/smoke-capture-*.jpg
+            mac/smoke-capture-*.png
           if-no-files-found: ignore
       - name: Zip ContrastInk-Mac.zip
         if: matrix.os == 'macos-15'

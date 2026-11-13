@@ -1,5 +1,6 @@
 import AppKit
 import ImageIO
+import ScreenCaptureKit
 import ContrastInkCore
 import ContrastInkPC
 
@@ -204,7 +205,7 @@ enum SmokeTest {
                 check((shown ?? 0) > 0.3, "live capture, nothing left out (toolbar capturable): the toolbar is in the picture (\(pct(shown))), so this check can fail")
                 capture("tablet", exclude: c.toolbar.windowNumbers) { left in
                     check(left.map { $0 < 0.05 } ?? false, "live capture (ScreenCaptureKit), as the tablet gets it: the toolbar is absent (\(pct(left)))")
-                    end()
+                    inkOnP3Window(c, screen: screen) { end() }
                 }
             }
         }
@@ -281,6 +282,73 @@ enum SmokeTest {
             }
         }
         return best < 0.03 ? nil : found
+    }
+
+    /// The drawing layer's window given a Display P3 backing store (as on a MacBook's screen), a thick green stroke
+    /// being drawn (live: finished marks go through an sRGB picture first), and the screen captured: the green must come out as the swatch's sRGB #34C759. Ink in device RGB would
+    /// keep its numbers in the P3 store and come out more saturated (the bitmap and PDF checks can't see that).
+    private static func inkOnP3Window(_ c: AppController, screen: NSScreen, then done: @escaping () -> Void) {
+        let o = c.overlay
+        let before = o.colorSpace
+        o.colorSpace = .displayP3
+        func send(_ m: Data) { c.padMessage(m[0], m.dropFirst(5)) }
+        c.setTool(.pen); c.setColor(2); c.setWidth(2); c.setOpacity(1)
+        send(PadProtocol.strokeBegin(x: 0.30, y: 0.43))
+        send(PadProtocol.strokePoints([(x: 0.50, y: 0.43), (x: 0.70, y: 0.43)]))
+        c.ink.display()
+        let want = Ink.rgb(Settings.colors[2]) ?? (0, 1, 0)
+        captureRaw(screen: screen, exclude: c.toolbar.windowNumbers) { image in
+            o.colorSpace = before
+            send(PadProtocol.strokeCancel())
+            if let image { try? (NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))?
+                .write(to: URL(fileURLWithPath: "smoke-capture-p3-green.png")) }
+            guard let image, let rgb = meanSRGB(image, fx: 0.5, fy: 0.43, half: 2) else {
+                check(false, "the green patch on a P3 window could be captured"); done(); return
+            }
+            let d = max(abs(rgb.0 - want.r), abs(rgb.1 - want.g), abs(rgb.2 - want.b))
+            check(d < 0.06, String(format: "on a Display P3 window the green ink is the swatch's sRGB %@ (captured %.3f %.3f %.3f)",
+                                   Settings.colors[2], rgb.0, rgb.1, rgb.2))
+            done()
+        }
+    }
+
+    /// The screen as ScreenCaptureKit gives it (PNG-quality, not the tablet's JPEG: colours must stay exact).
+    private static func captureRaw(screen: NSScreen, exclude: [Int], _ done: @escaping (CGImage?) -> Void) {
+        guard #available(macOS 14.0, *) else { done(nil); return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+            SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { content, _ in
+                guard let content, let display = content.displays.first(where: { $0.displayID == AppController.displayNumber(screen) }) else {
+                    DispatchQueue.main.async { done(nil) }; return
+                }
+                let filter = SCContentFilter(display: display, excludingWindows: content.windows.filter { exclude.contains(Int($0.windowID)) })
+                let config = SCStreamConfiguration()
+                config.width = Int(screen.frame.width * screen.backingScaleFactor)
+                config.height = Int(screen.frame.height * screen.backingScaleFactor)
+                config.showsCursor = false
+                SCScreenshotManager.captureImage(contentFilter: filter, configuration: config) { image, _ in
+                    DispatchQueue.main.async { done(image) }
+                }
+            }
+        }
+    }
+
+    /// The mean colour, in sRGB, of a (2·half+1)² block centred at fractions of the image.
+    private static func meanSRGB(_ image: CGImage, fx: Double, fy: Double, half: Int) -> (Double, Double, Double)? {
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let ctx = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: image.width * 4,
+                                  space: space, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        guard let data = ctx.data else { return nil }
+        let px = data.bindMemory(to: UInt8.self, capacity: image.width * image.height * 4)
+        let cx = Int(Double(image.width) * fx), cy = Int(Double(image.height) * fy)
+        var sum = (0.0, 0.0, 0.0), n = 0.0
+        for y in max(0, cy - half)...min(image.height - 1, cy + half) {
+            for x in max(0, cx - half)...min(image.width - 1, cx + half) {
+                let i = (y * image.width + x) * 4
+                sum.0 += Double(px[i]) / 255; sum.1 += Double(px[i + 1]) / 255; sum.2 += Double(px[i + 2]) / 255; n += 1
+            }
+        }
+        return n > 0 ? (sum.0 / n, sum.1 / n, sum.2 / n) : nil
     }
 
     /// The share of the toolbar's box (its edges left out) in a captured JPEG that is the toolbar's background colour.
