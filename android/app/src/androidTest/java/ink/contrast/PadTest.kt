@@ -268,24 +268,35 @@ class PadTest {
             if (r.width() > 0 && r.height() > 0) break
             Thread.sleep(100)
         }
-        val taken = inst.uiAutomation.takeScreenshot()
-        assertNotNull("a screenshot of the pad", taken)
-        val screen = taken!!.copy(Bitmap.Config.ARGB_8888, false)
-        File(shots, "$name.png").outputStream().use { screen.compress(Bitmap.CompressFormat.PNG, 100, it) }
-        fun px(fx: Float, fy: Float): Int {
-            val x = (r.left + fx * r.width()).toInt().coerceIn(0, screen.width - 1)
-            val y = (r.top + fy * r.height()).toInt().coerceIn(0, screen.height - 1)
-            return screen.getPixel(x, y)
-        }
+        // FRAME_ACK goes when the pad draws the picture; the screen shows it a refresh or two later: looked at again
+        // for up to 5 s (the picture must come, not merely be acknowledged)
         fun hex(c: Int) = String.format("#%06X", c and 0xFFFFFF)
-        val middle = px(0.5f, 0.5f)
-        assertTrue("the PC's black square shows in the middle of its picture on the tablet ($r): ${hex(middle)}",
-            Color.red(middle) < 60 && Color.green(middle) < 60 && Color.blue(middle) < 60)
-        for ((fx, fy) in listOf(0.15f to 0.5f, 0.85f to 0.5f, 0.5f to 0.12f, 0.5f to 0.88f)) {
-            val c = px(fx, fy)
-            assertTrue("the PC's white slide shows on the tablet at ($fx, $fy) of its picture ($r): ${hex(c)}",
-                Color.red(c) > 200 && Color.green(c) > 200 && Color.blue(c) > 200)
-        }
+        val points = listOf(0.15f to 0.5f, 0.85f to 0.5f, 0.5f to 0.12f, 0.5f to 0.88f)
+        var problems: List<String> = listOf("no screenshot")
+        val until2 = System.currentTimeMillis() + 5000
+        do {
+            val taken = inst.uiAutomation.takeScreenshot() ?: continue
+            val screen = taken.copy(Bitmap.Config.ARGB_8888, false)
+            File(shots, "$name.png").outputStream().use { screen.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            fun px(fx: Float, fy: Float): Int {
+                val x = (r.left + fx * r.width()).toInt().coerceIn(0, screen.width - 1)
+                val y = (r.top + fy * r.height()).toInt().coerceIn(0, screen.height - 1)
+                return screen.getPixel(x, y)
+            }
+            val p = ArrayList<String>()
+            val middle = px(0.5f, 0.5f)
+            if (!(Color.red(middle) < 60 && Color.green(middle) < 60 && Color.blue(middle) < 60))
+                p += "the PC's black square isn't in the middle of its picture ($r): ${hex(middle)}"
+            for ((fx, fy) in points) {
+                val c = px(fx, fy)
+                if (!(Color.red(c) > 200 && Color.green(c) > 200 && Color.blue(c) > 200))
+                    p += "the PC's white slide isn't at ($fx, $fy) of its picture ($r): ${hex(c)}"
+            }
+            problems = p
+            if (p.isEmpty()) break
+            Thread.sleep(250)
+        } while (System.currentTimeMillis() < until2)
+        assertTrue("the PC's picture is on the tablet's screen within 5 s of FRAME_ACK: $problems", problems.isEmpty())
     }
 
     private fun openPad(code: String) {
