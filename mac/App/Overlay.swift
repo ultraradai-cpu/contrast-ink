@@ -395,7 +395,7 @@ final class InkView: NSView {
     }
 
     /// An ink colour in sRGB, as the toolbar's swatches (NSColor(hex:)), the tablet and the Windows app define it.
-    /// `setStrokeColor(red:green:blue:alpha:)` would be device RGB: on a P3 display the same numbers come out more
+    /// Colours set by red/green/blue numbers alone would be device RGB: on a P3 display the same numbers come out more
     /// saturated, so the ink wouldn't match its swatch, the projector or the recording.
     static func srgb(_ r: Double, _ g: Double, _ b: Double, _ a: Double) -> CGColor {
         CGColor(srgbRed: CGFloat(r), green: CGFloat(g), blue: CGFloat(b), alpha: CGFloat(a))
