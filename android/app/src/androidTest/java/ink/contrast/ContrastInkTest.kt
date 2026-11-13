@@ -323,11 +323,10 @@ class ContrastInkTest {
         return false
     }
 
-    /** Red, thick pen, with drawing off (so the taps on Android's question and picker reach them). */
+    /** Red pen, with drawing off (so the taps on Android's question and picker reach them). */
     private fun redPen() {
         press("Pen")
         press("Red (1)")
-        press("Thick line")
         if (drawing()) press("Draw on / off")
     }
 
@@ -408,20 +407,20 @@ class ContrastInkTest {
         redPen()
 
         press("Record the screen")
-        answerRecordingQuestion(singleApp = true, shotName = "20")
+        answerRecordingQuestion(singleApp = true, shotName = "30")
         assertNotNull("recording: ⏹ replaces ⏺", device.wait(Until.findObject(By.desc("Stop recording")), 10000))
         assertTrue("the recorder sees no toolbar in the picture: one app", waitForMode(CleanRecording.Mode.SINGLE_APP))
         assertNotNull("the stand-in app is in front", device.wait(Until.findObject(By.text(Pattern.compile("Not tapped|Tapped"))), 4000))
         press("Draw on / off")
         drag(0.15f, 0.55f, 0.85f, 0.65f)
         Thread.sleep(1500)
-        shot("21 recording one app, red line")
+        shot("31 recording one app, red line")
         val bar = toolbarOnScreen()
 
         press("Stop recording")
-        val (_, uri) = savedVideo("22 saved")
-        ctx.contentResolver.openInputStream(uri)!!.use { input -> File(shots, "23 the one-app recording.mp4").outputStream().use { input.copyTo(it) } }
-        val frame = lastFrame(uri, "23b last frame of the one-app video")
+        val (_, uri) = savedVideo("32 saved")
+        ctx.contentResolver.openInputStream(uri)!!.use { input -> File(shots, "33 the one-app recording.mp4").outputStream().use { input.copyTo(it) } }
+        val frame = lastFrame(uri, "33b last frame of the one-app video")
         ctx.contentResolver.delete(uri, null, null)
 
         // it is the stand-in app: its blue lower half
