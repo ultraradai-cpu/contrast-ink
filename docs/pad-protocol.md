@@ -76,8 +76,9 @@ message after the hello, the code never crosses the network, and a tablet notice
 pretending to be a PC it has paired with before.
 
 1. The PC has one P-256 key pair of its own, kept between runs (Windows: in the user's key store). Its **PC
-   check** is the first 4 bytes of SHA-256 of its 65-byte public key, shown as 8 hex digits `XXXX-XXXX` next to
-   the code. The tablet makes a fresh P-256 key pair for every connection.
+   check** is the first 8 bytes of SHA-256 of its 65-byte public key, shown as 16 hex digits
+   `XXXX-XXXX-XXXX-XXXX` next to the code. (4 bytes were too few: the PC's key is sent to anyone who connects, and
+   a matching fake key could be searched for offline in about 2^32 tries.) The tablet makes a fresh P-256 key pair for every connection.
 2. Tablet → PC: HELLO (0x01) JSON `{"device":"iPad","version":2,"key":"<base64 of its public key, 65 bytes 04|X|Y>"}`
    (no code). At most 1 KB, within 3 s of connecting.
 3. PC → tablet: CHALLENGE (0x86) JSON `{"key":"<base64 of the PC's own public key>","salt":"<base64 of 16 random bytes>","name":"LAPTOP"}`
@@ -109,8 +110,10 @@ A REJECT only ever comes before the session is open, in the clear; WELCOME's `ve
 ⚙ Settings → "Let a Tablet Draw Here (Over Wi-Fi)".
 
 Limits the PC enforces (tablets need not, but must not exceed them): HELLO ≤ 1 KB within 3 s of connecting; at
-most 4 connections not yet in; 5 wrong codes in a row lock everyone out for 30 s; 20 wrong codes make a new code;
-silence over 10 s closes; a tablet that can't take messages for 3 s is dropped.
+most 4 Wi-Fi connections not yet in, at most 2 from one address, and the cable doors counted apart; 5 wrong
+codes in a row **from one address** lock that address out for 30 s (a backstop of 15 wrong in a row from all
+addresses locks everyone for 30 s); 20 wrong codes in all make a new code; silence over 10 s closes; a tablet
+that can't take messages for 3 s is dropped.
 
 REJECT texts the PC sends: "Please update Contrast Ink on the tablet.", "Too many wrong codes: wait 30 seconds,
 then try again.", "Wrong code: type the code Contrast Ink shows on the PC (⚙ Settings)."
@@ -132,15 +135,25 @@ against offline — so compare it, once per PC. A private network or the PC's ow
     PC->tablet key      A848F926D9916CEE78F6203D58A043C11A99389BE63198DE580581A4CBAAB8D2
     first sealed PROOF  0000000000000000000000012DCC2D016D67988C73F5CD844EA2BE5AFB2499203A49A95C4546
                         (the PROOF payload: COMMAND "hello" sealed with the tablet->PC key, counter 1)
-    PC check            6FC6-6A90
+    PC check            6FC6-6A90-4861-71CA (the first 8 bytes of SHA-256 of the PC public key above; each
+                        implementation's test computes and asserts all 16 digits)
 
 ## USB (phase 2): the cable takes over when plugged in
 
 Over USB the same version-2 messages travel through a local connection the cable carries; nothing else changes
-except who opens the connection and the code. The cable itself is the proof of being in the room, so **over USB
-the code is empty**: keys = HKDF(…, info = `"contrastink pad v2 "`) (the same text with nothing after it), and the
-tablet skips the first-time "It matches" confirmation (it still remembers the PC's key and still warns if it
-differs). A PC accepts an empty code **only** on its USB doors below, never on the Wi-Fi port.
+except who opens the connection and the code. **Over USB the code is empty**: keys = HKDF(…, info =
+`"contrastink pad v2 "`) (the same text with nothing after it). A PC accepts an empty code **only** on its USB
+doors below, never on the Wi-Fi port.
+
+The cable is not proof on its own: any app on the tablet can listen on, or connect to, the tablet's loopback
+address, and any program on the PC can reach the PC's loopback door. So:
+- **The tablet** still shows the first-time PC check over the cable when it has no key remembered for that PC,
+  and waits for "It matches" before the PROOF, exactly as on Wi-Fi. A remembered key that matches goes on at once.
+- **The PC** asks the presenter once per run before the first session on its Android cable door (the loopback
+  door adb reverse reaches): "An Android tablet on the USB cable wants to draw: Allow / Deny" (the session waits;
+  the PROOF deadline is 30 s). iPads reached by the PC itself through Apple's USB service (a device Apple's
+  service vouches for) don't need this.
+- The loopback door is open only while an Android tablet is plugged in and set up with adb reverse.
 
 - **iPad**: in pad mode the iPad listens on its own loopback address, `127.0.0.1:47830` — reachable through the
   cable, never over Wi-Fi. The PC (Windows) asks Apple's USB service (`usbmuxd`, the Apple Mobile Device Service
