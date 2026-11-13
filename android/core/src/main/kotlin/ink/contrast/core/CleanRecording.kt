@@ -182,6 +182,31 @@ object CleanRecording {
     /** Whether the marks are drawn into the video now: one app's recording, while that app is in sight. */
     fun drawInk(mode: Mode, contentVisible: Boolean) = mode == Mode.SINGLE_APP && contentVisible
 
+    /** Back in sight, Android hasn't sent a picture of the app within the wait: what the compositor does. */
+    enum class AfterShown {
+        /** The picture it holds is the app's (or no marks go on it anyway): the marks go back on. */
+        DRAW_MARKS,
+        /** It holds a black picture: ask Android for a fresh one, and look again after the wait. */
+        ASK_AGAIN,
+        /** Still black after every ask: no marks over black; the video holds its last frame until Android sends one. */
+        NO_MARKS,
+    }
+
+    /** How many times a fresh picture is asked for before the compositor stops asking. */
+    const val PICTURE_ASKS = 4
+
+    /** [blackBefore]: the app's picture was black already when it went out of sight (a black slide): black is its own. */
+    fun afterShown(haveFrame: Boolean, mode: Mode, heldBlack: Boolean, asks: Int, blackBefore: Boolean = false): AfterShown = when {
+        !haveFrame || mode != Mode.SINGLE_APP || !heldBlack || blackBefore -> AfterShown.DRAW_MARKS
+        asks < PICTURE_ASKS -> AfterShown.ASK_AGAIN
+        else -> AfterShown.NO_MARKS
+    }
+
+    /** Whether sampled pixels (ARGB) are all black: what Android 14 holds for an app out of sight. */
+    fun isBlack(pixels: IntArray, tolerance: Int = 10): Boolean = pixels.isNotEmpty() && pixels.all {
+        ((it shr 16) and 0xFF) <= tolerance && ((it shr 8) and 0xFF) <= tolerance && (it and 0xFF) <= tolerance
+    }
+
     /** What the toolbar says once the recorder knows what Android records (null: nothing yet). */
     fun modeNotice(mode: Mode, bySize: Boolean, guessed: Boolean): String? = when {
         mode == Mode.SINGLE_APP && guessed ->

@@ -85,6 +85,9 @@ remembers each PC's key by its name. The first time, it shows the PC's **PC chec
 with the one next to the code on the PC. If a PC by that name later shows another key, the tablet stops and warns
 (after reinstalling Contrast Ink on the PC, **Connect anyway**). The code is never saved; the pad screen is kept out of
 screenshots and the recent-apps view. For patient images a private network or the PC's own hotspot is still best.
+If no PC appears in the list for about 8 seconds, or a typed address can't be reached, the connect screen suggests
+a hotspot: hospital Wi-Fi often keeps devices from seeing each other, so join the PC's hotspot (Windows: Mobile
+hotspot, usually 192.168.137.1) or your phone's hotspot, or use the USB cable.
 
 **By USB cable** (steadier than Wi-Fi, and nothing goes over the air): once, turn on **Developer options** on the
 tablet (Settings → About tablet → tap **Build number** seven times) and switch on **USB debugging** in them; the PC

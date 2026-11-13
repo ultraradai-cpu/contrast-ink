@@ -1,5 +1,6 @@
 package ink.contrast.core
 
+import ink.contrast.core.CleanRecording.AfterShown
 import ink.contrast.core.CleanRecording.Box
 import ink.contrast.core.CleanRecording.Detector
 import ink.contrast.core.CleanRecording.Mode
@@ -174,6 +175,23 @@ class CleanRecordingTest {
         assertFalse("its frozen last picture gets no new marks", CleanRecording.drawInk(Mode.SINGLE_APP, contentVisible = false))
         assertFalse(CleanRecording.drawInk(Mode.ENTIRE_SCREEN, contentVisible = true))
         assertFalse(CleanRecording.drawInk(Mode.UNKNOWN, contentVisible = true))
+    }
+
+    /** Back in sight with a black picture held (Android 14, a still slide): ask again, then no marks over black. */
+    @Test fun noMarksOverAHeldBlackPictureWhenTheAppComesBack() {
+        assertEquals(AfterShown.DRAW_MARKS, CleanRecording.afterShown(haveFrame = true, Mode.SINGLE_APP, heldBlack = false, asks = 0))
+        assertEquals(AfterShown.ASK_AGAIN, CleanRecording.afterShown(haveFrame = true, Mode.SINGLE_APP, heldBlack = true, asks = 0))
+        assertEquals(AfterShown.ASK_AGAIN, CleanRecording.afterShown(true, Mode.SINGLE_APP, true, CleanRecording.PICTURE_ASKS - 1))
+        assertEquals("never marks over black, however long", AfterShown.NO_MARKS,
+            CleanRecording.afterShown(true, Mode.SINGLE_APP, true, CleanRecording.PICTURE_ASKS))
+        assertEquals(AfterShown.NO_MARKS, CleanRecording.afterShown(true, Mode.SINGLE_APP, true, 100))
+        assertEquals("a black slide before it went out of sight: its marks come back", AfterShown.DRAW_MARKS,
+            CleanRecording.afterShown(true, Mode.SINGLE_APP, heldBlack = true, asks = 0, blackBefore = true))
+        assertEquals("the entire screen has its marks in the picture", AfterShown.DRAW_MARKS,
+            CleanRecording.afterShown(true, Mode.ENTIRE_SCREEN, true, 0))
+        assertTrue(CleanRecording.isBlack(intArrayOf(0xFF000000.toInt(), 0xFF080808.toInt())))
+        assertFalse("a dark slide (#141A22) isn't black", CleanRecording.isBlack(intArrayOf(0xFF000000.toInt(), 0xFF141A22.toInt())))
+        assertFalse(CleanRecording.isBlack(IntArray(0)))
     }
 
     @Test fun theLaserAloneIsCopiedLessOften() {

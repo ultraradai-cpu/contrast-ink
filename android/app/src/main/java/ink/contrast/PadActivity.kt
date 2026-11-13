@@ -35,6 +35,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import ink.contrast.core.PadCrypto
+import ink.contrast.core.PadHints
 import ink.contrast.core.PadLinks
 import ink.contrast.core.PadProtocol
 import ink.contrast.core.PcMessage
@@ -79,6 +80,10 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
         const val MAX_PICTURE_PX = 4096
         /** After a session drops, quiet tries before "Lost the PC" shows (a Wi-Fi blip is usually over by then). */
         const val QUIET_RETRIES = 2
+        /** On the connect screen when no PC turns up and Wi-Fi is on (see [PadHints]). */
+        val HOTSPOT_HINT = PadHints.Hint.HOTSPOT.text!!
+        /** How long the list may stay empty before [HOTSPOT_HINT] shows. */
+        const val NO_PC_HINT_MS = 8000L
         private const val DONT_CONNECT = "Don't connect: this may not be your PC."
         private const val CHECK_WIFI ="Check the tablet and the PC are on the same Wi-Fi, and that Contrast Ink on the PC has ⚙ Settings → Let a Tablet Draw Here ticked."
     }
@@ -96,6 +101,9 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
     private lateinit var statusText: TextView
     private lateinit var anywayButton: Button
     private lateinit var foundList: LinearLayout
+    private lateinit var hotspotHint: TextView
+    /** The list stayed empty: the hint about networks that block finding the PC. */
+    private val noPcFound = Runnable { if (found.isEmpty() && connectScreen.visibility == View.VISIBLE) showHint(PadHints.noPcFound(wifiOn())) }
     private lateinit var addressField: EditText
     private lateinit var codeField: EditText
     private lateinit var connectButton: Button
@@ -215,6 +223,7 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
         super.onDestroy()
         main.removeCallbacks(retry)
         main.removeCallbacks(usbTry)
+        main.removeCallbacks(noPcFound)
         connection?.close()
         connection = null
         usbConnection?.close()
@@ -267,6 +276,8 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
         col.addView(text("PCs on this network", 18f, bold = true))
         foundList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(foundList)
+        hotspotHint = text("", 14f).apply { setTextColor(warn); visibility = View.GONE }
+        col.addView(hotspotHint)
         col.addView(space(8))
         col.addView(text("Or the PC's address (shown under its code)", 15f))
         addressField = field("192.168.1.20 or 192.168.1.20:47820", "PC address", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI)
@@ -643,6 +654,8 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
             else -> {
                 if (end.why == PadConnection.Why.REJECTED) links.codeRefused()   // not worth going back to after the cable
                 showConnect(sentence(end))
+                // a typed address never connected to: why, as far as the tablet can tell (refused, no answer, Wi-Fi off)
+                if (!end.everConnected && end.why == PadConnection.Why.UNREACHABLE) showHint(PadHints.connectFailed(wifiOn(), end.cause))
             }
         }
     }
@@ -679,11 +692,23 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
             override fun onServiceLost(info: NsdServiceInfo) { runOnUiThread { found.remove(info.serviceName); refreshFound() } }
         }
         discovering = l
+        main.removeCallbacks(noPcFound)
+        main.postDelayed(noPcFound, NO_PC_HINT_MS)
         try { manager.discoverServices(PadProtocol.SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, l) }
         catch (e: Exception) { discovering = null }
     }
 
+    private fun showHint(h: PadHints.Hint) {
+        hotspotHint.text = h.text ?: ""
+        hotspotHint.visibility = if (h.text == null) View.GONE else View.VISIBLE
+    }
+
+    @Suppress("DEPRECATION")   // isWifiEnabled: still the plain "is Wi-Fi switched on"
+    private fun wifiOn(): Boolean =
+        (applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager)?.isWifiEnabled != false
+
     private fun stopDiscovery() {
+        main.removeCallbacks(noPcFound)
         discovering?.let { l -> try { nsd?.stopServiceDiscovery(l) } catch (e: Exception) {} }
         discovering = null
         toResolve.clear()
@@ -713,6 +738,7 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
 
     private fun refreshFound() {
         foundList.removeAllViews()
+        if (found.isNotEmpty()) hotspotHint.visibility = View.GONE
         if (found.isEmpty()) foundList.addView(text("Looking… (if your PC doesn't appear, type its address below)", 14f).apply {
             setTextColor(grey)
         })

@@ -11,6 +11,12 @@ on:
 permissions:
   contents: write
 
+# One run at a time for each branch: a newer push cancels an older run still going, so an older build can't finish
+# after a newer one and replace its release (the release job also checks it is still main's tip).
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   android:
     name: Android (emulator API ${{ matrix.api }})
@@ -19,7 +25,8 @@ jobs:
       fail-fast: false
       matrix:
         # 35 and 34: clean recording (one app, the video drawing); 29: the old path, the whole screen straight to
-        # the encoder. Tests of recording one app skip themselves where Android doesn't offer "A single app".
+        # the encoder. Tests of recording one app skip themselves only below Android 14 (API 29); on 14 and 15 a
+        # question without "A single app" fails them (the API 34 image gets SystemUI's flag for it from the test).
         api: [29, 34, 35]
     timeout-minutes: 45
     steps:
@@ -77,11 +84,32 @@ jobs:
         with:
           name: ContrastInk-apk
           path: ContrastInk.apk
-      - name: Update the android-latest release (main only)
-        if: github.ref == 'refs/heads/main' && matrix.api == 35
+
+  # The release is its own job: it runs only when every emulator job (API 29, 34 and 35) passed, because "needs"
+  # waits for the whole matrix and fails if any of it failed, whatever fail-fast says.
+  release:
+    name: Update the android-latest release (main only)
+    needs: android
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ContrastInk-apk
+      - name: Update the android-latest release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # an older build that finished late: main has a newer commit, whose own run publishes it. A failed lookup
+          # fails the job (it is not taken for "not the tip")
+          if ! tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha); then
+            echo "::error::couldn't look up main's tip: not publishing"; exit 1
+          fi
+          if [ -z "$tip" ]; then echo "::error::main's tip came back empty: not publishing"; exit 1; fi
+          if [ "$tip" != "$GITHUB_SHA" ]; then
+            echo "::notice::main has moved on to ${tip::7}: not publishing ${GITHUB_SHA::7} (the newer run publishes)"; exit 0
+          fi
           notes="Built from ${GITHUB_SHA::7}, passed the emulator check. On your Android phone or tablet: download ContrastInk.apk and open it (allow installing from your browser or Files when asked)."
           if gh release view android-latest >/dev/null 2>&1; then
             git tag -f android-latest "$GITHUB_SHA" && git push -f origin refs/tags/android-latest
