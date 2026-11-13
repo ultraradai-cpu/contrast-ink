@@ -29,6 +29,8 @@ final class LectureRecorder: ObservableObject {
     private var warnedSpace = false
     /// Why it stopped by itself (left the screen, interrupted, the iPad full): said before where the video is.
     private var stopReason: String?
+    /// The last problem the writer reported in this recording.
+    private var lastProblem: String?
 
     var active: Bool { phase.active }
     /// ✕ asks first while recording or starting.
@@ -94,6 +96,7 @@ final class LectureRecorder: ObservableObject {
         guard phase.startTapped() else { return }
         notice = nil
         stopReason = nil
+        lastProblem = nil
         warnedSpace = false
         let url = LectureRecorder.newFileURL(title: Lecture.shared.deck?.title ?? "Lecture")
         sink.prepare(url: url)
@@ -129,7 +132,7 @@ final class LectureRecorder: ObservableObject {
 
     private func tick() {
         elapsed = sink.elapsed(at: CaptureSink.hostNow())
-        if let problem = sink.takeProblem() { notice = problem }
+        if let problem = sink.takeProblem() { notice = problem; lastProblem = problem }
         // capture broke (a phone call, the system took the screen) or the file can't be written: stop and save what
         // there is, rather than a timer running over nothing
         if sink.broken, state == .recording || state == .paused { Task { await stop() }; return }
@@ -164,7 +167,8 @@ final class LectureRecorder: ObservableObject {
         let reason = stopReason.map { $0 + " " } ?? ""
         stopReason = nil
         guard let result else {
-            notice = reason + (notice ?? "Nothing was recorded (no picture arrived from the screen).")
+            let problem = sink.takeProblem() ?? lastProblem
+            notice = reason + (problem ?? "Nothing was recorded (no picture arrived from the screen).")
             return
         }
         let url = result.url

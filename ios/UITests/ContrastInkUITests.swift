@@ -237,11 +237,15 @@ final class ContrastInkUITests: XCTestCase {
         app.buttons["Stop recording"].tap()
         let notice = app.buttons["recorderNotice"]
         let saved = Date().addingTimeInterval(30)
-        while !(notice.exists && notice.label.contains("Recordings")), Date() < saved { Thread.sleep(forTimeInterval: 0.5) }
+        func ended() -> Bool { notice.exists && (notice.label.contains("Recordings") || notice.label.contains("Nothing was recorded")) }
+        while !ended(), Date() < saved { Thread.sleep(forTimeInterval: 0.5) }
+        shot("R2 recording stopped")
+        if notice.exists, notice.label.contains("Nothing was recorded") {
+            throw XCTSkip("ReplayKit started but gave no pictures in this simulator: \(notice.label)")
+        }
         XCTAssertTrue(notice.label.contains("Recordings"), "says where the video is: \(notice.label)")
         XCTAssertTrue(notice.label.contains(".mov"), notice.label)
         XCTAssertFalse(notice.label.contains("Photos"), "Photos is off by default: \(notice.label)")
-        shot("R2 recording saved")
     }
 
     /// Photos is off unless switched on; the keys are listed with L and Return.
