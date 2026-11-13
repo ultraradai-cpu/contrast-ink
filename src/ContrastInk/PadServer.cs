@@ -464,21 +464,26 @@ sealed class PadServer : IDisposable
     void FrameLoop()
     {
         var last = DateTime.MinValue;
-        while (running)
+        try
         {
-            var c = Volatile.Read(ref current);
-            var now = DateTime.UtcNow;
-            if (c != null && c.AckPending && now - c.SentAt > TimeSpan.FromSeconds(3)) c.AckPending = false;   // a lost acknowledgement
-            if (c == null || c.Closed || c.AckPending || now - last < TimeSpan.FromMilliseconds(100)) { Thread.Sleep(15); continue; }
-            try
+            while (running)
             {
-                var jpeg = Capture(screen(), MarksNow());
-                last = c.SentAt = DateTime.UtcNow;
-                c.AckPending = true;
-                c.Send(Pad.Message(Pad.Frame, jpeg));
+                var c = Volatile.Read(ref current);
+                var now = DateTime.UtcNow;
+                if (c != null && c.AckPending && now - c.SentAt > TimeSpan.FromSeconds(3)) c.AckPending = false;   // a lost acknowledgement
+                if (c == null || c.Closed) StopCapture();   // no tablet: no capture (on Windows 10 it shows a border)
+                if (c == null || c.Closed || c.AckPending || now - last < TimeSpan.FromMilliseconds(100)) { Thread.Sleep(15); continue; }
+                try
+                {
+                    var jpeg = Capture(screen());
+                    last = c.SentAt = DateTime.UtcNow;
+                    c.AckPending = true;
+                    c.Send(Pad.Message(Pad.Frame, jpeg));
+                }
+                catch (Exception e) { App.Log(e); Thread.Sleep(500); }   // a picture that can't be made: try again later
             }
-            catch (Exception e) { App.Log(e); Thread.Sleep(500); }   // a picture that can't be made: try again later
         }
+        finally { StopCapture(); }
     }
 
     /// <summary>The marks as the drawing layer shows them, asked of the UI thread (skipped when it's busy).</summary>
@@ -488,73 +493,149 @@ sealed class PadServer : IDisposable
         catch (Exception e) when (e is TimeoutException or TaskCanceledException or OperationCanceledException) { return null; }
     }
 
-    [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr hwnd);
-    [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr hwnd, IntPtr dc);
-    [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
-    [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleBitmap(IntPtr dc, int w, int h);
-    [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
-    [DllImport("gdi32.dll")] static extern bool StretchBlt(IntPtr dst, int x, int y, int w, int h, IntPtr src, int sx, int sy, int sw, int sh, uint rop);
-    [DllImport("gdi32.dll")] static extern int SetStretchBltMode(IntPtr dc, int mode);
-    [DllImport("gdi32.dll")] static extern bool SetBrushOrgEx(IntPtr dc, int x, int y, IntPtr old);
-    [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
-    [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
-    const uint SRCCOPY = 0x00CC0020;
-    const int HALFTONE = 4;
+    // How the tablet's picture is made (only ever touched on the frame thread). Windows.Graphics.Capture first; the GDI
+    // copy when this Windows can't, or when it failed once in this run (a capture that failed is not tried again).
+    WgcCapture? wgc;
+    bool wgcOff;
+    string capturePath = "";
+    // the Windows check's control: every picture white, so the check of the tablet's picture must fail
+    static readonly bool blankForTest = Environment.GetEnvironmentVariable("CONTRASTINK_TEST") == "1"
+                                     && Environment.GetEnvironmentVariable("CONTRASTINK_TEST_BLANKPAD") == "1";
+    // test runs: which way the picture was made, for the Windows check to read (never written in normal use)
+    static readonly string? captureReport = Environment.GetEnvironmentVariable("CONTRASTINK_STATUS") is { Length: > 0 } st ? st + ".capture.txt" : null;
+
+    void StopCapture()
+    {
+        if (wgc == null || !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041)) return;   // (only ever made on 19041+)
+        try { wgc.Dispose(); } catch (Exception e) { App.Log(e); }
+        wgc = null;
+    }
+
+    void Used(string how)
+    {
+        if (how == capturePath) return;
+        capturePath = how;
+        if (captureReport != null) try { File.WriteAllText(captureReport, how); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+    }
 
     /// <summary>
-    /// The screen as the audience sees it, at most 1600 px wide, as a JPEG: what is under the drawing layer, copied
-    /// straight at the smaller size (no full-size copy of a 4K screen), with the marks laid over it. Without
-    /// CAPTUREBLT: that flag makes the mouse pointer flicker on every copy, and OBS would record the flicker. The
-    /// toolbar is never in it (hidden from capture).
+    /// The screen as the audience sees it, at most 1600 px wide, as a JPEG. The toolbar and the undo button are never in
+    /// it (hidden from capture).
     /// </summary>
-    static byte[] Capture(Native.RECT r, System.Windows.Media.Imaging.BitmapSource? marksPicture)
+    byte[] Capture(Native.RECT r)
     {
         int w = Math.Max(1, r.Right - r.Left), h = Math.Max(1, r.Bottom - r.Top);
         double scale = Math.Min(1, 1600.0 / w);
         int ow = Math.Max(1, (int)(w * scale)), oh = Math.Max(1, (int)(h * scale));
-        IntPtr screenDc = GetDC(IntPtr.Zero), memDc = CreateCompatibleDC(screenDc), bmp = CreateCompatibleBitmap(screenDc, ow, oh);
-        System.Windows.Media.Imaging.BitmapSource picture;
-        try
+        System.Windows.Media.Imaging.BitmapSource? picture = null;
+        if (!wgcOff && OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
         {
-            var old = SelectObject(memDc, bmp);
-            SetStretchBltMode(memDc, HALFTONE);
-            SetBrushOrgEx(memDc, 0, 0, IntPtr.Zero);
-            StretchBlt(memDc, 0, 0, ow, oh, screenDc, r.Left, r.Top, w, h, SRCCOPY);
-            SelectObject(memDc, old);
-            var copy = System.Windows.Interop.Imaging.CreateBitmapSourceFromHBitmap(
-                bmp, IntPtr.Zero, System.Windows.Int32Rect.Empty, System.Windows.Media.Imaging.BitmapSizeOptions.FromEmptyOptions());
-            // The screen's copy can come back marked fully transparent (its alpha byte 0). Encoded on its own the JPEG
-            // ignores that, but laid under the marks it vanishes and the tablet's picture turns black as soon as
-            // anything is drawn (reported). So: the same pixels, read as an opaque picture (Bgr32 ignores that byte).
-            int stride = ow * 4;
-            var pixels = new byte[stride * oh];
-            copy.CopyPixels(pixels, stride, 0);
-            picture = System.Windows.Media.Imaging.BitmapSource.Create(ow, oh, 96, 96, System.Windows.Media.PixelFormats.Bgr32, null, pixels, stride);
-        }
-        finally
-        {
-            DeleteObject(bmp);
-            DeleteDC(memDc);
-            ReleaseDC(IntPtr.Zero, screenDc);
-        }
-        if (marksPicture != null)
-        {
-            var v = new System.Windows.Media.DrawingVisual();
-            using (var dc = v.RenderOpen())
+            try
             {
-                var area = new System.Windows.Rect(0, 0, ow, oh);
-                dc.DrawImage(picture, area);
-                dc.DrawImage(marksPicture, area);
+                if (wgc != null && !wgc.Covers(r)) StopCapture();   // the drawing moved to another screen
+                if (wgc == null)
+                {
+                    if (!WgcCapture.Available()) { wgcOff = true; Used("gdi (Windows.Graphics.Capture not supported here)"); }
+                    else wgc = WgcCapture.Start(r);
+                }
+                if (wgc != null) { picture = wgc.Picture(r, ow, oh); Used("wgc"); }
             }
-            var both = new System.Windows.Media.Imaging.RenderTargetBitmap(ow, oh, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
-            both.Render(v);
-            picture = both;
+            catch (Exception e)
+            {
+                // logged once: from now on the GDI copy, which works everywhere
+                App.Log(new InvalidOperationException("Windows.Graphics.Capture failed; the tablet's picture is the GDI copy from now on", e));
+                wgcOff = true;
+                StopCapture();
+                Used("gdi (Windows.Graphics.Capture failed: " + e.GetType().Name + ")");
+                picture = null;
+            }
+        }
+        else if (!wgcOff) { wgcOff = true; Used("gdi (Windows older than 10 2004)"); }
+        if (picture == null)
+        {
+            // the GDI copy doesn't see the drawing layer (a layered window, without CAPTUREBLT): its marks go over it
+            picture = GdiCopy(r, w, h, ow, oh);
+            var marksPicture = MarksNow();
+            if (marksPicture != null)
+            {
+                var v = new System.Windows.Media.DrawingVisual();
+                using (var dc = v.RenderOpen())
+                {
+                    var area = new System.Windows.Rect(0, 0, ow, oh);
+                    dc.DrawImage(picture, area);
+                    dc.DrawImage(marksPicture, area);
+                }
+                var both = new System.Windows.Media.Imaging.RenderTargetBitmap(ow, oh, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+                both.Render(v);
+                picture = both;
+            }
+        }
+        if (blankForTest)
+        {
+            var white = new byte[ow * oh * 4];
+            Array.Fill(white, (byte)255);
+            picture = System.Windows.Media.Imaging.BitmapSource.Create(ow, oh, 96, 96, System.Windows.Media.PixelFormats.Bgr32, null, white, ow * 4);
         }
         var jpeg = new System.Windows.Media.Imaging.JpegBitmapEncoder { QualityLevel = 70 };
         jpeg.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(picture));
         using var ms = new MemoryStream();
         jpeg.Save(ms);
         return ms.ToArray();
+    }
+
+    [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr hwnd, IntPtr dc);
+    [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
+    [DllImport("gdi32.dll")] static extern IntPtr CreateDIBSection(IntPtr dc, ref BITMAPINFOHEADER info, uint usage, out IntPtr bits, IntPtr section, uint offset);
+    [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
+    [DllImport("gdi32.dll")] static extern bool StretchBlt(IntPtr dst, int x, int y, int w, int h, IntPtr src, int sx, int sy, int sw, int sh, uint rop);
+    [DllImport("gdi32.dll")] static extern int SetStretchBltMode(IntPtr dc, int mode);
+    [DllImport("gdi32.dll")] static extern bool SetBrushOrgEx(IntPtr dc, int x, int y, IntPtr old);
+    [DllImport("gdi32.dll")] static extern bool GdiFlush();
+    [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
+    [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
+    const uint SRCCOPY = 0x00CC0020;
+    const int HALFTONE = 4;
+    [StructLayout(LayoutKind.Sequential)]
+    struct BITMAPINFOHEADER
+    {
+        public int biSize, biWidth, biHeight;
+        public short biPlanes, biBitCount;
+        public int biCompression, biSizeImage, biXPelsPerMeter, biYPelsPerMeter, biClrUsed, biClrImportant;
+    }
+
+    /// <summary>
+    /// The GDI copy: what is under the drawing layer, copied straight at the smaller size (no full-size copy of a 4K
+    /// screen). Into a 32-bit top-down DIB whatever the screen's depth (a bitmap "compatible" with the screen is 16-bit
+    /// in a 16-bit remote desktop or VM session, and read as 32-bit it came out scrambled), then read as opaque Bgr32:
+    /// the copy's alpha byte is 0, and laid under the marks it vanished (the tablet's picture turned black). Without
+    /// CAPTUREBLT: that flag makes the mouse pointer flicker on every copy, and OBS would record the flicker.
+    /// </summary>
+    static System.Windows.Media.Imaging.BitmapSource GdiCopy(Native.RECT r, int w, int h, int ow, int oh)
+    {
+        var info = new BITMAPINFOHEADER { biSize = Marshal.SizeOf<BITMAPINFOHEADER>(), biWidth = ow, biHeight = -oh, biPlanes = 1, biBitCount = 32 };
+        IntPtr screenDc = GetDC(IntPtr.Zero), memDc = CreateCompatibleDC(screenDc);
+        IntPtr bmp = CreateDIBSection(screenDc, ref info, 0 /* DIB_RGB_COLORS */, out var bits, IntPtr.Zero, 0);
+        try
+        {
+            if (bmp == IntPtr.Zero || bits == IntPtr.Zero) throw new InvalidOperationException("no 32-bit bitmap for the screen's copy");
+            var old = SelectObject(memDc, bmp);
+            SetStretchBltMode(memDc, HALFTONE);
+            SetBrushOrgEx(memDc, 0, 0, IntPtr.Zero);
+            StretchBlt(memDc, 0, 0, ow, oh, screenDc, r.Left, r.Top, w, h, SRCCOPY);
+            GdiFlush();
+            SelectObject(memDc, old);
+            int stride = ow * 4;
+            var pixels = new byte[stride * oh];
+            Marshal.Copy(bits, pixels, 0, pixels.Length);
+            return System.Windows.Media.Imaging.BitmapSource.Create(ow, oh, 96, 96, System.Windows.Media.PixelFormats.Bgr32, null, pixels, stride);
+        }
+        finally
+        {
+            if (bmp != IntPtr.Zero) DeleteObject(bmp);
+            DeleteDC(memDc);
+            ReleaseDC(IntPtr.Zero, screenDc);
+        }
     }
 
     public void Dispose()

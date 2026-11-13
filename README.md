@@ -140,6 +140,13 @@ the PC's screen, and what you draw on it is drawn on the PC.
   Any program on the PC can reach the cable's door, so only allow it when you just plugged your tablet in.
 - The first time with this PC, the tablet shows the PC check by cable too: compare it as over Wi-Fi.
 
+**The tablet's picture** is made with Windows' own screen capture (Windows.Graphics.Capture), which also sees
+videos, DICOM viewers and other programs drawn by the graphics card, and leaves out the toolbar and the mouse
+pointer. On **Windows 10**, Windows draws a thin **yellow border** around the screen while a tablet is connected
+(it shows to the audience and in OBS, and goes when the tablet disconnects); Windows 11 needs no border. Where that
+capture isn't available (Windows 10 before version 2004) or fails, Contrast Ink falls back to an older copy of the
+screen, which can show some video or 3D windows black or still.
+
 Everything between the tablet and the PC is encrypted, and the code itself never crosses the network. The PC check
 is 16 characters (`XXXX-XXXX-XXXX-XXXX`): compare all of them. Wrong codes are limited per device: five in a row
 from one device lock that device out for 30 s (fifteen in a row from all devices lock everyone out for 30 s), and

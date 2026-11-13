@@ -6,6 +6,8 @@
 //
 // "control" starts the app with hiding from capture switched off (CONTRASTINK_TEST_NOHIDE=1) and requires the check
 // to SEE the toolbar: proof that the "toolbar is hidden" check can fail.
+// "padcontrol" starts the app with the tablet's picture whitened (CONTRASTINK_TEST_BLANKPAD=1) and requires the check
+// of the tablet's picture to FAIL: proof that it can.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -39,7 +41,7 @@ static class Program
             Console.WriteLine();
             return 0;
         }
-        if (args.Length < 3) { Console.Error.WriteLine("usage: <ContrastInk.exe> <out dir> normal|control"); return 2; }
+        if (args.Length < 3) { Console.Error.WriteLine("usage: <ContrastInk.exe> <out dir> normal|control|padcontrol"); return 2; }
         (exe, outDir, runMode) = (Path.GetFullPath(args[0]), Path.GetFullPath(args[1]), args[2]);
         Directory.CreateDirectory(outDir);
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
@@ -64,9 +66,10 @@ static class Program
     static void Log(string s) { lines.Add(s); Console.WriteLine(s); }
     static void Check(bool ok, string what, string measured)
     {
-        if (!ok) failures++;
-        Log($"{(ok ? "PASS" : "FAIL")}  {what}  [{measured}]");
+        if (!ok && counting) failures++;
+        Log($"{(counting ? "" : "(control, not counted) ")}{(ok ? "PASS" : "FAIL")}  {what}  [{measured}]");
     }
+    static bool counting = true;   // false while the pad control runs checks that must fail
 
     static Process app = null!;
     static ProcessStartInfo startInfo = null!;
@@ -85,6 +88,7 @@ static class Program
         psi.Environment["CONTRASTINK_STATUS"] = status;
         psi.Environment["CONTRASTINK_TEST_PADCODE"] = PadCode;   // the tablet link, with a code this check knows
         if (runMode == "control") psi.Environment["CONTRASTINK_TEST_NOHIDE"] = "1";
+        if (runMode == "padcontrol") psi.Environment["CONTRASTINK_TEST_BLANKPAD"] = "1";
         // adb: none on the app's PATH; a stand-in in C:\platform-tools, a folder any user of a PC can create, which
         // the app must never run (the restart in ToolbarAndPromises puts one on the PATH, which it must run)
         psi.Environment["PATH"] = string.Join(Path.PathSeparator, (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator)
@@ -122,6 +126,7 @@ static class Program
                 Key('C'); Key(VK.F9);
                 return failures;
             }
+            if (runMode == "padcontrol") { PadControl(st); return failures; }
             Normal(st, toolbar);
             return 0;
         }
@@ -257,6 +262,11 @@ static class Program
         Thread.Sleep(400);
         shot = Shot("08-eraser");
         Check(Diff(Closest(shot, (a1.X + a2.X) / 2, ay, red, 4), red) > 60, "eraser removes the arrow it touches", Hex(Closest(shot, (a1.X + a2.X) / 2, ay, red, 4)));
+        // the whole arrow, head too (touching the shaft once left the head behind would be a half-erased mark)
+        var e1 = Closest(shot, (int)side1.X, (int)side1.Y, red, 4); var e2 = Closest(shot, (int)side2.X, (int)side2.Y, red, 4);
+        var tip = Closest(shot, a2.X, ay, red, 4);
+        Check(Diff(e1, red) > 60 && Diff(e2, red) > 60 && Diff(tip, red) > 60, "eraser removes the arrowhead with it",
+              $"head sides {Hex(e1)} / {Hex(e2)}, tip {Hex(tip)}");
 
         // clear
         Key('P'); Key('1'); Thread.Sleep(150);
@@ -522,6 +532,9 @@ static class Program
             if (frame.payload != null) using (var img = Image.FromStream(new MemoryStream(frame.payload))) size = img.Size;
             Check(size.Width > 100 && Math.Abs((double)size.Width / size.Height - (double)screen.Width / screen.Height) < 0.02,
                   "tablet link: the tablet gets a picture of the screen", $"{(frame.payload?.Length ?? 0) / 1024} KB, {size.Width} x {size.Height}");
+            CapturePathCheck(st);
+            // what is IN the first picture, not just its size: the screen, as a capture of it shows it
+            PictureIsTheScreen(frame.payload, "the first picture (nothing drawn from the tablet)", "39-tablet-first");
             t.Send(Pad.FrameAck, Array.Empty<byte>());
             var next = t.Read(g => g.Any(x => x.type == Pad.Frame), 3000);
             Check(next.Any(x => x.type == Pad.Frame), "tablet link: the next picture comes once the last is acknowledged", $"{next.Count} messages");
@@ -560,6 +573,8 @@ static class Program
             Check(Diff(inPicture, red) <= 60, "tablet link: the tablet's picture shows the marks", Hex(inPicture));
             Check(Diff(around, onScreen) <= 40, "tablet link: with marks, the tablet's picture still shows the slide around them (not black)",
                   $"picture {Hex(around)}, screen {Hex(onScreen)}");
+            // and the whole picture, marks and all, is the screen (it once turned black as soon as anything was drawn)
+            PictureIsTheScreen(withLine.payload, "the picture with a line drawn", "40c-tablet-with-line");
 
             t.Send(Pad.Command, "undo");
             Thread.Sleep(500);
@@ -620,15 +635,22 @@ static class Program
             Thread.Sleep(500);
             Check(!app.HasExited, "tablet link: broken or oversized first messages from strangers don't end the app", app.HasExited ? "the app exited" : "still running");
 
-            // guessing: five wrong codes in a row lock everyone out for a while
-            string last = "";
+            // guessing: five wrong codes in a row lock that address out for a while. The right code first, so the wrong
+            // ones above (the empty code) no longer count and the run starts at one: tries 1 to 5 must each be told
+            // "Wrong code" (a lockout one early would pass a check of the 6th alone), and only the 6th is locked out.
+            using (var fresh = new TestTablet(port))
+                Check(fresh.Pair(PadCode), "tablet link: the right code again (the run of wrong codes starts afresh)", fresh.Refused);
+            var answers = new List<string>();
             for (int i = 0; i < 6; i++)
                 using (var g = new TestTablet(port))
                 {
                     g.Pair((100000 + i).ToString());
-                    last = g.Refused;
+                    answers.Add(g.Refused);
                 }
-            Check(last == Pad.TooManyWrong, "tablet link: after five wrong codes, guessing is locked out", last);
+            string Said(string a) => a == Pad.WrongCode ? "wrong code" : a == Pad.TooManyWrong ? "locked" : a.Length == 0 ? "(let in or no answer)" : a;
+            Check(answers.Take(5).All(a => a == Pad.WrongCode) && answers[5] == Pad.TooManyWrong,
+                  "tablet link: wrong codes 1 to 5 are each told \"Wrong code\", and only the 6th is locked out",
+                  string.Join(", ", answers.Select((a, i) => $"{i + 1}: {Said(a)}")));
 
             // ...only for that address: a tablet at another address still gets in with the right code
             // (127.0.0.2 is this machine too, seen by the PC as a different address)
@@ -644,6 +666,132 @@ static class Program
         {
             Check(false, "tablet link: the stand-in tablet's conversation", e.Message);
         }
+    }
+
+    /// <summary>
+    /// The pad control (CONTRASTINK_TEST_BLANKPAD=1: every tablet picture white): the same checks of the tablet's
+    /// picture as the normal run, before and after drawing, which must FAIL here. Not counted one by one: what counts
+    /// is that they failed.
+    /// </summary>
+    static void PadControl(JsonElement st)
+    {
+        int port = st.TryGetProperty("padPort", out var pp) ? pp.GetInt32() : 0;
+        Check(port > 0, "PAD CONTROL: the PC listens for a tablet", "port " + port);
+        if (port == 0) return;
+        try
+        {
+            using var t = new TestTablet(port);
+            bool paired = t.Pair(PadCode);
+            Check(paired, "PAD CONTROL: the stand-in tablet is let in", paired ? "WELCOME opened" : "refused: " + t.Refused);
+            if (!paired) return;
+            var first = t.Read(g => g.Any(x => x.type == Pad.Frame), 8000).FirstOrDefault(x => x.type == Pad.Frame);
+            CapturePathCheck(st);
+            counting = false;
+            bool before = PictureIsTheScreen(first.payload, "the first picture", "39-tablet-first");
+            counting = true;
+            t.Send(Pad.Command, "clear");
+            t.Send(Pad.Command, "tool:pen");
+            t.Send(Pad.Command, "color:0");
+            float fy = (float)(Row(5) - screen.Top) / screen.Height;
+            t.Send(Pad.StrokeBegin, PadPoint(0.2f, fy).Concat(new byte[] { 0 }).ToArray());
+            var pts = new List<byte> { 0, 10 };
+            for (int i = 1; i <= 10; i++) pts.AddRange(PadPoint(0.2f + 0.04f * i, fy));
+            t.Send(Pad.StrokePoints, pts.ToArray());
+            t.Send(Pad.StrokeEnd, Array.Empty<byte>());
+            Thread.Sleep(600);
+            t.Send(Pad.FrameAck, Array.Empty<byte>());
+            t.Read(g => g.Any(x => x.type == Pad.Frame), 3000);
+            t.Send(Pad.FrameAck, Array.Empty<byte>());
+            var withLine = t.Read(g => g.Any(x => x.type == Pad.Frame), 3000).LastOrDefault(x => x.type == Pad.Frame);
+            counting = false;
+            bool after = PictureIsTheScreen(withLine.payload, "the picture with a line drawn", "40c-tablet-with-line");
+            counting = true;
+            Check(first.payload != null && withLine.payload != null, "PAD CONTROL: the tablet got its pictures (so the checks below judged real pictures)",
+                  $"first {first.payload?.Length ?? 0} bytes, with the line {withLine.payload?.Length ?? 0} bytes");
+            Check(!before && !after, "PAD CONTROL: with the tablet's picture whitened, the check of the tablet's picture FAILS (before and after drawing)",
+                  $"before drawing it {(before ? "passed" : "failed")}, after drawing it {(after ? "passed" : "failed")}");
+            t.Send(Pad.Command, "clear");
+        }
+        catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException or JsonException or ArgumentException or InvalidDataException or KeyNotFoundException or FormatException)
+        {
+            counting = true;
+            Check(false, "PAD CONTROL: the stand-in tablet's conversation", e.Message);
+        }
+    }
+
+    /// <summary>Which way the app made the tablet's picture (it writes it next to its status in test runs): logged,
+    /// and on a Windows that has Windows.Graphics.Capture it must be that way, the one the user gets.</summary>
+    static void CapturePathCheck(JsonElement st)
+    {
+        string file = statusPath + ".capture.txt", how = "";
+        var sw = Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < 3000 && (how = SafeRead(file)).Length == 0) Thread.Sleep(100);
+        Log("      tablet picture made by: " + (how.Length > 0 ? how : "(not reported)"));
+        int build = st.TryGetProperty("windowsBuild", out var b) ? b.GetInt32() : 0;
+        Check(how == "wgc" || (build < 19041 && how.StartsWith("gdi", StringComparison.Ordinal)),
+              "tablet link: the picture is made by Windows.Graphics.Capture (the GDI copy only on Windows older than 10 2004)",
+              $"Windows build {build}, made by: {(how.Length > 0 ? how : "not reported")}");
+    }
+
+    static string SafeRead(string f) { try { return File.Exists(f) ? File.ReadAllText(f).Trim() : ""; } catch (IOException) { return ""; } }
+
+    /// <summary>
+    /// The tablet's picture against a capture of the same screen taken now: both cut into a grid of cells, each cell's
+    /// mean colour compared, and the mean difference over the whole screen must be small; and the slide's black stripe
+    /// must be dark in the tablet's picture (a white picture differs from a white slide only there). True if both hold.
+    /// </summary>
+    static bool PictureIsTheScreen(byte[]? jpeg, string what, string name)
+    {
+        if (jpeg == null) { Check(false, $"tablet link: {what} matches the screen", "no picture came"); return false; }
+        using var pic = new Bitmap(new MemoryStream(jpeg));
+        pic.Save(Path.Combine(outDir, $"{runMode}-{name}-tablet.png"), ImageFormat.Png);
+        using var shot = Shot(name + "-screen");
+        const int GX = 32, GY = 18;
+        var a = CellMeans(pic, GX, GY); var b = CellMeans(shot, GX, GY);
+        double sum = 0, worst = 0; int worstCell = 0;
+        for (int i = 0; i < a.Length; i++)
+        {
+            double d = Math.Abs(a[i] - b[i]);
+            sum += d;
+            if (d > worst) { worst = d; worstCell = i / 3; }
+        }
+        double mean = sum / a.Length;
+        bool same = mean < 8;
+        Check(same, $"tablet link: {what} is the screen (grid {GX}x{GY}, mean difference from a capture of the screen under 8 of 255)",
+              $"mean {mean:0.0}, worst cell {worst:0} at column {worstCell % GX}, row {worstCell / GX}");
+        // the black stripe, away from the rows where lines are drawn
+        double k = (double)pic.Width / screen.Width;
+        int sx = (int)((slide.StripeCenterX - screen.Left) * k);
+        var samples = new[] { 0.12, 0.22, 0.88 }.Select(f => pic.GetPixel(Math.Clamp(sx, 0, pic.Width - 1), Math.Clamp((int)(pic.Height * f), 0, pic.Height - 1))).ToList();
+        bool dark = samples.All(c => c.R + c.G + c.B < 150);
+        Check(dark, $"tablet link: in {what}, the slide's black stripe is dark", string.Join(" ", samples.Select(Hex)));
+        return same && dark;
+    }
+
+    /// <summary>The mean colour (B, G, R) of each cell of a gx x gy grid over the picture.</summary>
+    static double[] CellMeans(Bitmap bmp, int gx, int gy)
+    {
+        var res = new double[gx * gy * 3];
+        var n = new int[gx * gy];
+        var data = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        try
+        {
+            var row = new byte[bmp.Width * 4];
+            for (int y = 0; y < bmp.Height; y++)
+            {
+                Marshal.Copy(data.Scan0 + y * data.Stride, row, 0, row.Length);
+                int cy = Math.Min(gy - 1, y * gy / bmp.Height);
+                for (int x = 0; x < bmp.Width; x++)
+                {
+                    int c = cy * gx + Math.Min(gx - 1, x * gx / bmp.Width);
+                    res[c * 3] += row[x * 4]; res[c * 3 + 1] += row[x * 4 + 1]; res[c * 3 + 2] += row[x * 4 + 2];
+                    n[c]++;
+                }
+            }
+        }
+        finally { bmp.UnlockBits(data); }
+        for (int c = 0; c < n.Length; c++) for (int j = 0; j < 3; j++) res[c * 3 + j] /= Math.Max(1, n[c]);
+        return res;
     }
 
     /// <summary>

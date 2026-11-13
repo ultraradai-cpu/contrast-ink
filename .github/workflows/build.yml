@@ -1,10 +1,12 @@
 name: Build
 
-# Every push to main: run the tests, build ContrastInk.exe, and put it on the "Latest" release
-# so there is always one download link: Releases → Latest → ContrastInk.exe
+# Every push and pull request: run the tests, build ContrastInk.exe and run the Windows check, so a branch is checked
+# before it is merged. Only a push to main also puts it on the "Latest" release, so there is always one download
+# link: Releases → Latest → ContrastInk.exe
 on:
   push:
-    branches: [main]
+    branches: ['**']
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -38,7 +40,8 @@ jobs:
           name: ContrastInk
           path: out/ContrastInk.exe
       # Runs the real ContrastInk.exe on this Windows machine and reads the screen back (tests/ContrastInk.WindowsCheck).
-      # The control run switches hiding off and must SEE the toolbar, so the "hidden" check is known to be able to fail.
+      # Two control runs prove the checks can fail: "control" switches hiding off and must SEE the toolbar;
+      # "padcontrol" whitens the tablet's picture, and the check of that picture must FAIL in it.
       # A failure here stops the release below: the download link keeps the last build that passed.
       - name: Windows check (real app, real screen)
         shell: pwsh
@@ -46,20 +49,21 @@ jobs:
           dotnet build tests/ContrastInk.WindowsCheck -c Release -o check
           $exe = (Resolve-Path out/ContrastInk.exe).Path
           $codes = @{}
-          foreach ($m in 'control','normal') {
+          foreach ($m in 'control','padcontrol','normal') {
             $p = Start-Process -FilePath check/ContrastInk.WindowsCheck.exe -ArgumentList "`"$exe`"", 'shots', $m -Wait -PassThru
             $codes[$m] = $p.ExitCode
             Get-Content "shots/results-$m.txt" -ErrorAction SilentlyContinue
           }
-          "exit codes: control=$($codes['control']) normal=$($codes['normal'])"
-          if ($codes['control'] -ne 0 -or $codes['normal'] -ne 0) { exit 1 }
+          "exit codes: control=$($codes['control']) padcontrol=$($codes['padcontrol']) normal=$($codes['normal'])"
+          if ($codes['control'] -ne 0 -or $codes['padcontrol'] -ne 0 -or $codes['normal'] -ne 0) { exit 1 }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: windows-check-screenshots
           path: shots/
       - name: Update the Latest release
-        if: github.ref == 'refs/heads/main'   # a branch build is checked, never published
+        # only a push to main publishes; a branch push or a pull request (also run above) is checked, never published
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
