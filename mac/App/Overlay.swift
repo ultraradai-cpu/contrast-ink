@@ -398,7 +398,7 @@ final class InkView: NSView {
     /// `setStrokeColor(red:green:blue:alpha:)` would be device RGB: on a P3 display the same numbers come out more
     /// saturated, so the ink wouldn't match its swatch, the projector or the recording.
     static func srgb(_ r: Double, _ g: Double, _ b: Double, _ a: Double) -> CGColor {
-        CGColor(srgbRed: CGFloat(r), green: CGFloat(g), blue: CGFloat(b), alpha: CGFloat(a))
+        CGColor(colorSpace: CGColorSpaceCreateDeviceRGB(), components: [CGFloat(r), CGFloat(g), CGFloat(b), CGFloat(a)])!   // MUTATION: device RGB
     }
 
     private func draw(_ m: InkMark, alpha: Double, in ctx: CGContext, finished: Bool = true) {
