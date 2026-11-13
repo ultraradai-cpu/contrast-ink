@@ -748,17 +748,20 @@ public class PadProtocolTests
 {
     static byte[] Hex(string h) => Convert.FromHexString(h.Replace(" ", ""));
 
+    static PadAdapter Adapter(string name, string ip, bool gateway = true, bool up = true, string description = "", bool loopback = false, bool tunnel = false) =>
+        new(name, description, up, loopback, tunnel, gateway, ip.Split(' '));
+
     [Fact]
     public void AddressesIncludeTheMobileHotspot()
     {
         var adapters = new[]
         {
-            new PadAdapter("Loopback Pseudo-Interface 1", true, true, new[] { "127.0.0.1" }),
-            new PadAdapter("Local Area Connection* 10", true, false, new[] { "192.168.137.1" }),   // Mobile hotspot
-            new PadAdapter("Wi-Fi", true, false, new[] { "10.0.0.23" }),
-            new PadAdapter("Ethernet", true, false, new[] { "192.168.1.20", "169.254.12.7" }),
-            new PadAdapter("Ethernet 2", false, false, new[] { "172.16.0.5" }),                    // unplugged
-            new PadAdapter("vEthernet", true, false, new[] { "10.0.0.23", "not an address", "fe80::1" }),
+            Adapter("Loopback Pseudo-Interface 1", "127.0.0.1", gateway: false, loopback: true),
+            Adapter("Local Area Connection* 10", "192.168.137.1", gateway: false, description: "Microsoft Wi-Fi Direct Virtual Adapter #2"),   // Mobile hotspot
+            Adapter("Wi-Fi", "10.0.0.23"),
+            Adapter("Ethernet", "192.168.1.20 169.254.12.7"),
+            Adapter("Ethernet 2", "172.16.0.5", up: false),                                        // unplugged
+            Adapter("Wi-Fi 2", "10.0.0.23 not-an-address fe80::1"),                                // the same address again
         };
         var list = Pad.UsableAddresses(adapters);
         Assert.Equal(new[] { "10.0.0.23", "192.168.1.20", "192.168.137.1" }, list);
@@ -768,6 +771,35 @@ public class PadProtocolTests
         Assert.Equal(new[] { "192.168.137.1" }, Pad.UsableAddresses(new[] { adapters[1], adapters[0] }));
         Assert.True(Pad.IsHotspot("192.168.137.1"));
         Assert.False(Pad.IsHotspot("192.168.13.7"));
+    }
+
+    [Fact]
+    public void AddressesLeaveOutVirtualAndVpnAdaptersAndAreAtMostThree()
+    {
+        var adapters = new[]
+        {
+            Adapter("vEthernet (Default Switch)", "172.29.144.1", gateway: false, description: "Hyper-V Virtual Ethernet Adapter"),
+            Adapter("vEthernet (WSL (Hyper-V firewall))", "172.20.0.1", gateway: false),
+            Adapter("Ethernet 3", "192.168.56.1", gateway: false, description: "VirtualBox Host-Only Ethernet Adapter"),
+            Adapter("vEthernet (DockerNAT)", "10.0.75.1"),
+            Adapter("Office VPN", "10.8.0.6", description: "TAP-Windows Adapter V9"),
+            Adapter("WireGuard", "10.66.0.2", description: "WireGuard Tunnel"),
+            Adapter("Cisco", "10.9.0.2", tunnel: true),
+            Adapter("Ethernet", "192.168.1.20"),
+            Adapter("Ethernet 4", "192.168.50.2", gateway: false),          // no router behind it: only when nothing better
+            Adapter("Wi-Fi", "10.0.0.23"),
+            Adapter("Wi-Fi 3", "10.1.0.23"),
+            Adapter("Wi-Fi 4", "10.2.0.23"),
+            Adapter("Local Area Connection* 2", "192.168.137.1", gateway: false),
+        };
+        var list = Pad.UsableAddresses(adapters);
+        // the gateway adapters first, cut so the hotspot always fits within three
+        Assert.Equal(new[] { "192.168.1.20", "10.0.0.23", "192.168.137.1" }, list);
+        Assert.Equal(new[] { "192.168.1.20", "10.0.0.23", "10.1.0.23" }, Pad.UsableAddresses(adapters.Where(a => !Pad.IsHotspot(a.IPv4[0]))));
+        // virtual and VPN adapters only: nothing to show
+        Assert.Empty(Pad.UsableAddresses(adapters.Take(7)));
+        // a network without a router (no gateway anywhere): its adapter is still listed, the virtual ones still not
+        Assert.Equal(new[] { "192.168.50.2" }, Pad.UsableAddresses(adapters.Take(7).Append(adapters[8])));
     }
 
     [Fact]
@@ -1010,5 +1042,68 @@ public class PadCryptoTests
     {
         Assert.Null(PadCrypto.ReadPoint(new byte[65]));
         Assert.Null(PadCrypto.ReadPoint(new byte[] { 4, 1, 2 }));
+    }
+}
+
+public class PadCaptureChoiceTests
+{
+    static readonly DateTime T0 = new(2026, 11, 13, 12, 0, 0, DateTimeKind.Utc);
+
+    [Fact]
+    public void Windows11UsesWgcAndRetriesAfterAFailure()
+    {
+        var c = new PadCaptureChoice(wgcAvailable: true, windowsBuild: 26100);
+        Assert.True(c.UseWgc(T0));
+        c.WgcFailed(T0);
+        Assert.False(c.UseWgc(T0.AddSeconds(5)));                    // GDI for a while...
+        Assert.True(c.UseWgc(T0 + PadCaptureChoice.RetryAfter));     // ...never for good
+        c.WgcFailed(T0);
+        c.NewConnection();
+        Assert.True(c.UseWgc(T0.AddSeconds(1)));                     // a new tablet tries again at once
+        c.Hdr = true;
+        Assert.False(c.UseWgc(T0.AddSeconds(1)));                    // HDR: GDI
+    }
+
+    [Fact]
+    public void Windows10KeepsGdiUnlessItIsBlackOrChosen()
+    {
+        var c = new PadCaptureChoice(wgcAvailable: true, windowsBuild: 19045);
+        Assert.False(c.UseWgc(T0));                                  // no yellow border by default
+        Assert.True(c.GdiCameBackBlack(T0));                         // GDI black: WGC tried
+        Assert.True(c.UseWgc(T0));
+        c.WgcGood();                                                 // WGC wasn't black: kept for this connection
+        Assert.True(c.UseWgc(T0.AddMinutes(5)));
+        c.NewConnection();
+        Assert.False(c.UseWgc(T0.AddMinutes(5)));
+        // the screen really is black: WGC black too, back to GDI (and not tried again at once)
+        Assert.True(c.GdiCameBackBlack(T0));
+        Assert.True(c.BothBlack(T0));
+        Assert.False(c.UseWgc(T0.AddSeconds(1)));
+        Assert.False(c.GdiCameBackBlack(T0.AddSeconds(1)));
+        // the presenter's choice in ⚙
+        c.UserWantsWgc = true;
+        c.NewConnection();
+        Assert.True(c.UseWgc(T0));
+        Assert.False(c.BothBlack(T0));
+        // no WGC on this Windows: never
+        var old = new PadCaptureChoice(wgcAvailable: false, windowsBuild: 18363) { UserWantsWgc = true };
+        Assert.False(old.UseWgc(T0));
+        Assert.False(old.GdiCameBackBlack(T0));
+    }
+
+    [Fact]
+    public void MostlyBlackSeesOnlyANearlyBlackPicture()
+    {
+        int w = 200, h = 100;
+        var black = new byte[w * h * 4];
+        Assert.True(PadCaptureChoice.MostlyBlack(black, w, h));
+        var slide = new byte[w * h * 4];
+        Array.Fill(slide, (byte)255);
+        for (int y = 0; y < h; y++) for (int x = 120; x < 140; x++) { int i = (y * w + x) * 4; slide[i] = slide[i + 1] = slide[i + 2] = 0; }
+        Assert.False(PadCaptureChoice.MostlyBlack(slide, w, h));    // a white slide with a black stripe
+        var darkSlide = (byte[])black.Clone();
+        for (int y = 40; y < 60; y++) for (int x = 20; x < 180; x++) { int i = (y * w + x) * 4; darkSlide[i] = darkSlide[i + 1] = darkSlide[i + 2] = 230; }
+        Assert.False(PadCaptureChoice.MostlyBlack(darkSlide, w, h)); // white text on a black slide: not "black"
+        Assert.False(PadCaptureChoice.MostlyBlack(black, w, h + 1));  // too short a buffer: no
     }
 }

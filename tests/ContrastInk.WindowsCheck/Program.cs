@@ -6,8 +6,12 @@
 //
 // "control" starts the app with hiding from capture switched off (CONTRASTINK_TEST_NOHIDE=1) and requires the check
 // to SEE the toolbar: proof that the "toolbar is hidden" check can fail.
-// "padcontrol" starts the app with the tablet's picture whitened (CONTRASTINK_TEST_BLANKPAD=1) and requires the check
-// of the tablet's picture to FAIL: proof that it can.
+// The tablet's picture has runs of its own (only the tablet link, quick):
+//   "padcontrol"  the picture whitened (CONTRASTINK_TEST_BLANKPAD=1): the picture checks must FAIL (proof that they can);
+//   "padfreeze"   the first picture sent for ever (CONTRASTINK_TEST_FREEZEPAD=1): the check that the picture follows a
+//                 change on the slide must FAIL (a frozen capture is caught);
+//   "padgdi"      the GDI copy forced (CONTRASTINK_TEST_FORCEGDI=1) and pictures 400 px wide: every check must pass;
+//   "padsmall"    Windows.Graphics.Capture with pictures 400 px wide (the downscaling exercised): every check must pass.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -41,7 +45,7 @@ static class Program
             Console.WriteLine();
             return 0;
         }
-        if (args.Length < 3) { Console.Error.WriteLine("usage: <ContrastInk.exe> <out dir> normal|control|padcontrol"); return 2; }
+        if (args.Length < 3) { Console.Error.WriteLine("usage: <ContrastInk.exe> <out dir> normal|control|padcontrol|padfreeze|padgdi|padsmall"); return 2; }
         (exe, outDir, runMode) = (Path.GetFullPath(args[0]), Path.GetFullPath(args[1]), args[2]);
         Directory.CreateDirectory(outDir);
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
@@ -89,6 +93,9 @@ static class Program
         psi.Environment["CONTRASTINK_TEST_PADCODE"] = PadCode;   // the tablet link, with a code this check knows
         if (runMode == "control") psi.Environment["CONTRASTINK_TEST_NOHIDE"] = "1";
         if (runMode == "padcontrol") psi.Environment["CONTRASTINK_TEST_BLANKPAD"] = "1";
+        if (runMode == "padfreeze") psi.Environment["CONTRASTINK_TEST_FREEZEPAD"] = "1";
+        if (runMode == "padgdi") psi.Environment["CONTRASTINK_TEST_FORCEGDI"] = "1";
+        if (runMode is "padgdi" or "padsmall") psi.Environment["CONTRASTINK_TEST_PADWIDTH"] = SmallPicture.ToString();
         // adb: none on the app's PATH; a stand-in in C:\platform-tools, a folder any user of a PC can create, which
         // the app must never run (the restart in ToolbarAndPromises puts one on the PATH, which it must run)
         psi.Environment["PATH"] = string.Join(Path.PathSeparator, (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator)
@@ -126,7 +133,7 @@ static class Program
                 Key('C'); Key(VK.F9);
                 return failures;
             }
-            if (runMode == "padcontrol") { PadControl(st); return failures; }
+            if (runMode.StartsWith("pad", StringComparison.Ordinal)) { PadPictureRun(st); return failures; }
             Normal(st, toolbar);
             return 0;
         }
@@ -538,6 +545,7 @@ static class Program
             t.Send(Pad.FrameAck, Array.Empty<byte>());
             var next = t.Read(g => g.Any(x => x.type == Pad.Frame), 3000);
             Check(next.Any(x => x.type == Pad.Frame), "tablet link: the next picture comes once the last is acknowledged", $"{next.Count} messages");
+            FollowsSlideChange(t, "39b-tablet-slide-changed");
 
             // a red line drawn on the tablet, across the middle of the screen
             t.Send(Pad.Command, "clear");
@@ -668,59 +676,113 @@ static class Program
         }
     }
 
+    const int SmallPicture = 400;   // the picture width in the padgdi and padsmall runs (the screen is wider)
+
     /// <summary>
-    /// The pad control (CONTRASTINK_TEST_BLANKPAD=1: every tablet picture white): the same checks of the tablet's
-    /// picture as the normal run, before and after drawing, which must FAIL here. Not counted one by one: what counts
-    /// is that they failed.
+    /// A run of the tablet's picture alone (see the top of this file): the first picture, the picture after the slide
+    /// changed, and the picture with a line drawn, each compared with the screen. In the two controls the picture checks
+    /// are not counted one by one: what counts is that the ones that must fail did.
     /// </summary>
-    static void PadControl(JsonElement st)
+    static void PadPictureRun(JsonElement st)
     {
+        string tag = runMode.ToUpperInvariant();
+        bool control = runMode is "padcontrol" or "padfreeze";
         int port = st.TryGetProperty("padPort", out var pp) ? pp.GetInt32() : 0;
-        Check(port > 0, "PAD CONTROL: the PC listens for a tablet", "port " + port);
+        Check(port > 0, tag + ": the PC listens for a tablet", "port " + port);
         if (port == 0) return;
         try
         {
             using var t = new TestTablet(port);
             bool paired = t.Pair(PadCode);
-            Check(paired, "PAD CONTROL: the stand-in tablet is let in", paired ? "WELCOME opened" : "refused: " + t.Refused);
+            Check(paired, tag + ": the stand-in tablet is let in", paired ? "WELCOME opened" : "refused: " + t.Refused);
             if (!paired) return;
-            var first = t.Read(g => g.Any(x => x.type == Pad.Frame), 8000).FirstOrDefault(x => x.type == Pad.Frame);
+            var first = t.Read(g => g.Any(x => x.type == Pad.Frame), 8000).FirstOrDefault(x => x.type == Pad.Frame).payload;
             CapturePathCheck(st);
-            counting = false;
-            bool before = PictureIsTheScreen(first.payload, "the first picture", "39-tablet-first");
+            if (runMode is "padgdi" or "padsmall")
+            {
+                int width = 0;
+                if (first != null) using (var img = Image.FromStream(new MemoryStream(first))) width = img.Width;
+                Check(width == SmallPicture, $"{tag}: the picture is made smaller than the screen ({SmallPicture} px wide)", $"{width} px wide, the screen {screen.Width}");
+            }
+            counting = !control;
+            bool before = PictureIsTheScreen(first, "the first picture", "39-tablet-first");
+            bool follows = FollowsSlideChange(t, "39b-tablet-slide-changed");
+            byte[]? withLine = DrawLineAndGetPicture(t);
+            bool after = PictureIsTheScreen(withLine, "the picture with a line drawn", "40c-tablet-with-line");
             counting = true;
             t.Send(Pad.Command, "clear");
-            t.Send(Pad.Command, "tool:pen");
-            t.Send(Pad.Command, "color:0");
-            float fy = (float)(Row(5) - screen.Top) / screen.Height;
-            t.Send(Pad.StrokeBegin, PadPoint(0.2f, fy).Concat(new byte[] { 0 }).ToArray());
-            var pts = new List<byte> { 0, 10 };
-            for (int i = 1; i <= 10; i++) pts.AddRange(PadPoint(0.2f + 0.04f * i, fy));
-            t.Send(Pad.StrokePoints, pts.ToArray());
-            t.Send(Pad.StrokeEnd, Array.Empty<byte>());
-            Thread.Sleep(600);
-            t.Send(Pad.FrameAck, Array.Empty<byte>());
-            t.Read(g => g.Any(x => x.type == Pad.Frame), 3000);
-            t.Send(Pad.FrameAck, Array.Empty<byte>());
-            var withLine = t.Read(g => g.Any(x => x.type == Pad.Frame), 3000).LastOrDefault(x => x.type == Pad.Frame);
-            counting = false;
-            bool after = PictureIsTheScreen(withLine.payload, "the picture with a line drawn", "40c-tablet-with-line");
-            counting = true;
-            Check(first.payload != null && withLine.payload != null, "PAD CONTROL: the tablet got its pictures (so the checks below judged real pictures)",
-                  $"first {first.payload?.Length ?? 0} bytes, with the line {withLine.payload?.Length ?? 0} bytes");
-            Check(!before && !after, "PAD CONTROL: with the tablet's picture whitened, the check of the tablet's picture FAILS (before and after drawing)",
-                  $"before drawing it {(before ? "passed" : "failed")}, after drawing it {(after ? "passed" : "failed")}");
-            t.Send(Pad.Command, "clear");
+            if (runMode == "padcontrol")
+                Check(first != null && withLine != null && !before && !follows && !after,
+                      "PAD CONTROL: with the tablet's picture whitened, the checks of the tablet's picture FAIL",
+                      $"pictures came: {first != null && withLine != null}; first {Verdict(before)}, after the slide changed {Verdict(follows)}, with a line {Verdict(after)}");
+            else if (runMode == "padfreeze")
+                Check(first != null && before && !follows,
+                      "FREEZE CONTROL: with the picture frozen after the first, the first still matches but the check that it follows the slide FAILS",
+                      $"first {Verdict(before)}, after the slide changed {Verdict(follows)}, with a line {Verdict(after)}");
         }
         catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException or JsonException or ArgumentException or InvalidDataException or KeyNotFoundException or FormatException)
         {
             counting = true;
-            Check(false, "PAD CONTROL: the stand-in tablet's conversation", e.Message);
+            Check(false, tag + ": the stand-in tablet's conversation", e.Message);
         }
     }
 
+    static string Verdict(bool passed) => passed ? "passed" : "failed";
+
+    /// <summary>The next picture after now: the one already on its way is acknowledged and skipped.</summary>
+    static byte[]? NextPicture(TestTablet t)
+    {
+        t.Send(Pad.FrameAck, Array.Empty<byte>());
+        t.Read(g => g.Any(x => x.type == Pad.Frame), 3000);
+        t.Send(Pad.FrameAck, Array.Empty<byte>());
+        return t.Read(g => g.Any(x => x.type == Pad.Frame), 3000).LastOrDefault(x => x.type == Pad.Frame).payload;
+    }
+
+    /// <summary>A red line drawn from the tablet across the screen, and the picture after it.</summary>
+    static byte[]? DrawLineAndGetPicture(TestTablet t)
+    {
+        t.Send(Pad.Command, "clear");
+        t.Send(Pad.Command, "tool:pen");
+        t.Send(Pad.Command, "color:0");
+        float fy = (float)(Row(5) - screen.Top) / screen.Height;
+        t.Send(Pad.StrokeBegin, PadPoint(0.2f, fy).Concat(new byte[] { 0 }).ToArray());
+        var pts = new List<byte> { 0, 10 };
+        for (int i = 1; i <= 10; i++) pts.AddRange(PadPoint(0.2f + 0.04f * i, fy));
+        t.Send(Pad.StrokePoints, pts.ToArray());
+        t.Send(Pad.StrokeEnd, Array.Empty<byte>());
+        Thread.Sleep(600);
+        return NextPicture(t);
+    }
+
+    /// <summary>
+    /// The slide changes after the tablet's first picture (a large blue block appears on it): the next picture must
+    /// show it, as the screen does. A capture that froze on its first frame fails here (the padfreeze control).
+    /// </summary>
+    static bool FollowsSlideChange(TestTablet t, string name)
+    {
+        slide.Invoke(() => slide.ShowBlock(true));
+        Thread.Sleep(500);
+        var pic = NextPicture(t);
+        bool same = PictureIsTheScreen(pic, "the picture after the slide changed", name);
+        var inPicture = Color.Black;
+        if (pic != null)
+            using (var img = new Bitmap(new MemoryStream(pic)))
+            {
+                double k = (double)img.Width / screen.Width;
+                var c = slide.BlockCenter;
+                inPicture = img.GetPixel(Math.Clamp((int)((c.X - screen.Left) * k), 0, img.Width - 1), Math.Clamp((int)((c.Y - screen.Top) * k), 0, img.Height - 1));
+            }
+        bool block = Diff(inPicture, Slide.BlockColor) <= 40;
+        Check(block, "tablet link: the picture follows the slide (the block that appeared is in it)", $"want {Hex(Slide.BlockColor)}, picture has {Hex(inPicture)}");
+        slide.Invoke(() => slide.ShowBlock(false));
+        Thread.Sleep(400);
+        NextPicture(t);
+        return same && block;
+    }
+
     /// <summary>Which way the app made the tablet's picture (it writes it next to its status in test runs): logged,
-    /// and on a Windows that has Windows.Graphics.Capture it must be that way, the one the user gets.</summary>
+    /// and it must be the way the user gets: Windows.Graphics.Capture on Windows 11 (build 20348 on), the GDI copy on
+    /// Windows 10 (no capture border for the audience) and in the run that forces it.</summary>
     static void CapturePathCheck(JsonElement st)
     {
         string file = statusPath + ".capture.txt", how = "";
@@ -728,8 +790,11 @@ static class Program
         while (sw.ElapsedMilliseconds < 3000 && (how = SafeRead(file)).Length == 0) Thread.Sleep(100);
         Log("      tablet picture made by: " + (how.Length > 0 ? how : "(not reported)"));
         int build = st.TryGetProperty("windowsBuild", out var b) ? b.GetInt32() : 0;
-        Check(how == "wgc" || (build < 19041 && how.StartsWith("gdi", StringComparison.Ordinal)),
-              "tablet link: the picture is made by Windows.Graphics.Capture (the GDI copy only on Windows older than 10 2004)",
+        bool ok = runMode == "padgdi" ? how == "gdi (forced by the test)"
+                : build >= PadCaptureChoice.BorderlessBuild ? how == "wgc"
+                : how.StartsWith("gdi", StringComparison.Ordinal);
+        Check(ok, runMode == "padgdi" ? "tablet link: this run's picture is the GDI copy (forced)"
+                  : "tablet link: the picture is made the way the user gets it (Windows.Graphics.Capture on Windows 11, the GDI copy on Windows 10)",
               $"Windows build {build}, made by: {(how.Length > 0 ? how : "not reported")}");
     }
 
@@ -1470,6 +1535,10 @@ sealed class Slide : Form
     public IntPtr Hwnd;
     public readonly int StripeLeft, StripeRight;
     public int StripeCenterX => (StripeLeft + StripeRight) / 2;
+    public static readonly Color BlockColor = Color.FromArgb(0x20, 0x50, 0xC0);
+    readonly Panel block;
+    public readonly Point BlockCenter;
+    public void ShowBlock(bool on) { block.Visible = on; if (on) block.BringToFront(); Update(); }
 
     public Slide(Rectangle screen)
     {
@@ -1482,6 +1551,11 @@ sealed class Slide : Form
         StripeLeft = screen.Left + (int)(screen.Width * 0.62);
         StripeRight = StripeLeft + 70;
         var stripe = new Panel { BackColor = Color.Black, Bounds = new Rectangle(StripeLeft - screen.Left, 0, 70, screen.Height) };
+        // the slide changing: a large block, above the rows the checks draw on, left of the stripe
+        block = new Panel { BackColor = BlockColor, Visible = false,
+            Bounds = new Rectangle((int)(screen.Width * 0.05), (int)(screen.Height * 0.05), (int)(screen.Width * 0.35), (int)(screen.Height * 0.22)) };
+        BlockCenter = new Point(screen.Left + block.Left + block.Width / 2, screen.Top + block.Top + block.Height / 2);
+        Controls.Add(block);
         stripe.MouseDown += (_, _) => Clicks++;
         Controls.Add(stripe);
         MouseDown += (_, _) => Clicks++;

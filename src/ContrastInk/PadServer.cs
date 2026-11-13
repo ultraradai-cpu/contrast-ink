@@ -49,6 +49,7 @@ sealed class PadServer : IDisposable
     readonly Dispatcher ui;
     readonly Func<Native.RECT> screen;   // the screen being drawn on, in real pixels
     readonly Func<System.Windows.Media.Imaging.BitmapSource?> marks;   // the drawing layer's picture, on the UI thread
+    readonly Func<bool> wantsWgc;
     readonly System.Security.Cryptography.ECDiffieHellman pcKey;       // this PC's own key (kept between runs)
     readonly byte[] pcPoint;
     /// <summary>What the tablet shows the first time, to compare with this PC: "6FC6-6A90-4861-71CA".</summary>
@@ -119,9 +120,11 @@ sealed class PadServer : IDisposable
         }
     }
 
+    /// <param name="wantsWgc">The presenter's ⚙ choice: Windows' capture on Windows 10 too (yellow border and all).</param>
     public PadServer(Dispatcher ui, Func<Native.RECT> screen, Func<System.Windows.Media.Imaging.BitmapSource?> marks,
-        System.Security.Cryptography.ECDiffieHellman pcKey, string? code = null, bool usbDoorAlways = false)
+        System.Security.Cryptography.ECDiffieHellman pcKey, Func<bool> wantsWgc, string? code = null, bool usbDoorAlways = false)
     {
+        this.wantsWgc = wantsWgc;
         this.usbDoorAlways = usbDoorAlways;
         this.ui = ui;
         this.screen = screen;
@@ -143,6 +146,7 @@ sealed class PadServer : IDisposable
         if (listener == null) throw new InvalidOperationException("no free network port (47820 to 47829 are all in use)");
         Run("pad accept", () => AcceptLoop(listener, usb: false));
         if (usbDoorAlways) UsbDoor(true);
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += DisplayChanged;
         Run("pad frames", FrameLoop);
         Run("pad ipad usb", () => UsbMux.Watch(() => running, OpenedOverUsb));
         Run("pad android usb", () => Adb.Watch(() => running, any => { if (!usbDoorAlways) UsbDoor(any); },
@@ -162,10 +166,15 @@ sealed class PadServer : IDisposable
     {
         try
         {
-            return Pad.UsableAddresses(NetworkInterface.GetAllNetworkInterfaces().Select(n => new PadAdapter(n.Name,
-                n.OperationalStatus == OperationalStatus.Up, n.NetworkInterfaceType == NetworkInterfaceType.Loopback,
-                n.GetIPProperties().UnicastAddresses.Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork)
-                    .Select(a => a.Address.ToString()).ToList())));
+            return Pad.UsableAddresses(NetworkInterface.GetAllNetworkInterfaces().Select(n =>
+            {
+                var ipp = n.GetIPProperties();
+                return new PadAdapter(n.Name, n.Description, n.OperationalStatus == OperationalStatus.Up,
+                    n.NetworkInterfaceType == NetworkInterfaceType.Loopback,
+                    n.NetworkInterfaceType is NetworkInterfaceType.Tunnel or NetworkInterfaceType.Ppp,
+                    ipp.GatewayAddresses.Any(g => g.Address.AddressFamily == AddressFamily.InterNetwork && !g.Address.Equals(IPAddress.Any)),
+                    ipp.UnicastAddresses.Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork).Select(a => a.Address.ToString()).ToList());
+            }));
         }
         catch (NetworkInformationException) { return new List<string>(); }
     }
@@ -474,7 +483,7 @@ sealed class PadServer : IDisposable
                 if (c == null || c.Closed || c.AckPending || now - last < TimeSpan.FromMilliseconds(100)) { Thread.Sleep(15); continue; }
                 try
                 {
-                    var jpeg = Capture(screen());
+                    var jpeg = Capture(screen(), c);
                     last = c.SentAt = DateTime.UtcNow;
                     c.AckPending = true;
                     c.Send(Pad.Message(Pad.Frame, jpeg));
@@ -492,14 +501,30 @@ sealed class PadServer : IDisposable
         catch (Exception e) when (e is TimeoutException or TaskCanceledException or OperationCanceledException) { return null; }
     }
 
-    // How the tablet's picture is made (only ever touched on the frame thread). Windows.Graphics.Capture first; the GDI
-    // copy when this Windows can't, or when it failed once in this run (a capture that failed is not tried again).
+    // How the tablet's picture is made (only ever touched on the frame thread): PadCaptureChoice decides between
+    // Windows.Graphics.Capture and the GDI copy for each picture.
+    PadCaptureChoice? choice;
     WgcCapture? wgc;
-    bool wgcOff;
+    Connection? capturedFor;            // the connection the choice was last made for (a new one forgets old failures)
+    int choiceGeneration;
+    readonly List<DateTime> lostRestarts = new();
+    bool wgcFailureLogged;
     string capturePath = "";
-    // the Windows check's control: every picture white, so the check of the tablet's picture must fail
-    static readonly bool blankForTest = Environment.GetEnvironmentVariable("CONTRASTINK_TEST") == "1"
-                                     && Environment.GetEnvironmentVariable("CONTRASTINK_TEST_BLANKPAD") == "1";
+    /// <summary>Counts display changes (a screen plugged in or out, a dock, a projector, the resolution or scale): a
+    /// capture made in an older layout is started afresh.</summary>
+    static int displayGeneration;
+    static void DisplayChanged(object? sender, EventArgs e) => Interlocked.Increment(ref displayGeneration);
+
+    // test runs only (CONTRASTINK_TEST), the Windows check's switches:
+    static readonly bool testRun = Environment.GetEnvironmentVariable("CONTRASTINK_TEST") == "1";
+    static bool TestSwitch(string name) => testRun && Environment.GetEnvironmentVariable(name) == "1";
+    static readonly bool blankForTest = TestSwitch("CONTRASTINK_TEST_BLANKPAD");    // control: every picture white
+    static readonly bool freezeForTest = TestSwitch("CONTRASTINK_TEST_FREEZEPAD");  // control: the first picture, for ever
+    static readonly bool gdiForTest = TestSwitch("CONTRASTINK_TEST_FORCEGDI");      // the GDI copy's own run
+    // a smaller picture than usual, so the downscaling is exercised on the check's small screen
+    static readonly int maxWidth = testRun && int.TryParse(Environment.GetEnvironmentVariable("CONTRASTINK_TEST_PADWIDTH"), out var mw) && mw >= 64 ? mw : 1600;
+    byte[]? frozen;
+    Connection? frozenFor;
     // test runs: which way the picture was made, for the Windows check to read (never written in normal use)
     static readonly string? captureReport = Environment.GetEnvironmentVariable("CONTRASTINK_STATUS") is { Length: > 0 } st ? st + ".capture.txt" : null;
 
@@ -521,53 +546,39 @@ sealed class PadServer : IDisposable
     /// The screen as the audience sees it, at most 1600 px wide, as a JPEG. The toolbar and the undo button are never in
     /// it (hidden from capture).
     /// </summary>
-    byte[] Capture(Native.RECT r)
+    byte[] Capture(Native.RECT r, Connection c)
     {
+        if (freezeForTest && ReferenceEquals(frozenFor, c) && frozen != null) return frozen;
         int w = Math.Max(1, r.Right - r.Left), h = Math.Max(1, r.Bottom - r.Top);
-        double scale = Math.Min(1, 1600.0 / w);
+        double scale = Math.Min(1, (double)maxWidth / w);
         int ow = Math.Max(1, (int)(w * scale)), oh = Math.Max(1, (int)(h * scale));
-        System.Windows.Media.Imaging.BitmapSource? picture = null;
-        if (!wgcOff && OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
+        var now = DateTime.UtcNow;
+        if (choice == null)
         {
-            try
-            {
-                if (wgc != null && !wgc.Covers(r)) StopCapture();   // the drawing moved to another screen
-                if (wgc == null)
-                {
-                    if (!WgcCapture.Available()) { wgcOff = true; Used("gdi (Windows.Graphics.Capture not supported here)"); }
-                    else wgc = WgcCapture.Start(r);
-                }
-                if (wgc != null) { picture = wgc.Picture(r, ow, oh); Used("wgc"); }
-            }
-            catch (Exception e)
-            {
-                // logged once: from now on the GDI copy, which works everywhere
-                App.Log(new InvalidOperationException("Windows.Graphics.Capture failed; the tablet's picture is the GDI copy from now on", e));
-                wgcOff = true;
-                StopCapture();
-                Used("gdi (Windows.Graphics.Capture failed: " + e.GetType().Name + ")");
-                picture = null;
-            }
+            bool available = !gdiForTest && OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041) && WgcCapture.Available();
+            choice = new PadCaptureChoice(available, Environment.OSVersion.Version.Build);
+            if (gdiForTest) Used("gdi (forced by the test)");
+            else if (!available) Used("gdi (Windows.Graphics.Capture not available here)");
         }
-        else if (!wgcOff) { wgcOff = true; Used("gdi (Windows older than 10 2004)"); }
+        choice.UserWantsWgc = wantsWgc();
+        int generation = Volatile.Read(ref displayGeneration);
+        if (!ReferenceEquals(c, capturedFor) || generation != choiceGeneration)
+        {
+            // a new tablet, or a new display layout: earlier failures and the HDR finding are looked at afresh
+            if (!ReferenceEquals(c, capturedFor)) choice.NewConnection();
+            capturedFor = c; choiceGeneration = generation;
+            choice.Hdr = false;
+        }
+        System.Windows.Media.Imaging.BitmapSource? picture = null, gdi = null;
+        bool gdiBlack = false;
+        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041) && choice.UseWgc(now)) picture = TryWgc(r, w, h, ow, oh, generation, now, ref gdi, ref gdiBlack);
+        else StopCapture();
         if (picture == null)
         {
-            // the GDI copy doesn't see the drawing layer (a layered window, without CAPTUREBLT): its marks go over it
-            picture = GdiCopy(r, w, h, ow, oh);
-            var marksPicture = MarksNow();
-            if (marksPicture != null)
-            {
-                var v = new System.Windows.Media.DrawingVisual();
-                using (var dc = v.RenderOpen())
-                {
-                    var area = new System.Windows.Rect(0, 0, ow, oh);
-                    dc.DrawImage(picture, area);
-                    dc.DrawImage(marksPicture, area);
-                }
-                var both = new System.Windows.Media.Imaging.RenderTargetBitmap(ow, oh, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
-                both.Render(v);
-                picture = both;
-            }
+            gdi ??= GdiCopy(r, w, h, ow, oh, out gdiBlack);
+            picture = WithMarks(gdi, ow, oh);
+            if (gdiBlack && choice.GdiCameBackBlack(now)) Used("gdi (black: Windows.Graphics.Capture tried next)");
+            else if (!capturePath.StartsWith("gdi", StringComparison.Ordinal)) Used(OperatingSystem.IsWindowsVersionAtLeast(10, 0, PadCaptureChoice.BorderlessBuild) ? "gdi" : "gdi (Windows 10: no capture border)");
         }
         if (blankForTest)
         {
@@ -579,7 +590,93 @@ sealed class PadServer : IDisposable
         jpeg.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(picture));
         using var ms = new MemoryStream();
         jpeg.Save(ms);
-        return ms.ToArray();
+        var bytes = ms.ToArray();
+        if (freezeForTest) { frozen = bytes; frozenFor = c; }
+        return bytes;
+    }
+
+    /// <summary>
+    /// A picture by Windows.Graphics.Capture, or null for the GDI copy (filled in <paramref name="gdi"/> when it was
+    /// already made here). A capture that was lost (its monitor gone, the GPU reset, the size changed) is started
+    /// again at once (three times in 30 s at most); one that failed waits <see cref="PadCaptureChoice.RetryAfter"/>.
+    /// A black picture is checked against the GDI copy: if that isn't black, the GDI copy it is.
+    /// </summary>
+    [System.Runtime.Versioning.SupportedOSPlatform("windows10.0.19041.0")]
+    System.Windows.Media.Imaging.BitmapSource? TryWgc(Native.RECT r, int w, int h, int ow, int oh, int generation, DateTime now,
+        ref System.Windows.Media.Imaging.BitmapSource? gdi, ref bool gdiBlack)
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            try
+            {
+                if (wgc != null && !wgc.Covers(r, generation)) StopCapture();
+                wgc ??= WgcCapture.Start(r, generation);
+                var pic = wgc.Picture(r, ow, oh);
+                if (wgc.LastWasBlack)
+                {
+                    gdi = GdiCopy(r, w, h, ow, oh, out gdiBlack);
+                    if (!gdiBlack)
+                    {
+                        choice!.WgcFailed(now);
+                        StopCapture();
+                        Used("gdi (Windows.Graphics.Capture's picture black, the GDI copy's not)");
+                        return null;
+                    }
+                    if (choice!.BothBlack(now)) { StopCapture(); Used("gdi (the screen is black: no capture border needed)"); return null; }
+                }
+                else choice!.WgcGood();
+                Used("wgc");
+                return pic;
+            }
+            catch (WgcCapture.HdrException)
+            {
+                choice!.Hdr = true;
+                StopCapture();
+                Used("gdi (HDR screen)");
+                return null;
+            }
+            catch (WgcCapture.LostException) when (attempt == 0 && LostRestartAllowed(now))
+            {
+                StopCapture();   // and round again: started afresh
+            }
+            catch (Exception e)
+            {
+                if (!wgcFailureLogged)
+                {
+                    wgcFailureLogged = true;   // once per run: a capture failing every 15 s must not fill the log
+                    App.Log(new InvalidOperationException("Windows.Graphics.Capture failed; the tablet's picture is the GDI copy for a while", e));
+                }
+                choice!.WgcFailed(now);
+                StopCapture();
+                Used("gdi (Windows.Graphics.Capture failed: " + e.GetType().Name + ", tried again later)");
+                return null;
+            }
+        }
+    }
+
+    bool LostRestartAllowed(DateTime now)
+    {
+        lostRestarts.RemoveAll(t => now - t > TimeSpan.FromSeconds(30));
+        if (lostRestarts.Count >= 3) return false;
+        lostRestarts.Add(now);
+        return true;
+    }
+
+    /// <summary>The GDI copy doesn't see the drawing layer (a layered window, without CAPTUREBLT): its marks go over it.</summary>
+    System.Windows.Media.Imaging.BitmapSource WithMarks(System.Windows.Media.Imaging.BitmapSource picture, int ow, int oh)
+    {
+        var marksPicture = MarksNow();
+        if (marksPicture == null) return picture;
+        var v = new System.Windows.Media.DrawingVisual();
+        using (var dc = v.RenderOpen())
+        {
+            var area = new System.Windows.Rect(0, 0, ow, oh);
+            dc.DrawImage(picture, area);
+            dc.DrawImage(marksPicture, area);
+        }
+        var both = new System.Windows.Media.Imaging.RenderTargetBitmap(ow, oh, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+        both.Render(v);
+        return both;
     }
 
     [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr hwnd);
@@ -610,7 +707,7 @@ sealed class PadServer : IDisposable
     /// the copy's alpha byte is 0, and laid under the marks it vanished (the tablet's picture turned black). Without
     /// CAPTUREBLT: that flag makes the mouse pointer flicker on every copy, and OBS would record the flicker.
     /// </summary>
-    static System.Windows.Media.Imaging.BitmapSource GdiCopy(Native.RECT r, int w, int h, int ow, int oh)
+    static System.Windows.Media.Imaging.BitmapSource GdiCopy(Native.RECT r, int w, int h, int ow, int oh, out bool black)
     {
         var info = new BITMAPINFOHEADER { biSize = Marshal.SizeOf<BITMAPINFOHEADER>(), biWidth = ow, biHeight = -oh, biPlanes = 1, biBitCount = 32 };
         IntPtr screenDc = GetDC(IntPtr.Zero), memDc = CreateCompatibleDC(screenDc);
@@ -627,6 +724,7 @@ sealed class PadServer : IDisposable
             int stride = ow * 4;
             var pixels = new byte[stride * oh];
             Marshal.Copy(bits, pixels, 0, pixels.Length);
+            black = PadCaptureChoice.MostlyBlack(pixels, ow, oh);
             return System.Windows.Media.Imaging.BitmapSource.Create(ow, oh, 96, 96, System.Windows.Media.PixelFormats.Bgr32, null, pixels, stride);
         }
         finally
@@ -640,6 +738,7 @@ sealed class PadServer : IDisposable
     public void Dispose()
     {
         running = false;
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= DisplayChanged;
         Answer(false);   // a question still on the toolbar: no
         advert?.Dispose();
         try { listener?.Stop(); } catch (Exception) { }

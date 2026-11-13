@@ -1,9 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <!-- the Windows SDK's projections, for Windows.Graphics.Capture (the tablet's picture); 22621 for IsBorderRequired
+    <!-- the Windows SDK's projections, for Windows.Graphics.Capture (the tablet's picture); 26100 for IsBorderRequired and MinUpdateInterval
          (Windows 11). It still runs on Windows 10: everything newer than 1809 is checked for before it is used. -->
-    <TargetFramework>net8.0-windows10.0.22621.0</TargetFramework>
+    <TargetFramework>net8.0-windows10.0.26100.0</TargetFramework>
     <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <UseWPF>true</UseWPF>

@@ -57,6 +57,12 @@ public sealed class Settings
     public TabletMode PenTabletMode { get; set; } = TabletMode.Auto;
     /// <summary>A tablet (Android or iPad) may connect over the network and be used as a pad that draws here.</summary>
     public bool TabletPad { get; set; }
+    /// <summary>
+    /// Windows 10: the tablet's picture by Windows' own capture (it sees video and 3D windows the older copy can show
+    /// black), although Windows then draws a yellow border around the screen, which the audience and OBS see. Windows
+    /// 11 always uses it (no border there).
+    /// </summary>
+    public bool TabletWindowsCapture { get; set; }
 
     /// <summary>Keeps every value in range, so a hand-edited or old file can't break the app.</summary>
     public Settings Clean(int screens)

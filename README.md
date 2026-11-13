@@ -130,9 +130,15 @@ the PC's screen, and what you draw on it is drawn on the PC.
    (the app in front on the PC turns the page).
 
 **No shared Wi-Fi** (a lecture hall whose Wi-Fi keeps devices apart, or none at all): turn on Windows' **Mobile
-hotspot** (Settings → Network & internet → Mobile hotspot) and join it from the tablet. The ⚙ panel lists every
-address of the PC, the hotspot's marked "(hotspot)" (usually 192.168.137.1), and the tablet finds the PC there by
-name too; or use the USB cable.
+hotspot** (Settings → Network & internet → Mobile hotspot) and join it from the tablet. The ⚙ panel lists the
+PC's addresses, the hotspot's marked "(hotspot)" (usually 192.168.137.1), and the tablet finds the PC there by
+name too; or use the USB cable. The firewall may treat the hotspot as a **public** network: if the tablet joins the
+hotspot but can't find or reach the PC, Contrast Ink is probably allowed through the firewall on private networks
+only (the question Windows asks the first time). Allow it on public networks too: Windows Security → Firewall & network
+protection → Allow an app through firewall → Change settings → Contrast Ink: tick **Public**. (Contrast Ink adds no
+firewall rule of its own; a copy of ContrastInk.exe in another folder is asked about again.) The panel shows at most
+three addresses: those of the networks with a router, and the hotspot's; virtual-machine, WSL, Docker and VPN adapters
+are left out.
 
 **By USB cable** (it switches to the cable by itself when plugged in, and back to Wi-Fi when unplugged):
 - iPad: install iTunes (or Apple Devices) on the PC, plug in, tap Trust on the iPad. No code needed by cable.
@@ -145,12 +151,14 @@ name too; or use the USB cable.
   Any program on the PC can reach the cable's door, so only allow it when you just plugged your tablet in.
 - The first time with this PC, the tablet shows the PC check by cable too: compare it as over Wi-Fi.
 
-**The tablet's picture** is made with Windows' own screen capture (Windows.Graphics.Capture), which also sees
-videos, DICOM viewers and other programs drawn by the graphics card, and leaves out the toolbar and the mouse
-pointer. On **Windows 10**, Windows draws a thin **yellow border** around the screen while a tablet is connected
-(it shows to the audience and in OBS, and goes when the tablet disconnects); Windows 11 needs no border. Where that
-capture isn't available (Windows 10 before version 2004) or fails, Contrast Ink falls back to an older copy of the
-screen, which can show some video or 3D windows black or still.
+**The tablet's picture.** On **Windows 11** it is made with Windows' own screen capture (Windows.Graphics.Capture),
+which also sees videos, DICOM viewers and other programs drawn by the graphics card, and leaves out the toolbar and the
+mouse pointer. On **Windows 10** that capture makes Windows draw a yellow border around the screen, which the audience
+sees and OBS records, so Contrast Ink uses an older copy of the screen there, and switches to Windows' capture by
+itself only when that copy comes back black (a video or 3D window it can't see). To use Windows' capture on Windows 10
+anyway, border and all: **⚙ Settings → Tablet Picture: Windows Capture**. With **HDR** on, the older copy is used
+everywhere (Windows' capture would look washed out). If Windows' capture fails, the older copy takes over and Windows'
+capture is tried again 15 seconds later, or when a tablet next connects.
 
 Everything between the tablet and the PC is encrypted, and the code itself never crosses the network. The PC check
 is 16 characters (`XXXX-XXXX-XXXX-XXXX`): compare all of them. Wrong codes are limited per device: five in a row

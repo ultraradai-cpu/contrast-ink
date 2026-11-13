@@ -40,8 +40,10 @@ jobs:
           name: ContrastInk
           path: out/ContrastInk.exe
       # Runs the real ContrastInk.exe on this Windows machine and reads the screen back (tests/ContrastInk.WindowsCheck).
-      # Two control runs prove the checks can fail: "control" switches hiding off and must SEE the toolbar;
-      # "padcontrol" whitens the tablet's picture, and the check of that picture must FAIL in it.
+      # Control runs prove the checks can fail: "control" switches hiding off and must SEE the toolbar;
+      # "padcontrol" whitens the tablet's picture and "padfreeze" freezes it after the first: the picture checks must
+      # FAIL in them. "padgdi" (the GDI copy forced) and "padsmall" (pictures 400 px wide) must pass: every way the
+      # picture can be made is checked, not only the one this machine picks.
       # A failure here stops the release below: the download link keeps the last build that passed.
       - name: Windows check (real app, real screen)
         shell: pwsh
@@ -49,13 +51,14 @@ jobs:
           dotnet build tests/ContrastInk.WindowsCheck -c Release -o check
           $exe = (Resolve-Path out/ContrastInk.exe).Path
           $codes = @{}
-          foreach ($m in 'control','padcontrol','normal') {
+          $modes = 'control','padcontrol','padfreeze','padgdi','padsmall','normal'
+          foreach ($m in $modes) {
             $p = Start-Process -FilePath check/ContrastInk.WindowsCheck.exe -ArgumentList "`"$exe`"", 'shots', $m -Wait -PassThru
             $codes[$m] = $p.ExitCode
             Get-Content "shots/results-$m.txt" -ErrorAction SilentlyContinue
           }
-          "exit codes: control=$($codes['control']) padcontrol=$($codes['padcontrol']) normal=$($codes['normal'])"
-          if ($codes['control'] -ne 0 -or $codes['padcontrol'] -ne 0 -or $codes['normal'] -ne 0) { exit 1 }
+          "exit codes: " + (($modes | ForEach-Object { "$_=$($codes[$_])" }) -join ' ')
+          if (($modes | Where-Object { $codes[$_] -ne 0 }).Count -gt 0) { exit 1 }
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -76,21 +76,35 @@ public static class Pad
     public static byte[] ChallengeMessage(byte[] pcKey, byte[] salt, string name) =>
         Message(PadCrypto.Challenge, JsonSerializer.Serialize(new { key = Convert.ToBase64String(pcKey), salt = Convert.ToBase64String(salt), name }));
 
-    /// <summary>
-    /// The PC check shown beside the code: the first 8 bytes of SHA-256 of the PC's public key, "6FC6-6A90-4861-71CA".
-    /// (4 bytes were too few: a fake key matching them could be searched for offline in about 2^32 tries.)
-    /// </summary>
     /// <summary>The address Windows gives itself on its own Mobile hotspot (192.168.137.x).</summary>
     public static bool IsHotspot(string address) => address.StartsWith("192.168.137.", StringComparison.Ordinal);
 
+    /// <summary>At most this many addresses in the ⚙ panel (more made the panel tall and the right one hard to find).</summary>
+    public const int MaxAddresses = 3;
+
+    // adapters no tablet can reach: virtual machines, containers, WSL, VPNs and tunnels (by name or description)
+    static readonly string[] Unreachable =
+    {
+        "hyper-v", "vethernet", "wsl", "virtualbox", "vmware", "docker", "vpn", "tap-", "tap adapter", "wintun",
+        "wireguard", "tunnel", "teredo", "isatap", "zerotier", "tailscale", "openvpn", "anyconnect", "fortinet", "npcap",
+    };
+
+    /// <summary>An adapter of a virtual machine, a container, WSL, a VPN or a tunnel: never shown.</summary>
+    public static bool IsUnreachable(PadAdapter a) =>
+        a.Tunnel || Unreachable.Any(w => a.Name.Contains(w, StringComparison.OrdinalIgnoreCase) || a.Description.Contains(w, StringComparison.OrdinalIgnoreCase));
+
     /// <summary>
-    /// Every IPv4 address a tablet could type to reach this PC, from all its adapters that are up: the Wi-Fi or
-    /// Ethernet ones and the Mobile hotspot's (a PC sharing its own hotspot has no other address the tablet can
-    /// reach). Not loopback, not self-assigned (169.254.x, no network behind it); each once; the hotspot's last.
+    /// The IPv4 addresses a tablet could type to reach this PC, for the ⚙ panel: the adapters that are up and have a
+    /// default gateway (the Wi-Fi or Ethernet the tablet shares), plus Windows' Mobile hotspot (192.168.137.x: a PC
+    /// sharing its own hotspot has no other address the tablet can reach), at most <see cref="MaxAddresses"/>, the
+    /// hotspot's last and always kept. Never loopback, self-assigned (169.254.x), virtual-machine, container, WSL, VPN
+    /// or tunnel adapters. With none of those, the other adapters that are up (a network without a router).
     /// </summary>
     public static List<string> UsableAddresses(IEnumerable<PadAdapter> adapters)
     {
-        var list = new List<string>();
+        var withGateway = new List<string>();
+        var others = new List<string>();
+        var hotspot = new List<string>();
         foreach (var a in adapters)
         {
             if (!a.Up || a.Loopback) continue;
@@ -100,16 +114,25 @@ public static class Pad
                 var b = ip.GetAddressBytes();
                 if (b[0] == 127 || b[0] == 0 || (b[0] == 169 && b[1] == 254)) continue;
                 var s = ip.ToString();
-                if (!list.Contains(s)) list.Add(s);
+                if (IsHotspot(s)) { if (!hotspot.Contains(s)) hotspot.Add(s); continue; }
+                if (IsUnreachable(a)) continue;
+                var into = a.HasGateway ? withGateway : others;
+                if (!withGateway.Contains(s) && !others.Contains(s)) into.Add(s);
             }
         }
-        return list.Where(x => !IsHotspot(x)).Concat(list.Where(IsHotspot)).ToList();
+        var main = withGateway.Count > 0 || hotspot.Count > 0 ? withGateway : others;
+        int room = Math.Max(0, MaxAddresses - Math.Min(hotspot.Count, MaxAddresses));
+        return main.Take(room).Concat(hotspot.Take(MaxAddresses)).ToList();
     }
 
     /// <summary>The addresses for the ⚙ panel: "192.168.1.20, 192.168.137.1 (hotspot)", each with the port when it isn't the usual one.</summary>
     public static string AddressText(IReadOnlyList<string> addresses, int port) =>
         string.Join(", ", addresses.Select(a => a + (port != Port ? $":{port}" : "") + (IsHotspot(a) ? " (hotspot)" : "")));
 
+    /// <summary>
+    /// The PC check shown beside the code: the first 8 bytes of SHA-256 of the PC's public key, "6FC6-6A90-4861-71CA".
+    /// (4 bytes were too few: a fake key matching them could be searched for offline in about 2^32 tries.)
+    /// </summary>
     public static string PcCheck(byte[] pcKey)
     {
         var h = System.Security.Cryptography.SHA256.HashData(pcKey);
@@ -259,5 +282,6 @@ public sealed class PadGuard
     }
 }
 
-/// <summary>A network adapter as <see cref="Pad.UsableAddresses"/> needs it: up or not, loopback or not, its IPv4 addresses.</summary>
-public sealed record PadAdapter(string Name, bool Up, bool Loopback, IReadOnlyList<string> IPv4);
+/// <summary>A network adapter as <see cref="Pad.UsableAddresses"/> needs it: its name and description, up or not,
+/// loopback or not, a tunnel or PPP link (a VPN) or not, whether it has a default gateway, its IPv4 addresses.</summary>
+public sealed record PadAdapter(string Name, string Description, bool Up, bool Loopback, bool Tunnel, bool HasGateway, IReadOnlyList<string> IPv4);

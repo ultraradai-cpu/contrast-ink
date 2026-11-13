@@ -138,6 +138,9 @@
       <!-- the hint (shown while the pointer rests on it) says where platform-tools go: the three lines below stay three -->
       <CheckBox x:Name="OptPad" Content="Let a Tablet Draw Here (Over Wi-Fi)"
                 ToolTip="Let a Tablet Draw Here (Over Wi-Fi). Android by cable: USB debugging on the tablet, and Google's platform-tools on this PC, unzipped into %LOCALAPPDATA%\Android\Sdk\platform-tools (or that folder on the PATH); the first time in each run, press Allow on this toolbar."/>
+      <!-- Windows 10 only (hidden on 11, which always uses it, without a border) -->
+      <CheckBox x:Name="OptPadCapture" Content="Tablet Picture: Windows Capture (Yellow Border)"
+                ToolTip="Tablet Picture: Windows Capture. Shows video and 3D windows the older copy can show black, but on Windows 10 Windows draws a yellow border around the screen while a tablet is connected, which the audience and OBS see. Contrast Ink switches to it by itself when the older copy comes back black."/>
       <TextBlock x:Name="PadText" Foreground="{StaticResource Ink}" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap" MaxWidth="400" Visibility="Collapsed"/>
       </StackPanel>
       </StackPanel>

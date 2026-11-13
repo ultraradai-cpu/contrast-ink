@@ -244,7 +244,7 @@ public partial class ToolbarWindow : Window
     {
         (OptZ, nameof(Settings.UndoWithZ)), (OptRightClick, nameof(Settings.UndoWithRightClick)), (OptButton, nameof(Settings.UndoButtonByPen)),
         (OptEraserEnd, nameof(Settings.PenEraserEnd)), (OptSlides, nameof(Settings.MarksPerSlide)),
-        (OptNames, nameof(Settings.ShowButtonNames)), (OptPad, nameof(Settings.TabletPad)),
+        (OptNames, nameof(Settings.ShowButtonNames)), (OptPad, nameof(Settings.TabletPad)), (OptPadCapture, nameof(Settings.TabletWindowsCapture)),
     };
 
     static void Mark(Button b, bool on)
@@ -280,6 +280,9 @@ public partial class ToolbarWindow : Window
             OptEraserEnd.IsChecked = s.PenEraserEnd; OptSlides.IsChecked = s.MarksPerSlide;
             OptNames.IsChecked = s.ShowButtonNames;
             OptPad.IsChecked = s.TabletPad;
+            OptPadCapture.IsChecked = s.TabletWindowsCapture;
+            OptPadCapture.Visibility = s.TabletPad && Environment.OSVersion.Version.Build < PadCaptureChoice.BorderlessBuild
+                ? Visibility.Visible : Visibility.Collapsed;
             TabletAuto.IsChecked = s.PenTabletMode == TabletMode.Auto;
             TabletOn.IsChecked = s.PenTabletMode == TabletMode.On;
             TabletOff.IsChecked = s.PenTabletMode == TabletMode.Off;
