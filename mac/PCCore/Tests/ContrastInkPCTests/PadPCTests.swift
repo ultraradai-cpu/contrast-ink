@@ -170,6 +170,16 @@ final class PadPCTests: XCTestCase {
         XCTAssertNil(PadCheck.text(hash: Array(hash.prefix(4))))
     }
 
+    /// The Mac shows the same 16 digits the tablet (Core's PadCheckFormat, used by the iPad) shows for the same key.
+    func testMacAndTabletWriteThePcCheckAlike() {
+        var g = SystemRandomNumberGenerator()
+        for _ in 0..<50 {
+            let hash = (0..<32).map { _ in UInt8.random(in: 0...255, using: &g) }
+            XCTAssertEqual(PadCheck.text(hash: hash), PadCheckFormat.format(hash: Data(hash)))
+        }
+        XCTAssertEqual(PadCheckFormat.bytes, PadCheck.bytes)
+    }
+
     func testCodesAndAddresses() {
         for _ in 0..<50 {
             let c = PadPC.newCode()
