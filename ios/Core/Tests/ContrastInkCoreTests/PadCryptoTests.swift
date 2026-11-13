@@ -52,7 +52,7 @@ final class PadCryptoTests: XCTestCase {
     }
 
     func testPCCheck() {
-        XCTAssertEqual(PadCrypto.check(hex(pcPublic)), "6FC6-6A90")
+        XCTAssertEqual(PadCrypto.check(hex(pcPublic)), "6FC6-6A90-4861-71CA", "16 hex digits, the spec's vector")
     }
 
     /// The PC's side of the test: its keys from its own private key and the tablet's public one.

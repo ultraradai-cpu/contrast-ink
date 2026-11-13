@@ -6,8 +6,10 @@ import UIKit
 /// The USB door of pad mode (docs/pad-protocol.md, "USB (phase 2)"): while pad mode is open the iPad listens on its
 /// own loopback address, 127.0.0.1:47830. The PC reaches it through the cable (Apple's usbmuxd delivers its
 /// connections on the iPad's loopback); nothing on the Wi-Fi can. On a connection the iPad speaks first (HELLO) and
-/// runs the version-2 handshake with the empty code and no first-time question; once the PC's sealed WELCOME has
-/// come, the open connection is handed to the PadClient, which then uses it instead of Wi-Fi.
+/// runs the version-2 handshake with the empty code. The cable is not proof on its own (any app on the iPad can reach
+/// its loopback door), so the first time with a PC its check is shown and the PROOF waits for "It matches", as on
+/// Wi-Fi. Once the PC's sealed WELCOME has come, the open connection is handed to the PadClient, which then uses it
+/// instead of Wi-Fi.
 @MainActor
 final class PadCable {
     static let port: UInt16 = 47830
@@ -15,6 +17,9 @@ final class PadCable {
     weak var client: PadClient?
     /// The key the presenter chose to trust with "Connect anyway" after a cable warning.
     var acceptKey: Data?
+    /// The key of a PC whose check the presenter said doesn't match: its next tries (the PC dials every few seconds)
+    /// are closed without asking again, until pad mode is opened again.
+    private var refusedKey: Data?
 
     private var listener: NWListener?
     private var restart: DispatchWorkItem?
@@ -27,6 +32,8 @@ final class PadCable {
         var link = PadLink()
         var handshake = PadHandshake()
         var pending: (name: String, key: Data)?
+        /// The PROOF, held while the presenter compares the PC check (the first time with this PC).
+        var heldProof: Data?
         init(_ c: NWConnection) { self.c = c }
     }
 
@@ -73,6 +80,7 @@ final class PadCable {
         listener = nil
         endCandidate()
         acceptKey = nil
+        refusedKey = nil
     }
 
     private func retryLater() {
@@ -119,9 +127,15 @@ final class PadCable {
         }
         c.start(queue: .main)
         receive(k)
+        deadline(k)
+    }
+
+    /// A PC that doesn't get through the handshake in time is closed (not while the presenter compares the check:
+    /// that has its own limit).
+    private func deadline(_ k: Candidate) {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.handshakeLimit) { [weak self, weak k] in
             Task { @MainActor [weak self, weak k] in
-                guard let self, let k, self.candidate === k else { return }
+                guard let self, let k, self.candidate === k, !k.handshake.isConfirming else { return }
                 self.fail(k)
             }
         }
@@ -167,11 +181,11 @@ final class PadCable {
         }
     }
 
-    /// The PC's CHALLENGE over the cable: the same key rules as Wi-Fi, minus the first-time question.
+    /// The PC's CHALLENGE over the cable: the same key rules as Wi-Fi, the first-time question included.
     private func challenged(_ json: Data, _ k: Candidate) -> Bool {
         guard let c = PadChallenge.parse(json) else { fail(k); return false }
-        let decision = k.handshake.challenge(received: c.key, remembered: PadPins.key(for: c.name),
-                                             accepted: acceptKey, byCable: true)
+        if let refusedKey, refusedKey == c.key { fail(k); return false }   // the presenter said no to this one
+        let decision = k.handshake.challenge(received: c.key, remembered: PadPins.key(for: c.name), accepted: acceptKey)
         guard let decision else { fail(k); return false }
         if decision == .warnDifferent {
             // not the PC paired with: stop, sending nothing more
@@ -181,8 +195,43 @@ final class PadCable {
         }
         guard let proof = k.link.proof(c, code: "") else { fail(k); return false }
         k.pending = (c.name, c.key)
+        if decision == .askToConfirm {
+            // the first time with this PC: nothing more goes until the presenter says its check matches
+            k.heldProof = proof
+            client?.cableAsks(name: c.name, check: PadCrypto.check(c.key))
+            DispatchQueue.main.asyncAfter(deadline: .now() + PadHandshake.confirmLimit + 0.5) { [weak self, weak k] in
+                Task { @MainActor [weak self, weak k] in
+                    guard let self, let k, self.candidate === k, k.handshake.tick() else { return }
+                    self.fail(k)
+                    self.client?.cableCheckEnded(PadHandshake.tooLongText)
+                }
+            }
+            return true
+        }
         send(proof, on: k)
         return true
+    }
+
+    /// "It matches" for the PC on the cable: the PROOF goes now (unless the presenter took too long).
+    func checkMatches() {
+        guard let k = candidate, k.handshake.isConfirming, let proof = k.heldProof else { return }
+        guard k.handshake.confirm() else {
+            fail(k)
+            client?.cableCheckEnded(PadHandshake.tooLongText)
+            return
+        }
+        k.heldProof = nil
+        send(proof, on: k)
+        deadline(k)
+    }
+
+    /// "It doesn't": closed, nothing sent, and that PC isn't asked about again in this visit.
+    func checkDiffers() {
+        guard let k = candidate, k.handshake.isConfirming else { return }
+        k.handshake.deny()
+        refusedKey = k.pending?.key
+        fail(k)
+        client?.cableCheckEnded(PadHandshake.deniedText)
     }
 
     private func send(_ data: Data, on k: Candidate) { k.c.send(content: data, completion: .idempotent) }

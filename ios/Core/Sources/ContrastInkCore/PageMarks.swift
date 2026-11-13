@@ -6,7 +6,7 @@ public struct PageMarks<Drawing: Equatable> {
     public let empty: Drawing
     public let historyLimit: Int
     var pages: [Int: Page] = [:]
-    public private(set) var current = 0
+    public internal(set) var current = 0
 
     public init(empty: Drawing, historyLimit: Int = 100) {
         self.empty = empty

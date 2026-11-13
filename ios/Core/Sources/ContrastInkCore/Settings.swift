@@ -22,6 +22,7 @@ public struct Settings: Codable, Equatable, Sendable {
     public var opacity: Double = 1
     public static let minOpacity = 0.1
     /// Off: only Apple Pencil draws, a finger swipes slides (like the Windows app, where a finger always clicks).
+    /// On by default on an iPhone, which has no Pencil (see `defaults(isPhone:)`).
     public var fingerDraws = false
     /// Double-tap on Apple Pencil (2nd generation, Pro) undoes the last mark.
     public var pencilTapUndoes = true
@@ -29,8 +30,18 @@ public struct Settings: Codable, Equatable, Sendable {
     public var twoFingerTapUndoes = true
     /// Hovering Apple Pencil (or a mouse / trackpad pointer) over a toolbar button shows its name ("Pen (P)").
     public var showButtonNames = true
+    /// Also put each recording in Photos. Off by default: with iCloud Photos on, a lecture with patient images would
+    /// be uploaded. The video is always kept in Files.
+    public var alsoSaveToPhotos = false
 
     public init() {}
+
+    /// A new install's settings: on an iPhone (no Apple Pencil) a finger draws.
+    public static func defaults(isPhone: Bool) -> Settings {
+        var s = Settings()
+        s.fingerDraws = isPhone
+        return s
+    }
 
     /// Keeps every value in range, so an old or damaged saved copy can't break the app.
     public func cleaned() -> Settings {
@@ -42,18 +53,20 @@ public struct Settings: Codable, Equatable, Sendable {
     }
 
     /// Reads a saved copy. Anything missing keeps its default; anything unreadable gives the defaults.
-    public static func decode(_ json: Data?) -> Settings {
-        guard let json, let s = try? JSONDecoderLenient.decode(json) else { return Settings() }
+    public static func decode(_ json: Data?, isPhone: Bool = false) -> Settings {
+        guard let json, let s = try? JSONDecoderLenient.decode(json, over: defaults(isPhone: isPhone)) else {
+            return defaults(isPhone: isPhone)
+        }
         return s.cleaned()
     }
 }
 
 /// Decodes Settings while tolerating keys a newer or older version added or dropped.
 enum JSONDecoderLenient {
-    static func decode(_ data: Data) throws -> Settings {
+    static func decode(_ data: Data, over base: Settings) throws -> Settings {
         let any = try JSONSerialization.jsonObject(with: data)
         guard let d = any as? [String: Any] else { throw CocoaError(.coderReadCorrupt) }
-        var s = Settings()
+        var s = base
         if let v = d["tool"] as? String, let t = Tool(rawValue: v) { s.tool = t }
         if let v = d["color"] as? Int { s.color = v }
         if let v = d["width"] as? Int { s.width = v }
@@ -63,6 +76,7 @@ enum JSONDecoderLenient {
         if let v = d["pencilTapUndoes"] as? Bool { s.pencilTapUndoes = v }
         if let v = d["twoFingerTapUndoes"] as? Bool { s.twoFingerTapUndoes = v }
         if let v = d["showButtonNames"] as? Bool { s.showButtonNames = v }
+        if let v = d["alsoSaveToPhotos"] as? Bool { s.alsoSaveToPhotos = v }
         return s
     }
 }

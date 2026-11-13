@@ -8,8 +8,14 @@ struct ContrastInkApp: App {
     @StateObject private var recorder = LectureRecorder()
 
     init() {
+        let args = ProcessInfo.processInfo.arguments
+        #if DEBUG
+        // UI tests that start from no saved marks, or an empty library
+        if args.contains("-resetMarks") { SavedMarks.removeAll() }
+        if args.contains("-resetLibrary") { try? FileManager.default.removeItem(at: Library.folder) }
+        #endif
         // the app's own UI test: a sample deck, and a finger that draws (the simulator has no Apple Pencil)
-        if ProcessInfo.processInfo.arguments.contains("-uitest") {
+        if args.contains("-uitest") {
             var s = Lecture.shared.settings
             s.fingerDraws = true; s.tool = .pen; s.color = 0; s.width = 2; s.fadingInk = false
             Lecture.shared.settings = s
@@ -23,6 +29,22 @@ struct ContrastInkApp: App {
                 .environmentObject(lecture)
                 .environmentObject(recorder)
                 .preferredColorScheme(.dark)
+        }
+    }
+}
+
+/// The iPad's own screen leaving (Home, another app, the lock button). With a projector connected the app as a
+/// whole can stay in the foreground (the projector's scene still shows), so the main scene's own notice is listened
+/// to as well as the app's; the handler may be called twice for one leaving.
+enum MainScreen {
+    static func onLeave(_ handler: @escaping @MainActor () -> Void) {
+        let center = NotificationCenter.default
+        center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+            Task { @MainActor in handler() }
+        }
+        center.addObserver(forName: UIScene.didEnterBackgroundNotification, object: nil, queue: .main) { note in
+            guard let scene = note.object as? UIScene, scene.session.role == .windowApplication else { return }
+            Task { @MainActor in handler() }
         }
     }
 }

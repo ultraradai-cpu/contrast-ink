@@ -79,20 +79,23 @@ final class PadRouteTests: XCTestCase {
         XCTAssertEqual(r.cableDropped(), .connectScreen, "after a disconnect no code is held")
     }
 
-    /// Over the cable the first-time check is skipped, but a different remembered key still warns.
-    func testTheCablesHandshake() {
+    /// Over the cable the first-time check is shown too (docs/pad-protocol.md, "USB (phase 2)": any app on the iPad
+    /// can reach its loopback door), a remembered key goes on at once, and a different one warns.
+    func testTheCablesHandshakeAsksTheFirstTime() {
         let a = Data([4] + [UInt8](repeating: 1, count: 64))
         let b = Data([4] + [UInt8](repeating: 2, count: 64))
-        XCTAssertEqual(PadHandshake.decide(received: a, remembered: nil, byCable: true), .proceed, "first time: no question")
-        XCTAssertEqual(PadHandshake.decide(received: a, remembered: a, byCable: true), .proceed)
-        XCTAssertEqual(PadHandshake.decide(received: b, remembered: a, byCable: true), .warnDifferent, "another key: warn")
-        XCTAssertEqual(PadHandshake.decide(received: b, remembered: a, accepted: b, byCable: true), .proceed, "Connect anyway")
         var h = PadHandshake()
-        XCTAssertEqual(h.challenge(received: a, remembered: nil, byCable: true), .proceed)
-        XCTAssertEqual(h.step, .proof, "the PROOF goes at once")
+        XCTAssertEqual(h.challenge(received: a, remembered: nil), .askToConfirm, "first time over the cable: ask")
+        XCTAssertTrue(h.isConfirming, "no PROOF until the presenter says it matches")
+        XCTAssertFalse(h.welcomed())
+        XCTAssertTrue(h.confirm())
         XCTAssertTrue(h.welcomed())
+        var same = PadHandshake()
+        XCTAssertEqual(same.challenge(received: a, remembered: a), .proceed, "remembered: at once")
         var w = PadHandshake()
-        XCTAssertEqual(w.challenge(received: b, remembered: a, byCable: true), .warnDifferent)
+        XCTAssertEqual(w.challenge(received: b, remembered: a), .warnDifferent)
         XCTAssertEqual(w.step, .warned)
+        XCTAssertEqual(PadHandshake.decide(received: b, remembered: a, accepted: b), .askToConfirm,
+                       "Connect anyway over the cable: compared by eye too")
     }
 }

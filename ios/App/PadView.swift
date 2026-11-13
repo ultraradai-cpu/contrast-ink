@@ -57,25 +57,44 @@ struct PadView: View {
 }
 
 /// The first time with a PC: its check, to compare with the PC's screen before anything that could reveal the code
-/// is sent. The same panel on the list of PCs and on the pad (after "Connect anyway" while reconnecting).
+/// is sent. The same panel on the list of PCs and on the pad (after "Connect anyway" while reconnecting), and for a
+/// PC on the USB cable (the cable is not proof on its own).
 struct PadCheckPanel: View {
-    @ObservedObject var client: PadClient
     let name: String
     let check: String
+    var byCable = false
+    let matches: () -> Void
+    let differs: () -> Void
+
+    /// The Wi-Fi PC's check, or the cable PC's when one is waiting (that one first: the PC gives up after 30 s).
+    @MainActor @ViewBuilder static func current(_ client: PadClient) -> some View {
+        if let c = client.cableCheck {
+            PadCheckPanel(name: c.name, check: c.check, byCable: true,
+                          matches: { client.cableCheckMatches() }, differs: { client.cableCheckDiffers() })
+        } else if case .confirming(let name, let check) = client.phase {
+            PadCheckPanel(name: name, check: check, matches: { client.checkMatches() }, differs: { client.checkDiffers() })
+        }
+    }
+
+    @MainActor static func showing(_ client: PadClient) -> Bool {
+        if client.cableCheck != nil { return true }
+        if case .confirming = client.phase { return true }
+        return false
+    }
 
     var body: some View {
         VStack(spacing: 16) {
-            Image(systemName: "checkmark.shield").font(.largeTitle).foregroundStyle(Color.contrastBlue)
-            Text("First time with \(name): does the PC show the PC check \(check)? (⚙ Settings, beside the code)")
+            Image(systemName: byCable ? "cable.connector" : "checkmark.shield").font(.largeTitle).foregroundStyle(Color.contrastBlue)
+            Text("First time with \(name)\(byCable ? " on the USB cable" : ""): does the PC show the PC check \(check)? (⚙ Settings, beside the code)")
                 .font(.title3)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("padFirstTime")
             HStack(spacing: 16) {
-                Button { client.checkDiffers() } label: { Text("It doesn't").frame(minWidth: 120) }
+                Button { differs() } label: { Text("It doesn't").frame(minWidth: 120) }
                     .buttonStyle(.bordered).tint(Color.noticeText)
                     .accessibilityIdentifier("padCheckDiffers")
-                Button { client.checkMatches() } label: { Text("It matches").bold().frame(minWidth: 120) }
+                Button { matches() } label: { Text("It matches").bold().frame(minWidth: 120) }
                     .buttonStyle(.borderedProminent).tint(Color.contrastBlue)
                     .accessibilityIdentifier("padCheckMatches")
             }
@@ -167,7 +186,7 @@ struct PadConnectView: View {
                     Text("The PC's pictures come to this iPad encrypted, and the code never crosses the network. For patient images, a private network or the PC's own hotspot is still the safest. The first time, check that the PC check this iPad shows matches the one under the code on the PC.")
                 }
                 Section {
-                    Label("Or plug this iPad into the PC with its USB cable: the pad opens by itself, no code needed.",
+                    Label("Or plug this iPad into the PC with its USB cable: the pad opens by itself, no code needed (the first time, compare its PC check).",
                           systemImage: "cable.connector")
                         .foregroundStyle(Color.offText.opacity(0.8))
                         .accessibilityIdentifier("padCableHint")
@@ -187,10 +206,10 @@ struct PadConnectView: View {
             }
         }
         .overlay {
-            if case .confirming(let name, let check) = client.phase {
+            if PadCheckPanel.showing(client) {
                 ZStack {
                     Color.black.opacity(0.6).ignoresSafeArea()
-                    PadCheckPanel(client: client, name: name, check: check).padding(16)
+                    PadCheckPanel.current(client).padding(16)
                 }
             }
         }
@@ -277,8 +296,8 @@ struct PadScreen: View {
         }
         .background(Color.black)
         .overlay {
-            if case .confirming(let name, let check) = client.phase {
-                PadCheckPanel(client: client, name: name, check: check)
+            if PadCheckPanel.showing(client) {
+                PadCheckPanel.current(client)
             } else if client.phase != .connected {
                 lostCard
             }

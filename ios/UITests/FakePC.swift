@@ -22,7 +22,7 @@ final class FakePC {
     static let rejectOldTablet = "Please update Contrast Ink on the tablet."
     static let rejectWrongCode = "Wrong code: type the code Contrast Ink shows on the PC (⚙ Settings)."
 
-    /// The spec's test-vector PC key: its PC check is 6FC6-6A90.
+    /// The spec's test-vector PC key: its PC check is 6FC6-6A90-4861-71CA.
     static let vectorKey = try! P256.KeyAgreement.PrivateKey(rawRepresentation: Data(repeating: 0x22, count: 32))
 
     let name: String
@@ -62,8 +62,9 @@ final class FakePC {
     var check: String { Self.check(key.publicKey.x963Representation) }
 
     static func check(_ point: Data) -> String {
-        let h = SHA256.hash(data: point).prefix(4).map { String(format: "%02X", $0) }.joined()
-        return "\(h.prefix(4))-\(h.suffix(4))"
+        // the first 8 bytes of SHA-256, as XXXX-XXXX-XXXX-XXXX (docs/pad-protocol.md, "Version 2", step 1)
+        let h = Array(SHA256.hash(data: point).prefix(8).map { String(format: "%02X", $0) }.joined())
+        return stride(from: 0, to: 16, by: 4).map { String(h[$0..<$0 + 4]) }.joined(separator: "-")
     }
 
     /// Another key (as if Contrast Ink were reinstalled on the PC, or another machine took its name).

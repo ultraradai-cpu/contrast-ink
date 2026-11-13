@@ -42,24 +42,22 @@ public struct PadHandshake: Equatable {
     /// The rule of step 4. `remembered`: the key kept for the name the PC was chosen by (nil the first time).
     /// `session`: the key of the PC that let this tablet in during this visit (a reconnect must find the same).
     /// `accepted`: the key the presenter chose to trust with "Connect anyway" (it is checked by eye again).
-    /// `byCable`: over USB the cable is the proof of being in the room ("USB (phase 2)"): the first time (and after
-    /// "Connect anyway") goes on at once instead of asking, but a different remembered key still warns.
-    public static func decide(received: Data, remembered: Data?, session: Data? = nil, accepted: Data? = nil,
-                              byCable: Bool = false) -> PadKeyDecision {
-        let ask: PadKeyDecision = byCable ? .proceed : .askToConfirm
-        if let accepted, accepted == received { return ask }
+    /// The same over the USB cable ("USB (phase 2)"): any app on the iPad can reach its loopback door, so the cable
+    /// is not proof on its own and the first time with a PC asks there too.
+    public static func decide(received: Data, remembered: Data?, session: Data? = nil, accepted: Data? = nil) -> PadKeyDecision {
+        if let accepted, accepted == received { return .askToConfirm }
         if let session, session != received { return .warnDifferent }
         if let remembered, remembered != received { return .warnDifferent }
-        if session == nil, remembered == nil { return ask }
+        if session == nil, remembered == nil { return .askToConfirm }
         return .proceed
     }
 
     /// The CHALLENGE arrived. `.proceed`: send the PROOF now; `.askToConfirm`: show the check and wait;
     /// `.warnDifferent`: warn and close. Nil when a CHALLENGE isn't expected now (a broken PC: close).
     public mutating func challenge(received: Data, remembered: Data?, session: Data? = nil, accepted: Data? = nil,
-                                   byCable: Bool = false, now: Date = Date()) -> PadKeyDecision? {
+                                   now: Date = Date()) -> PadKeyDecision? {
         guard step == .hello else { return nil }
-        let d = Self.decide(received: received, remembered: remembered, session: session, accepted: accepted, byCable: byCable)
+        let d = Self.decide(received: received, remembered: remembered, session: session, accepted: accepted)
         switch d {
         case .proceed: step = .proof
         case .askToConfirm: step = .confirming(since: now)

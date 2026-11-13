@@ -15,7 +15,7 @@ permissions:
 jobs:
   ios:
     runs-on: macos-15
-    timeout-minutes: 40
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: ios

@@ -30,7 +30,7 @@ targets:
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         NSMicrophoneUsageDescription: Contrast Ink records your voice with the slides when you press record.
-        NSPhotoLibraryAddUsageDescription: Contrast Ink saves your recorded lectures to Photos.
+        NSPhotoLibraryAddUsageDescription: Contrast Ink saves your recorded lectures to Photos when you switch on Also save recordings to Photos.
         # pad mode: finding the PC on the Wi-Fi (Bonjour) and connecting to it
         NSLocalNetworkUsageDescription: Contrast Ink finds and connects to the PC you choose on this network, to use this iPad as its drawing pad.
         NSBonjourServices: [_contrastink._tcp]

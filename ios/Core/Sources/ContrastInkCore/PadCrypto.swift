@@ -11,12 +11,9 @@ public enum PadCrypto {
     /// What PROOF carries, sealed: a COMMAND the PC opens to see the tablet knows the code.
     public static let proofText = "hello"
 
-    /// The PC check: the first 4 bytes of SHA-256 of the PC's 65-byte public key, as XXXX-XXXX. The PC shows it next
-    /// to the code, so the presenter can see the iPad is talking to that PC and not one pretending to be it.
-    public static func check(_ publicKey: Data) -> String {
-        let h = Array(SHA256.hash(data: publicKey)).prefix(4).map { String(format: "%02X", $0) }.joined()
-        return "\(h.prefix(4))-\(h.suffix(4))"
-    }
+    /// The PC check: the first 8 bytes of SHA-256 of the PC's 65-byte public key, as XXXX-XXXX-XXXX-XXXX. The PC
+    /// shows it next to the code, so the presenter can see the iPad is talking to that PC and not one pretending to be it.
+    public static func check(_ publicKey: Data) -> String { PadCheck.format(hash: Data(SHA256.hash(data: publicKey))) }
 
     /// The two keys of a connection: tablet → PC, PC → tablet. The same on both sides (ECDH is symmetric).
     /// Nil when `other` isn't a point on the curve.

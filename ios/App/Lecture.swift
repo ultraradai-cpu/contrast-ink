@@ -15,6 +15,10 @@ final class Lecture: ObservableObject {
     /// The marks on the slide showing now. Changes whenever a mark is added, removed, undone or fades.
     @Published private(set) var drawing = PKDrawing()
     @Published var settings: Settings { didSet { saveSettings(); applyTool?() } }
+    /// The deck opened with marks saved from an earlier time (the presenter may clear them).
+    @Published private(set) var restoredMarks = false
+    /// Something to tell the presenter on the slides' screen (pictures that couldn't be read), or nil.
+    @Published var notice: String?
 
     /// Called when the tool, colour or width changes (the stage picks up the new pen).
     var applyTool: (() -> Void)?
@@ -28,9 +32,14 @@ final class Lecture: ObservableObject {
     private var fadeLink: CADisplayLink?
     /// Marks that belong to slides other than this one: PencilKit can hand one back with the next stroke.
     private var otherSlides: Set<Date> = []
+    /// The slide the pen (or a shape's drag) went down on: the stroke is that slide's even if the slide changes first.
+    private var penPage = PenPage()
 
     private init() {
-        settings = Settings.decode(UserDefaults.standard.data(forKey: "settings"))
+        settings = Settings.decode(UserDefaults.standard.data(forKey: "settings"),
+                                   isPhone: UIDevice.current.userInterfaceIdiom == .phone)
+        // leaving the screen (Home, another app; the iPad's own screen going while a projector stays on): keep the marks
+        MainScreen.onLeave { [weak self] in self?.saveMarks(); SavedMarks.flush() }
     }
 
     private func saveSettings() {
@@ -40,22 +49,70 @@ final class Lecture: ObservableObject {
     // MARK: deck and slides
 
     func open(_ deck: Deck) {
+        if self.deck != nil { saveMarks() }
         marks.reset()
         fading = [:]; faded = []
+        penPage = PenPage()
         self.deck = deck
         page = 0
         otherSlides = []
+        // the marks left on this deck last time come back
+        var restored: [Int: PKDrawing] = [:]
+        if let key = deck.key {
+            for (p, data) in SavedMarks.load(key: key) {
+                if let d = try? PKDrawing(data: data), !d.strokes.isEmpty { restored[p] = d }
+            }
+        }
+        if let last = restored.keys.max() { deck.growWhiteboard(to: last + 1) }
+        restored = restored.filter { $0.key < deck.pageCount }
+        marks.restore(restored)
+        restoredMarks = !restored.isEmpty
         drawing = marks.drawing
         UIApplication.shared.isIdleTimerDisabled = true   // the screen must not dim mid-lecture
     }
 
-    /// Closing the deck ends the lecture: its marks go with it (as when a slide show ends on Windows).
+    /// Closing the deck ends the lecture; its marks are kept for the next time it is opened.
     func close() {
+        saveMarks()
         deck = nil
         marks.reset()
         fading = [:]; faded = []
+        restoredMarks = false
+        notice = nil
         drawing = PKDrawing()
         UIApplication.shared.isIdleTimerDisabled = false
+    }
+
+    /// Any slide has a mark (closing asks first).
+    var hasMarks: Bool { marks.hasMarks }
+
+    /// Every slide's marks to disk (on a slide change, on leaving the screen, on closing). Fading marks aren't kept:
+    /// they were going anyway.
+    func saveMarks() {
+        guard let key = deck?.key else { return }
+        var pages: [Int: Data] = [:]
+        for (p, d) in marks.savedPages {
+            let kept = d.strokes.filter { fading[$0.path.creationDate] == nil }
+            if !kept.isEmpty { pages[p] = PKDrawing(strokes: kept).dataRepresentation() }
+        }
+        SavedMarks.save(pages, key: key)
+    }
+
+    /// "Keep them": the note about restored marks goes.
+    func dismissRestored() { restoredMarks = false }
+
+    /// "Clear saved marks": every slide clean, and nothing kept on disk.
+    func clearSavedMarks() {
+        guard let deck else { return }
+        if let key = deck.key { SavedMarks.remove(key: key) }
+        let leaving = marks.drawing.strokes.map(\.path.creationDate)
+        otherSlides.formUnion(leaving)
+        let p = page
+        marks.reset()
+        marks.show(page: p)
+        fading = [:]
+        restoredMarks = false
+        drawing = marks.drawing
     }
 
     var pageCount: Int { deck?.pageCount ?? 0 }
@@ -87,41 +144,63 @@ final class Lecture: ObservableObject {
         page = p
         drawing = marks.drawing
         slideChanged?(p)
+        saveMarks()
     }
 
     // MARK: marks
+
+    /// The pen touched the slide (or a shape's drag began): what it draws belongs to this slide.
+    func beginStroke() { penPage.begin(on: page) }
+
+    /// A shape's drag ended without a shape.
+    func cancelStroke() { _ = penPage.finish(current: page) }
 
     /// The presenter finished a stroke (`new` is the canvas's drawing), or erased marks (`erasing`).
     ///
     /// The slide's marks are the app's, not the canvas's: the canvas can be behind (fading went on while the pen was
     /// down) or hand back marks that aren't this slide's (another slide's, or ones that already faded away). So only
-    /// strokes that are really new are taken from it, and only the eraser can take marks away.
+    /// strokes that are really new are taken from it, and only the eraser can take marks away (InkMerge). A stroke
+    /// begun before the slide changed (a clicker pressed while the pen was down) goes to the slide it was begun on.
     func canvasChanged(_ new: PKDrawing, erasing: Bool = false) {
-        let current = marks.drawing.strokes
-        let known = Set(current.map(\.path.creationDate))
-        let onCanvas = Set(new.strokes.map(\.path.creationDate))
-        var strokes = erasing ? current.filter { onCanvas.contains($0.path.creationDate) } : current
-        let added = new.strokes.filter {
-            let d = $0.path.creationDate
-            return !known.contains(d) && !faded.contains(d) && !otherSlides.contains(d)
+        let target = penPage.finish(current: page)
+        let ignore = faded.union(otherSlides)
+        if target != page, target >= 0, target < pageCount {
+            let m = InkMerge.merge(slide: marks.drawing(on: target).strokes, canvas: new.strokes, erasing: erasing,
+                                   ignore: ignore, id: { $0.path.creationDate })
+            let ids = m.added.map(\.path.creationDate)
+            otherSlides.formUnion(ids)   // never this slide's, whatever the canvas hands back later
+            if settings.fadingInk && !Lecture.shiftHeld {
+                // a fading mark on a slide no longer showing was going anyway (as on any slide change)
+                faded.formUnion(ids)
+                let kept = m.strokes.filter { !ids.contains($0.path.creationDate) }
+                if kept.count != marks.drawing(on: target).strokes.count { marks.commit(PKDrawing(strokes: kept), on: target) }
+            } else {
+                marks.commit(PKDrawing(strokes: m.strokes), on: target)
+            }
+            drawing = marks.drawing   // the canvas shows this slide's marks again when the pen lifts
+            saveMarks()
+            return
         }
-        if settings.fadingInk && !Lecture.shiftHeld && !added.isEmpty {
-            for s in added { fading[s.path.creationDate] = (Date(), s.ink.color) }
+        let m = InkMerge.merge(slide: marks.drawing.strokes, canvas: new.strokes, erasing: erasing,
+                               ignore: ignore, id: { $0.path.creationDate })
+        if settings.fadingInk && !Lecture.shiftHeld && !m.added.isEmpty {
+            for s in m.added { fading[s.path.creationDate] = (Date(), s.ink.color) }
             startFading()
         }
-        strokes += added
-        marks.commit(PKDrawing(strokes: strokes))
+        marks.commit(PKDrawing(strokes: m.strokes))
         drawing = marks.drawing   // also puts the canvas right when it showed something else
     }
 
-    /// An arrow or oval was drawn: one stroke, like any mark.
+    /// An arrow or oval was drawn: one stroke, like any mark, on the slide its drag began on.
     func add(shape points: [Pt]) {
-        guard points.count > 1 else { return }
+        guard points.count > 1 else { cancelStroke(); return }
         let tool = settings.tool
         let width = CGFloat(Settings.widths[settings.width])
         let stroke = Lecture.stroke(points, color: tool == .highlighter ? inkColor : markColor, width: width, marker: tool == .highlighter)
-        var d = marks.drawing
+        let target = penPage.finish(current: page)
+        var d = marks.drawing(on: target)
         d.strokes.append(stroke)
+        penPage.begin(on: target)
         canvasChanged(d)
     }
 
