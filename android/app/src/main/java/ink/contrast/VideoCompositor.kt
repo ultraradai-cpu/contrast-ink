@@ -79,7 +79,8 @@ class VideoCompositor(
                 if (v) {
                     // back in sight: the picture held meanwhile may be black (Android 14). No marks, and no new frame
                     // (the video holds its last one), until Android sends a picture of the app that isn't black
-                    awaitingPicture = true
+                    awaitingPicture = false   // MUTATION: marks straight back over whatever is held
+                    if (haveFrame && mode == Mode.SINGLE_APP) safely { draw(look = false) }
                     pictureAsks = 0
                     gl.removeCallbacks(pictureCheck)
                     gl.postDelayed(pictureCheck, PICTURE_WAIT_MS)
