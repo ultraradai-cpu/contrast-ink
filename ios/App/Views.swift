@@ -327,7 +327,7 @@ struct KeyboardShortcuts: View {
         case "up": return .upArrow
         case "down": return .downArrow
         case "space": return .space
-        case "pageDown", "pageUp": return nil   // the app's own key commands (AppDelegate), ahead of scrolling
+        case "pageDown", "pageUp": return nil   // the stage takes them itself (Stage.pressesBegan)
         case "return": return .return
         default: return key.count == 1 ? KeyEquivalent(Character(key)) : nil
         }

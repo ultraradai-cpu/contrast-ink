@@ -107,9 +107,39 @@ final class Stage: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate, UI
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    // MARK: Page Up / Page Down
+
+    // A presenter clicker sends Page Down / Page Up. iPadOS keeps those keys for scrolling and doesn't hand them to
+    // SwiftUI's keyboard shortcuts, so the stage takes them first, as the first responder; every other key goes on
+    // to the shortcuts (KeyboardShortcuts).
+    override var canBecomeFirstResponder: Bool { true }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil { DispatchQueue.main.async { [weak self] in _ = self?.becomeFirstResponder() } }
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        var rest = Set<UIPress>()
+        for p in presses {
+            switch p.key?.keyCode {
+            case .keyboardPageDown?: lecture.next()
+            case .keyboardPageUp?: lecture.previous()
+            default: rest.insert(p)
+            }
+        }
+        if !rest.isEmpty { super.pressesBegan(rest, with: event) }
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let rest = presses.filter { $0.key?.keyCode != .keyboardPageDown && $0.key?.keyCode != .keyboardPageUp }
+        if !rest.isEmpty { super.pressesEnded(rest, with: event) }
+    }
+
     // MARK: showing the slide and its marks
 
     func refresh() {
+        if window != nil, !isFirstResponder { becomeFirstResponder() }
         guard let deck = lecture.deck else { return }
         if lecture.page != shownPage {
             shownPage = lecture.page

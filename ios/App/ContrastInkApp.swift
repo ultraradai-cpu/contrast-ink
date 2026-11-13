@@ -50,21 +50,7 @@ enum MainScreen {
 }
 
 /// A projector or TV (HDMI adapter or AirPlay) gets its own clean picture: the slide and the ink, no toolbar.
-final class AppDelegate: UIResponder, UIApplicationDelegate {
-    /// Page Down / Page Up (what most presenter clickers send): key commands that come before the system's own use
-    /// of those keys (scrolling), which SwiftUI's keyboard shortcuts don't.
-    override func buildMenu(with builder: UIMenuBuilder) {
-        super.buildMenu(with: builder)
-        guard builder.system == .main else { return }
-        let next = UIKeyCommand(title: "Next Slide", action: #selector(nextSlide), input: UIKeyCommand.inputPageDown)
-        let previous = UIKeyCommand(title: "Previous Slide", action: #selector(previousSlide), input: UIKeyCommand.inputPageUp)
-        for k in [next, previous] { k.wantsPriorityOverSystemBehavior = true }
-        builder.insertChild(UIMenu(title: "", options: .displayInline, children: [next, previous]), atStartOfMenu: .view)
-    }
-
-    @objc func nextSlide() { Task { @MainActor in Lecture.shared.next() } }
-    @objc func previousSlide() { Task { @MainActor in Lecture.shared.previous() } }
-
+final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, configurationForConnecting session: UISceneSession,
                      options: UIScene.ConnectionOptions) -> UISceneConfiguration {
         if session.role == .windowExternalDisplayNonInteractive {
