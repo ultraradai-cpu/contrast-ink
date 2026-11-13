@@ -46,7 +46,7 @@ jobs:
         env:
           CONTRAST_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         with:
-          api-level: 34
+          api-level: 35
           target: google_apis
           arch: x86_64
           disable-animations: true

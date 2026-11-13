@@ -61,6 +61,8 @@ class ContrastInkTest {
     }
 
     @After fun tearDown() {
+        // a test that failed while Android's recording question or app picker was up: close it for the next test
+        if (InkService.running?.recorder?.active != true) repeat(2) { device.pressBack(); Thread.sleep(300) }
         inst.runOnMainSync { InkService.running?.quit() }
     }
 
@@ -195,7 +197,8 @@ class ContrastInkTest {
     private fun answerRecordingQuestion(singleApp: Boolean, shotName: String) {
         val want = if (singleApp) oneApp else entireScreen
         val choice = device.wait(Until.findObject(By.text(Pattern.compile("${oneApp.pattern()}|${entireScreen.pattern().removePrefix("(?i)")}"))), 5000)
-        shot("$shotName a: Android asks")
+        shot("$shotName a, Android asks")
+        if (choice == null) runCatching { device.dumpWindowHierarchy(File(shots, "$shotName a, Android asks.xml")) }
         if (singleApp) assertNotNull("Android offers \"A single app\" (Android 14+)", choice)
         if (choice != null && !want.matcher(choice.text).matches()) {
             choice.click()   // opens the list of the two
@@ -218,8 +221,8 @@ class ContrastInkTest {
         // "\b": not the stand-in's own text "A slide in another app", which may show behind the picker
         val label = Pattern.compile("(?i).*\\b(other app|ink\\.contrast\\.test)\\b.*")
         val app = device.wait(Until.findObject(By.desc(label)), 8000) ?: device.findObject(By.text(label))
-        shot("$shotName b: Android's app picker")
-        if (app == null) runCatching { device.dumpWindowHierarchy(File(shots, "$shotName b: app picker.xml")) }
+        shot("$shotName b, app picker")
+        if (app == null) runCatching { device.dumpWindowHierarchy(File(shots, "$shotName b, app picker.xml")) }
         assertNotNull("Android's app picker lists the stand-in \"Other app\"", app)
         app!!.click()
     }
