@@ -59,11 +59,21 @@ enum PadIdentity {
 
 /// Pictures of the screen for the tablet, at most 1600 px wide, as JPEG: ScreenCaptureKit on macOS 14 and later
 /// (leaving out the toolbar), CGDisplayCreateImage on macOS 13. Needs the Screen Recording permission: without it
-/// macOS gives only the desktop picture.
+/// macOS 14 and later give no picture at all (13 gives only the desktop picture). A failure is logged once per
+/// tablet connection, not with every try (twice a second).
 final class ScreenGrabber {
     private let queue = DispatchQueue(label: "screen grabber")
     private var content: AnyObject?   // SCShareableContent, refreshed every few seconds
     private var contentAt = Date.distantPast
+    private var said = OnceEach()   // the queue's only
+
+    /// A new tablet connection: a failure is logged again (once).
+    func newConnection() { queue.async { self.said.reset() } }
+
+    /// Logs a failure the first time in this connection. On `queue`.
+    private func note(_ what: String) {
+        if said.first(what) { Log.write("tablet picture: \(what) (said once per tablet connection)") }
+    }
 
     struct Target { var display: CGDirectDisplayID; var pixelWidth: Int; var pixelHeight: Int; var exclude: [Int] }
 
@@ -81,7 +91,7 @@ final class ScreenGrabber {
                 config.showsCursor = false
                 config.scalesToFit = true
                 SCScreenshotManager.captureImage(contentFilter: filter, configuration: config) { image, error in
-                    if let error { self.queue.async { self.content = nil }; Log.write("tablet picture: \(error.localizedDescription)") }
+                    if let error { self.queue.async { self.content = nil; self.note(error.localizedDescription) } }
                     done(image.flatMap { Self.encode($0) })
                 }
             }
@@ -101,7 +111,7 @@ final class ScreenGrabber {
             SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { c, error in
                 self.queue.async {
                     if let c { self.content = c; self.contentAt = Date() }
-                    else if let error { Log.write("tablet picture: \(error.localizedDescription)") }
+                    else if let error { self.note(error.localizedDescription) }
                     use(c)
                 }
             }
@@ -171,6 +181,9 @@ final class PadHost {
             self.grabber.jpeg(t, done)
         }
     }
+
+    /// A tablet connected: a failing picture is logged again, once.
+    func newConnection() { grabber.newConnection() }
 
     /// The screen the drawing layer covers (its display, its size in pixels) and the windows to leave out.
     func setTarget(_ t: ScreenGrabber.Target) { lock.lock(); target = t; lock.unlock() }

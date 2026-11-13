@@ -9,16 +9,21 @@ public struct MacSettings: Codable, Equatable, Sendable {
     public var fadingInk = false
     /// How solid new pen, arrow and circle marks are: 1 = solid, down to 0.1 (the highlighter keeps its own look).
     public var opacity: Double = 1
-    /// Which screen the drawing layer covers (index into the Mac's screens).
+    /// Which screen the drawing layer covers (index into the Mac's screens): used only until a screen is chosen by
+    /// its ID (an older saved copy), and kept in range as screens come and go.
     public var screen = 0
+    /// The chosen screen's ID (its display UUID): the layer covers it whenever it is connected, and goes back to it
+    /// when it returns after a dropout (a projector's cable). Nil until a screen is chosen.
+    public var screenID: String?
     /// Where the toolbar was left (its top-left corner, in screen coordinates); nil until it is first dragged.
     public var toolbarX: Double?
     public var toolbarY: Double?
     public var toolbarCollapsed = false
     /// Resting the pointer on a toolbar button shows its name under the buttons.
     public var showButtonNames = true
-    /// Holding Control (on its own) switches drawing on while it is held.
-    public var holdControlToDraw = true
+    /// Holding Control (on its own, ~300 ms with no click) switches drawing on while it is held. Off by default on
+    /// the Mac: Control-click is the Mac's right-click, and Control-drag pans or windows in Horos and OsiriX.
+    public var holdControlToDraw = false
     /// While drawing, Z alone undoes (⌘Z always does).
     public var undoWithZ = true
     /// While drawing, a right-click undoes the last mark.
@@ -28,11 +33,27 @@ public struct MacSettings: Codable, Equatable, Sendable {
     /// A tablet (Android or iPad) may connect and be used as a pad that draws here.
     public var tabletPad = false
 
+    /// The saved copy's version: 2 since Hold Control became off by default (a version-1 copy saved it on without the
+    /// presenter choosing it, so it is read as off).
+    public static let version = 2
+
     public init() {}
 
     private enum K: String, CodingKey {
-        case tool, color, width, fadingInk, opacity, screen, toolbarX, toolbarY, toolbarCollapsed, showButtonNames
-        case holdControlToDraw, undoWithZ, undoWithRightClick, penEraserEnd, tabletPad
+        case tool, color, width, fadingInk, opacity, screen, screenID, toolbarX, toolbarY, toolbarCollapsed, showButtonNames
+        case holdControlToDraw, undoWithZ, undoWithRightClick, penEraserEnd, tabletPad, version
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: K.self)
+        try c.encode(tool.rawValue, forKey: .tool); try c.encode(color, forKey: .color); try c.encode(width, forKey: .width)
+        try c.encode(fadingInk, forKey: .fadingInk); try c.encode(opacity, forKey: .opacity); try c.encode(screen, forKey: .screen)
+        try c.encodeIfPresent(screenID, forKey: .screenID)
+        try c.encodeIfPresent(toolbarX, forKey: .toolbarX); try c.encodeIfPresent(toolbarY, forKey: .toolbarY)
+        try c.encode(toolbarCollapsed, forKey: .toolbarCollapsed); try c.encode(showButtonNames, forKey: .showButtonNames)
+        try c.encode(holdControlToDraw, forKey: .holdControlToDraw); try c.encode(undoWithZ, forKey: .undoWithZ)
+        try c.encode(undoWithRightClick, forKey: .undoWithRightClick); try c.encode(penEraserEnd, forKey: .penEraserEnd)
+        try c.encode(tabletPad, forKey: .tabletPad); try c.encode(Self.version, forKey: .version)
     }
 
     /// Anything missing or unreadable keeps its default (an older or newer saved copy still loads).
@@ -43,10 +64,13 @@ public struct MacSettings: Codable, Equatable, Sendable {
         tool = (try? c.decodeIfPresent(String.self, forKey: .tool)).flatMap { $0 }.flatMap(Tool.init(rawValue:)) ?? d.tool
         color = v(.color, d.color); width = v(.width, d.width); fadingInk = v(.fadingInk, d.fadingInk)
         opacity = v(.opacity, d.opacity); screen = v(.screen, d.screen)
+        screenID = (try? c.decodeIfPresent(String.self, forKey: .screenID)).flatMap { $0 }.flatMap { $0.isEmpty ? nil : $0 }
         toolbarX = (try? c.decodeIfPresent(Double.self, forKey: .toolbarX)).flatMap { $0 }
         toolbarY = (try? c.decodeIfPresent(Double.self, forKey: .toolbarY)).flatMap { $0 }
         toolbarCollapsed = v(.toolbarCollapsed, d.toolbarCollapsed); showButtonNames = v(.showButtonNames, d.showButtonNames)
-        holdControlToDraw = v(.holdControlToDraw, d.holdControlToDraw); undoWithZ = v(.undoWithZ, d.undoWithZ)
+        // a version-1 copy has Hold Control on because it was the default then, not because it was chosen
+        holdControlToDraw = v(.version, 1) >= 2 ? v(.holdControlToDraw, d.holdControlToDraw) : d.holdControlToDraw
+        undoWithZ = v(.undoWithZ, d.undoWithZ)
         undoWithRightClick = v(.undoWithRightClick, d.undoWithRightClick); penEraserEnd = v(.penEraserEnd, d.penEraserEnd)
         tabletPad = v(.tabletPad, d.tabletPad)
     }

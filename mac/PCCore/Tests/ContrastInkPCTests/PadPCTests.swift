@@ -109,22 +109,65 @@ final class PadPCTests: XCTestCase {
     func testGuard() {
         var g = PadGuard()
         let t0 = Date(timeIntervalSince1970: 1000)
-        for _ in 0..<4 { XCTAssertFalse(g.wrong(t0)) }
-        XCTAssertFalse(g.locked(t0))
-        XCTAssertFalse(g.wrong(t0))   // the fifth in a row
-        XCTAssertTrue(g.locked(t0))
-        XCTAssertTrue(g.locked(t0.addingTimeInterval(29)))
-        XCTAssertFalse(g.locked(t0.addingTimeInterval(30)))
-        g.right()
+        let a = "192.168.1.50"
+        for _ in 0..<4 { XCTAssertFalse(g.wrong(a, t0)) }
+        XCTAssertFalse(g.locked(a, t0))
+        XCTAssertFalse(g.wrong(a, t0))   // the fifth in a row from this address
+        XCTAssertTrue(g.locked(a, t0))
+        XCTAssertTrue(g.locked(a, t0.addingTimeInterval(29)))
+        XCTAssertFalse(g.locked(a, t0.addingTimeInterval(30)))
+        g.right(a)
         var newCode = false
-        for i in 0..<15 { if g.wrong(t0.addingTimeInterval(100 + Double(i) * 40)) { newCode = true } }
+        for i in 0..<15 { if g.wrong("10.0.0.\(i)", t0.addingTimeInterval(100 + Double(i) * 40)) { newCode = true } }
         XCTAssertTrue(newCode, "twenty wrong in all make a new code")
         // a right code in between doesn't reset the count towards a new code, only the run
         var h = PadGuard()
-        for _ in 0..<4 { _ = h.wrong(t0) }
-        h.right()
-        XCTAssertFalse(h.wrong(t0))
-        XCTAssertFalse(h.locked(t0))
+        for _ in 0..<4 { _ = h.wrong(a, t0) }
+        h.right(a)
+        XCTAssertFalse(h.wrong(a, t0))
+        XCTAssertFalse(h.locked(a, t0))
+    }
+
+    /// Wrong codes are counted per address: a stranger guessing can't lock the presenter's own tablet out.
+    func testGuardCountsPerAddress() {
+        var g = PadGuard()
+        let t0 = Date(timeIntervalSince1970: 1000)
+        for _ in 0..<PadGuard.inARow { _ = g.wrong("10.0.0.66", t0) }
+        XCTAssertTrue(g.locked("10.0.0.66", t0), "the guessing address is locked out")
+        XCTAssertFalse(g.locked("10.0.0.20", t0), "the presenter's tablet, at another address, is not")
+        // four from each of three addresses (twelve in a row from all): nobody else locked yet
+        var h = PadGuard()
+        for a in ["a", "b", "c"] { for _ in 0..<4 { _ = h.wrong(a, t0) } }
+        XCTAssertFalse(h.locked("a", t0))
+        XCTAssertFalse(h.locked("presenter", t0))
+        // the backstop: fifteen in a row from all addresses lock everyone out for 30 s
+        for a in ["d", "e", "f"] { _ = h.wrong(a, t0) }
+        XCTAssertTrue(h.locked("presenter", t0), "fifteen in a row from all addresses lock everyone")
+        XCTAssertTrue(h.locked("presenter", t0.addingTimeInterval(29)))
+        XCTAssertFalse(h.locked("presenter", t0.addingTimeInterval(30)))
+        // a right code breaks the run of the backstop
+        var r = PadGuard()
+        for i in 0..<14 { _ = r.wrong("x\(i % 3)", t0) }
+        r.right("presenter")
+        _ = r.wrong("x0", t0)
+        XCTAssertFalse(r.locked("presenter", t0))
+        // twenty in all from many addresses still make a new code
+        var n = PadGuard(lockout: 0)
+        var made = false
+        for i in 0..<PadGuard.beforeNewCode { if n.wrong("10.1.0.\(i)", t0) { made = true } }
+        XCTAssertTrue(made)
+        // a flood of addresses is not all remembered
+        var m = PadGuard(lockout: 0)
+        for i in 0..<1000 { _ = m.wrong("10.2.\(i / 256).\(i % 256)", t0.addingTimeInterval(Double(i))) }
+        XCTAssertLessThanOrEqual(m.addressCount, PadGuard.maxAddresses)
+    }
+
+    /// The 16-digit PC check (docs/pad-protocol.md): the first 8 bytes of SHA-256, XXXX-XXXX-XXXX-XXXX.
+    func testPcCheckIsSixteenDigits() {
+        // SHA-256 of the spec's PC public key begins 6F C6 6A 90 48 61 71 CA (asserted against CryptoKit on the Mac)
+        let hash: [UInt8] = [0x6F, 0xC6, 0x6A, 0x90, 0x48, 0x61, 0x71, 0xCA, 0x01, 0x02]
+        XCTAssertEqual(PadCheck.text(hash: hash), "6FC6-6A90-4861-71CA")
+        XCTAssertNil(PadCheck.text(hash: Array(hash.prefix(4))))
     }
 
     func testCodesAndAddresses() {

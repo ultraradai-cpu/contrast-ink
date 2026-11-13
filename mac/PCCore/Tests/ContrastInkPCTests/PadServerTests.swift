@@ -266,7 +266,7 @@ final class PadServerTests: XCTestCase {
         XCTAssertTrue(t.waitClosed())
     }
 
-    func testFiveWrongCodesLockEveryoneOut() throws {
+    func testFiveWrongCodesLockThatAddressOut() throws {
         for _ in 0..<5 {
             let t = TestTablet(port: wifi)
             XCTAssertEqual(try t.pair(code: "000000"), .reject(PadPC.wrongCode))
@@ -281,6 +281,26 @@ final class PadServerTests: XCTestCase {
         let u = TestTablet(port: usb)
         defer { u.close() }
         guard case .welcome? = try u.pair(code: "") else { return XCTFail("the USB door was locked too") }
+    }
+
+    /// Wrong codes from one address don't lock out a tablet at another (IPv6 loopback stands in for it), and the
+    /// server shows the 16-digit PC check.
+    func testWrongCodesFromOneAddressLeaveOthersIn() throws {
+        XCTAssertEqual(server.pcCheck.count, 19)
+        XCTAssertEqual(server.pcCheck.split(separator: "-").count, 4)
+        for _ in 0..<PadGuard.inARow {
+            let t = TestTablet(port: wifi)
+            XCTAssertEqual(try t.pair(code: "000000"), .reject(PadPC.wrongCode))
+            _ = t.waitClosed()
+        }
+        let again = TestTablet(port: wifi)
+        again.send(again.link.hello(device: "x"))
+        guard let (type, p) = again.next() else { return XCTFail("no answer") }
+        XCTAssertEqual(type, 0x82)
+        XCTAssertEqual(String(decoding: p, as: UTF8.self), PadPC.tooManyWrong, "127.0.0.1 is locked out")
+        let other = TestTablet(port: wifi, host: "::1")
+        defer { other.close() }
+        guard case .welcome? = try other.pair(code: "123456") else { return XCTFail("another address was locked out too") }
     }
 
     func testFramesArePacedByAcknowledgement() throws {

@@ -12,6 +12,12 @@ on:
 permissions:
   contents: write
 
+# One run at a time for each branch: a newer push cancels an older run still going, so an older build can't finish
+# after a newer one and replace its release (the release step also checks it is still main's tip).
+concurrency:
+  group: mac-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   mac:
     runs-on: macos-15
@@ -21,6 +27,11 @@ jobs:
         working-directory: mac
     steps:
       - uses: actions/checkout@v4
+      - name: Test the release guard (publish only main's tip)
+        run: |
+          sh ci/still-tip.sh abc1234 abc1234
+          if sh ci/still-tip.sh abc1234 def5678; then echo "an older build would be published"; exit 1; fi
+          if sh ci/still-tip.sh abc1234 ""; then echo "an unknown tip would be published"; exit 1; fi
       - name: Test the shared rules (ios/Core)
         run: swift test --package-path ../ios/Core
       - name: Test the Mac's rules and the tablet link's server
@@ -70,6 +81,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # an older build that finished late: main has a newer commit, whose own run publishes it
+          tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha || true)
+          if ! sh ci/still-tip.sh "$GITHUB_SHA" "$tip"; then exit 0; fi
           notes="Built from ${GITHUB_SHA::7}, passed the rules' tests and the start-up check. Unsigned: unzip it, then right-click ContrastInk.app → Open the first time (see mac/README.md)."
           if gh release view mac-latest >/dev/null 2>&1; then
             git tag -f mac-latest "$GITHUB_SHA" && git push -f origin refs/tags/mac-latest

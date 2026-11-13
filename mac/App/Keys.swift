@@ -28,25 +28,44 @@ enum HotKey {
     static var registered: Bool { ref != nil }
 }
 
-/// Holding Control (on its own) switches drawing on while it is held, as holding Ctrl does on Windows. Read by
-/// polling the keyboard's modifier state, which needs no permission (watching keys in other apps would).
+/// Holding Control (on its own) switches drawing on while it is held, as holding Ctrl does on Windows, but only after
+/// it has been held for a moment with no click (ControlHold): Control-click (the Mac's right-click) and Control-drag
+/// (Horos, OsiriX) still reach the app below. Read by polling the keyboard's modifier state and the mouse buttons, and
+/// by watching mouse-down events, none of which needs a permission (watching keys in other apps would).
 final class ControlWatcher {
     private var timer: Timer?
-    private var down = false
-    var changed: ((Bool) -> Void)?
+    private var hold = ControlHold()
+    private var monitors: [Any] = []
+    /// Whether Hold Control is switched on (⚙ Settings): while it is off nothing is watched for.
+    var enabled: () -> Bool = { false }
+    /// .start: switch drawing on; .stop: off again.
+    var changed: ((ControlHold.Change) -> Void)?
 
     func start() {
         let t = Timer(timeInterval: 0.04, repeats: true) { [weak self] _ in self?.poll() }
         RunLoop.main.add(t, forMode: .common)
         timer = t
+        // a click between two polls (a quick Control-click) still counts
+        let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        if let m = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] _ in self?.clicked() }) { monitors.append(m) }
+        if let m = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { [weak self] e in self?.clicked(); return e }) { monitors.append(m) }
     }
+
+    private func clicked() {
+        guard enabled() else { return }
+        hold.click()
+    }
+
+    /// Drawing went off another way (Esc, F9, ✏) while Control is held: it starts again only after Control is let go.
+    func drawingStopped() { hold.stopped() }
 
     private func poll() {
         let f = CGEventSource.flagsState(.combinedSessionState)
-        let only = f.contains(.maskControl) && !f.contains(.maskCommand) && !f.contains(.maskAlternate) && !f.contains(.maskShift)
-        // a mouse button already down (a Control-click in another app) doesn't start drawing
-        let now = only ? (down || NSEvent.pressedMouseButtons == 0) : false
-        if now != down { down = now; changed?(now) }
+        let alone = enabled() && f.contains(.maskControl) && !f.contains(.maskCommand) && !f.contains(.maskAlternate)
+            && !f.contains(.maskShift)
+        if let c = hold.update(controlAlone: alone, mouseDown: NSEvent.pressedMouseButtons != 0, now: ProcessInfo.processInfo.systemUptime) {
+            changed?(c)
+        }
     }
 }
 
@@ -75,7 +94,7 @@ enum KeySender {
 
 /// The two permissions the Mac may ask for, and where to give them.
 enum Permissions {
-    /// Screen Recording: the tablet's picture of the screen (without it macOS gives only the desktop picture).
+    /// Screen Recording: the tablet's picture of the screen (without it macOS 14 and later give no picture at all).
     static var screenRecording: Bool { CGPreflightScreenCaptureAccess() }
 
     /// Asks macOS to show its Screen Recording request (once; after that only System Settings changes it).
@@ -98,7 +117,7 @@ enum Permissions {
     private static func open(_ s: String) { if let u = URL(string: s) { NSWorkspace.shared.open(u) } }
 
     static func summary() -> String {
-        let screen = screenRecording ? "Screen Recording: allowed." : "Screen Recording: not allowed yet (the tablet then sees only the desktop picture)."
+        let screen = screenRecording ? "Screen Recording: allowed." : MacTexts.screenRecordingMissing
         let keys = accessibility(prompt: false) ? "Accessibility: allowed." : "Accessibility: not allowed yet (needed only for the tablet's ‹ › and for slide keys pressed while drawing)."
         return screen + "\n" + keys
     }

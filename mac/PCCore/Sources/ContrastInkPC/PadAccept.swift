@@ -75,7 +75,10 @@ public struct PadAccept {
 }
 
 public enum PadIdentityCheck {
-    /// The PC check shown beside the code: the first 4 bytes of SHA-256 of the public key, "6FC6-6A90".
-    public static func check(_ key: P256.KeyAgreement.PrivateKey) -> String { PadCrypto.check(key.publicKey.x963Representation) }
+    /// The PC check shown beside the code: the first 8 bytes of SHA-256 of the 65-byte public key,
+    /// "6FC6-6A90-4861-71CA". The Mac's own (Core's PadCrypto.check is the iPad's side, updated on its own).
+    public static func check(_ key: P256.KeyAgreement.PrivateKey) -> String { check(publicKey: key.publicKey.x963Representation) }
+
+    public static func check(publicKey: Data) -> String { PadCheck.text(hash: Array(SHA256.hash(data: publicKey))) ?? "" }
 }
 #endif

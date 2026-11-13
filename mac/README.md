@@ -24,7 +24,7 @@ toolbar shows which are given, with buttons to the right page.
 
 | Permission | What for | When it is asked |
 |---|---|---|
-| **Screen Recording** | The tablet's live picture of the screen. Without it macOS gives only the desktop picture. | When you switch on the tablet link. After allowing it, quit Contrast Ink (✕) and open it again. |
+| **Screen Recording** | The tablet's live picture of the screen. Without it the tablet shows no picture (macOS 13: only the desktop picture). | When you switch on the tablet link. After allowing it, quit Contrast Ink (✕) and open it again. |
 | **Accessibility** | Sending → and ← to the app in front: the tablet's ‹ › buttons, and slide keys pressed while drawing is on. | The first time the tablet sends ‹ or ›, or you press a slide key while drawing. |
 | **Local Network** (macOS 15) | Letting a tablet on the Wi-Fi find this Mac and connect. | When you switch on the tablet link. |
 
@@ -32,10 +32,10 @@ toolbar shows which are given, with buttons to the right page.
 Security**, open **Screen Recording** and **Accessibility**, select Contrast Ink, remove it with **−**, then add it
 again with **+** (or switch it on when it asks), and quit and reopen Contrast Ink. The app isn't signed by Apple, so
 macOS ties each permission to the exact build you allowed: the switch can still show as on while the new build is
-refused (the tablet then sees only the desktop picture, and ‹ › don't change slides).
+refused (the tablet then shows no picture of the screen, and ‹ › don't change slides).
 
 Drawing, the toolbar, F9 and recording with OBS need none of these. Holding Control to draw needs none either
-(Contrast Ink only reads whether Control is down, not what you type). macOS's firewall, if switched on, may ask
+(Contrast Ink only reads whether Control and the mouse buttons are down, not what you type). macOS's firewall, if switched on, may ask
 whether Contrast Ink may accept incoming connections: allow it for the tablet link.
 
 ## Draw
@@ -43,7 +43,7 @@ whether Contrast Ink may accept incoming connections: allow it for the tablet li
 | How | What it does |
 |---|---|
 | **F9** or the **✏ button** | Drawing on / off. On a laptop keyboard F9 may need **fn**, unless "Use F1, F2, etc. keys as standard function keys" is on (System Settings → Keyboard). |
-| **Hold Control** | Draw while Control is held; let go and clicks go to PowerPoint again (⚙ Settings to switch off) |
+| **Hold Control** | Off at first (⚙ Settings → Hold Control to Draw). When on: hold Control on its own for a moment (0.3 s) without clicking and drawing is on while it is held; let go and clicks go to PowerPoint again. Control-click (the Mac's right-click) and Control-drag (Horos, OsiriX) still reach the app below. |
 | **Esc** | Stop drawing |
 | **Right-click** | Undo the last mark (while drawing) |
 | **Pen tablet** (Wacom, XP-Pen, Huion...) | Its pen draws with pressure; turned over, its eraser end removes marks |
@@ -69,8 +69,10 @@ keyboard with PowerPoint.
 | C | Clear all marks |
 | ⌘Z or Z | Undo (also brings back a Clear) |
 
-The 🖥 button moves the drawing layer to your other screen (a projector). Plugged in or out mid-lecture, the layer
-follows by itself. The opacity slider sets how solid new pen, arrow and circle marks are.
+The 🖥 button moves the drawing layer to your other screen (a projector); each screen keeps its own marks. Contrast
+Ink remembers the screen itself, not its place in the list: if the projector drops out for a moment, the layer
+covers the laptop meanwhile and goes back to the projector, with its marks, when it returns. A screen whose
+resolution changes keeps its marks in the same places on the picture. The opacity slider sets how solid new pen, arrow and circle marks are.
 
 ## Record From the Toolbar
 
@@ -104,7 +106,7 @@ The Mac is the PC for the tablet, exactly as Windows is: the tablet shows a live
 what you draw on it is drawn on the Mac, so OBS records it.
 
 1. On the Mac: **⚙ → Let a Tablet Draw Here**. It shows a 6-digit **code** (new each time Contrast Ink starts), a
-   **PC check** (always the same for this Mac) and the Mac's address. macOS asks for Screen Recording (and on
+   **PC check** (16 digits, XXXX-XXXX-XXXX-XXXX, always the same for this Mac) and the Mac's address. macOS asks for Screen Recording (and on
    macOS 15, Local Network): allow both, then quit and reopen Contrast Ink once.
 2. On the tablet (same Wi-Fi): Contrast Ink → **Use as a pad for a PC** → pick the Mac → type the code.
 3. The first time, the tablet shows a PC check: tap **It matches** only if it is the same as on the Mac.
@@ -125,7 +127,9 @@ what you draw on it is drawn on the Mac, so OBS records it.
   themselves.
 
 Everything between the tablet and the Mac is encrypted, and the code never crosses the network. Wrong codes are
-limited (five in a row lock pairing for 30 s; twenty make a new code), and a few strangers on the Wi-Fi can't keep
+limited and counted per address (five in a row from one address lock that address out for 30 s, so a stranger
+can't lock your own tablet out; fifteen in a row from all addresses lock everyone out for 30 s; twenty make a new
+code), and a few strangers on the Wi-Fi can't keep
 your tablet out (at most four waiting at once, two from any one address; the cable has its own places). The Mac's
 own key (behind the PC check) is kept in `~/Library/Application Support/Contrast Ink/pad-key`, readable only by
 you. Earlier versions kept it in the login Keychain; it is moved to that file by itself. If the file is there but
@@ -145,13 +149,15 @@ the Mac's own hotspot is safer still. The link itself is described in [docs/pad-
 
 ## If Something Goes Wrong
 
-- Nothing happens on F9: another app may own F9 (the toolbar then says so); use ✏ or hold Control.
-- The tablet sees only the desktop picture: Screen Recording isn't allowed yet (⚙ shows it). Allow it, then quit
+- Nothing happens on F9: another app may own F9 (the toolbar then says so); use ✏, or switch on Hold Control.
+- The tablet shows no picture of the screen: Screen Recording isn't allowed yet (⚙ shows it). Allow it, then quit
   and reopen Contrast Ink. Just after an update, remove Contrast Ink from the list and add it again (above).
 - The tablet doesn't find the Mac: type the address shown in ⚙ into the tablet instead (some networks hide names),
   and check macOS 15's Local Network permission and the firewall.
 
-Errors are written to `~/Library/Logs/Contrast Ink.log`. Send that file along with what you were doing.
+Errors are written to `~/Library/Logs/Contrast Ink.log` (kept under 1 MB; the part before is in
+`Contrast Ink.old.log`). Send them along with what you were doing. ✕ asks before quitting when there are marks on
+the screen, an OBS recording or a connected tablet.
 Settings are kept in the app's preferences (`defaults delete com.contrast.ink.mac` starts fresh).
 
 ## For Developers

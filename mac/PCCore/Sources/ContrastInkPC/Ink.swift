@@ -58,6 +58,9 @@ public struct InkBoard: Equatable, Sendable {
     private var history: [Step] = []
     private var nextID = 1
     public static let historyLimit = 300
+    /// Goes up with every change to the marks: the drawing layer keeps a picture of the finished marks and draws it
+    /// again only when this has changed.
+    public private(set) var revision = 0
 
     public init() {}
 
@@ -81,6 +84,7 @@ public struct InkBoard: Equatable, Sendable {
         nextID += 1
         marks.append(m)
         remember(.added([m]))
+        revision += 1
         return m.id
     }
 
@@ -91,6 +95,7 @@ public struct InkBoard: Equatable, Sendable {
         guard !hit.isEmpty else { return false }
         marks.removeAll { m in hit.contains { $0.id == m.id } }
         remember(.removed(hit))
+        revision += 1
         return true
     }
 
@@ -99,6 +104,7 @@ public struct InkBoard: Equatable, Sendable {
         guard !marks.isEmpty else { return }
         remember(.removed(marks))
         marks = []
+        revision += 1
     }
 
     /// Takes back the last step. A mark that faded away while fading ink was on comes back fading from the start.
@@ -110,6 +116,7 @@ public struct InkBoard: Equatable, Sendable {
                 let still = added.filter { a in marks.contains { $0.id == a.id } }
                 if still.isEmpty { continue }   // already faded away: undo the step before it
                 marks.removeAll { m in still.contains { $0.id == m.id } }
+                revision += 1
                 return true
             case .removed(let removed):
                 let back = removed.filter { r in !marks.contains { $0.id == r.id } }
@@ -119,6 +126,7 @@ public struct InkBoard: Equatable, Sendable {
                     marks.append(m)
                 }
                 marks.sort { $0.id < $1.id }   // back in the order they were drawn (the newest on top)
+                revision += 1
                 return true
             }
         }
@@ -130,7 +138,25 @@ public struct InkBoard: Equatable, Sendable {
     public mutating func fade(now: Double) -> Bool {
         let before = marks.count
         marks.removeAll { $0.fadingSince != nil && $0.alpha(at: now) <= 0 }
+        if marks.count != before { revision += 1 }
         return marks.count != before
+    }
+
+    /// The marks (and those undo can bring back) stretched to a screen of another size: a fraction of the screen
+    /// stays the same fraction. Widths stay as they are (a line keeps its weight).
+    public func scaled(x sx: Double, y sy: Double) -> InkBoard {
+        guard sx.isFinite, sy.isFinite, sx > 0, sy > 0, sx != 1 || sy != 1 else { return self }
+        func f(_ m: InkMark) -> InkMark { var m = m; m.points = m.points.map { Pt($0.x * sx, $0.y * sy) }; return m }
+        var b = self
+        b.marks = marks.map(f)
+        b.history = history.map { step in
+            switch step {
+            case .added(let m): return .added(m.map(f))
+            case .removed(let m): return .removed(m.map(f))
+            }
+        }
+        b.revision += 1
+        return b
     }
 
     /// Whether any mark is fading (the app keeps a timer only while one is).
