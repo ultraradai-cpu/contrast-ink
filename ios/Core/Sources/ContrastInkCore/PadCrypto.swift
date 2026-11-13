@@ -13,7 +13,7 @@ public enum PadCrypto {
 
     /// The PC check: the first 8 bytes of SHA-256 of the PC's 65-byte public key, as XXXX-XXXX-XXXX-XXXX. The PC
     /// shows it next to the code, so the presenter can see the iPad is talking to that PC and not one pretending to be it.
-    public static func check(_ publicKey: Data) -> String { PadCheck.format(hash: Data(SHA256.hash(data: publicKey))) }
+    public static func check(_ publicKey: Data) -> String { PadCheckFormat.format(hash: Data(SHA256.hash(data: publicKey))) }
 
     /// The two keys of a connection: tablet → PC, PC → tablet. The same on both sides (ECDH is symmetric).
     /// Nil when `other` isn't a point on the curve.

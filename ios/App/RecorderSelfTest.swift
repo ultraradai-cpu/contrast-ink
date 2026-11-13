@@ -13,7 +13,7 @@ enum RecorderSelfTest {
         try? FileManager.default.removeItem(at: dir)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent("test.mov"), cut = dir.appendingPathComponent("interrupted.mov")
-        let sink = CaptureSink(fragmentInterval: 1)
+        let sink = CaptureSink(fragmentInterval: 1, withSound: { false })
         sink.prepare(url: url)
         sink.setGeometry(stage: CGRect(x: 0, y: 0, width: 320, height: 240), screen: CGSize(width: 320, height: 240))
 
@@ -31,7 +31,8 @@ enum RecorderSelfTest {
         // what a crash would leave: the file as it is, never finished
         do { try FileManager.default.copyItem(at: url, to: cut) } catch { return "fail: no file while recording (\(error.localizedDescription))" }
         let early = await frames(cut)
-        guard early.count > 0 else { return "fail: the unfinished file doesn't play (\(early.note))" }
+        let bytes = (try? cut.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        guard early.count > 0 else { return "fail: the unfinished file (\(bytes) bytes) doesn't play (\(early.note))" }
 
         guard let result = await sink.finish() else { return "fail: nothing was written" }
         guard result.complete else { return "fail: the file wasn't finished" }

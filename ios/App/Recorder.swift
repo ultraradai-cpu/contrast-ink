@@ -244,7 +244,15 @@ final class CaptureSink: @unchecked Sendable {
     private var failed = false
     private var videoForward = Forward(), audioForward = Forward()   // times only go forward in each track
 
-    init(fragmentInterval: Double = 10) { self.fragmentInterval = fragmentInterval }
+    /// Whether the video gets a sound track: only when the microphone is allowed. A track that never gets a sample
+    /// would hold every fragment back (the writer waits to interleave it), and nothing would reach the disk until the end.
+    let withSound: () -> Bool
+
+    init(fragmentInterval: Double = 10,
+         withSound: @escaping () -> Bool = { AVAudioSession.sharedInstance().recordPermission == .granted }) {
+        self.fragmentInterval = fragmentInterval
+        self.withSound = withSound
+    }
 
     static func hostNow() -> Double { CMClockGetTime(CMClockGetHostTimeClock()).seconds }
 
@@ -365,12 +373,16 @@ final class CaptureSink: @unchecked Sendable {
                 AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: 6_000_000, AVVideoExpectedSourceFrameRateKey: 30],
             ])
             v.expectsMediaDataInRealTime = true
-            let a = AVAssetWriterInput(mediaType: .audio, outputSettings: [
-                AVFormatIDKey: kAudioFormatMPEG4AAC, AVNumberOfChannelsKey: 1, AVSampleRateKey: 44100, AVEncoderBitRateKey: 96_000,
-            ])
-            a.expectsMediaDataInRealTime = true
-            guard w.canAdd(v), w.canAdd(a) else { throw CocoaError(.fileWriteUnknown) }
-            w.add(v); w.add(a)
+            guard w.canAdd(v) else { throw CocoaError(.fileWriteUnknown) }
+            w.add(v)
+            var a: AVAssetWriterInput?
+            if withSound() {
+                let input = AVAssetWriterInput(mediaType: .audio, outputSettings: [
+                    AVFormatIDKey: kAudioFormatMPEG4AAC, AVNumberOfChannelsKey: 1, AVSampleRateKey: 44100, AVEncoderBitRateKey: 96_000,
+                ])
+                input.expectsMediaDataInRealTime = true
+                if w.canAdd(input) { w.add(input); a = input }
+            }
             let ad = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: v, sourcePixelBufferAttributes: [
                 kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
                 kCVPixelBufferWidthKey as String: size.width, kCVPixelBufferHeightKey as String: size.height,

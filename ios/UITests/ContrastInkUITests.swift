@@ -236,8 +236,9 @@ final class ContrastInkUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 2)
         app.buttons["Stop recording"].tap()
         let notice = app.buttons["recorderNotice"]
-        XCTAssertTrue(notice.waitForExistence(timeout: 30), "says where the video is")
-        XCTAssertTrue(notice.label.contains("Recordings"), notice.label)
+        let saved = Date().addingTimeInterval(30)
+        while !(notice.exists && notice.label.contains("Recordings")), Date() < saved { Thread.sleep(forTimeInterval: 0.5) }
+        XCTAssertTrue(notice.label.contains("Recordings"), "says where the video is: \(notice.label)")
         XCTAssertTrue(notice.label.contains(".mov"), notice.label)
         XCTAssertFalse(notice.label.contains("Photos"), "Photos is off by default: \(notice.label)")
         shot("R2 recording saved")
@@ -251,7 +252,9 @@ final class ContrastInkUITests: XCTestCase {
         XCTAssertTrue(photos.waitForExistence(timeout: 5), "Also save recordings to Photos")
         XCTAssertEqual(photos.value as? String, "0", "off by default (iCloud Photos would upload patient images)")
         func listed(_ text: String) -> Bool {
-            app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", text)).firstMatch.waitForExistence(timeout: 3)
+            let row = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", text)).firstMatch
+            for _ in 0..<4 where !row.exists { app.swipeUp(); Thread.sleep(forTimeInterval: 0.5) }   // below the fold
+            return row.waitForExistence(timeout: 3)
         }
         XCTAssertTrue(listed("L laser pointer"), "L is listed")
         XCTAssertTrue(listed("Return"), "Return is listed")

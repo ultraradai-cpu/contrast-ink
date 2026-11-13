@@ -552,7 +552,6 @@ struct SettingsView: View {
                     Text("1–6 colour · [ ] thinner / thicker · F fading ink (Shift keeps a mark) · C clear · Z or ⌘Z undo")
                 }
                 .font(.footnote)
-                .accessibilityIdentifier("keysList")
                 Section("Projector") {
                     Text("Connect a projector or TV (HDMI adapter or AirPlay): it shows the slide and your marks only, without the toolbar. Marks appear there when the Pencil lifts.")
                         .font(.footnote)

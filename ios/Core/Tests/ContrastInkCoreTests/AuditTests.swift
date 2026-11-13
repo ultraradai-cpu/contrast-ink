@@ -262,12 +262,12 @@ final class DeviceDefaultsTests: XCTestCase {
     }
 }
 
-final class PadCheckTests: XCTestCase {
+final class PadCheckFormatTests: XCTestCase {
     /// SHA-256 of the spec's PC public key; the check is its first 8 bytes.
     func testTheCheckHasSixteenHexDigits() {
         let hash = Data([0x6F, 0xC6, 0x6A, 0x90, 0x48, 0x61, 0x71, 0xCA, 0x69, 0xB5, 0x12, 0xBE, 0x18, 0x5D, 0x66, 0xA7,
                          0x63, 0xA6, 0x8F, 0xF2, 0xD3, 0x4C, 0xDA, 0x63, 0x9E, 0x78, 0xCF, 0xF9, 0xE9, 0x8C, 0xAE, 0xAB])
-        XCTAssertEqual(PadCheck.format(hash: hash), "6FC6-6A90-4861-71CA")
-        XCTAssertEqual(PadCheck.format(hash: Data(repeating: 0x0A, count: 32)), "0A0A-0A0A-0A0A-0A0A", "leading zeros kept")
+        XCTAssertEqual(PadCheckFormat.format(hash: hash), "6FC6-6A90-4861-71CA")
+        XCTAssertEqual(PadCheckFormat.format(hash: Data(repeating: 0x0A, count: 32)), "0A0A-0A0A-0A0A-0A0A", "leading zeros kept")
     }
 }
