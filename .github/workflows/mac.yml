@@ -24,8 +24,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 15: the full check and the zip; 14: the app's smoke test there too (ScreenCaptureKit differs by version)
-        os: [macos-15, macos-14]
+        # macos-14 was tried for the smoke test (ScreenCaptureKit differs by version): GitHub no longer runs it
+        # ("The configuration 'macos-14-arm64-us-default' is not supported"), so macOS 15 only
+        os: [macos-15]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     defaults:
@@ -38,6 +39,11 @@ jobs:
           sh ci/still-tip.sh abc1234 abc1234
           if sh ci/still-tip.sh abc1234 def5678; then echo "an older build would be published"; exit 1; fi
           if sh ci/still-tip.sh abc1234 ""; then echo "an unknown tip would be published"; exit 1; fi
+      - name: Ink colours are sRGB (no device-RGB setStrokeColor/setFillColor(red:...) in the app)
+        run: |
+          if grep -n "setStrokeColor(red:\|setFillColor(red:" App/*.swift; then
+            echo "::error::device-RGB colour above: use Overlay.srgb / CGColor(srgbRed:...)"; exit 1
+          fi
       - name: Test the shared rules (ios/Core)
         run: swift test --package-path ../ios/Core
       - name: Test the Mac's rules and the tablet link's server

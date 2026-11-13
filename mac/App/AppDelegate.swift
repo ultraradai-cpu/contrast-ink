@@ -91,6 +91,12 @@ enum SmokeTest {
         send(PadProtocol.strokePoints([(x: 0.9, y: 0.2)]))
         let liveP3 = inkOnP3(c.ink, 0.8, 0.2, Settings.colors[2])
         check(liveP3 == nil, "on a P3 display a live stroke is the swatch's sRGB green \(Settings.colors[2]) (\(liveP3 ?? "it is"))")
+        // A bitmap converts device RGB as if it were sRGB, so the pixels above can't tell them apart (a mutation run
+        // showed it). A PDF keeps the colour space each colour was set in: device RGB is written as RG / rg.
+        let ops = pdfColourOperators(c.ink)
+        print("     the layer drawn as PDF sets its colours with: \(ops.sorted { $0.key < $1.key }.map { "\($0.key) ×\($0.value)" }.joined(separator: ", "))")
+        check((ops["RG"] ?? 0) + (ops["rg"] ?? 0) == 0 && (ops["SC"] ?? 0) + (ops["SCN"] ?? 0) > 0,
+              "the ink's colours are set in a calibrated colour space (sRGB), never device RGB (RG/rg)")
         send(PadProtocol.strokeCancel())
         c.setColor(0)
 
@@ -202,6 +208,47 @@ enum SmokeTest {
                 }
             }
         }
+    }
+
+    /// The layer drawn into a PDF, and how often each colour-setting operator appears in it (RG/rg: device RGB;
+    /// CS/SC/SCN and cs/sc/scn: a named colour space, sRGB here).
+    private static func pdfColourOperators(_ v: NSView) -> [String: Int] {
+        final class Counts { var ops: [String: Int] = [:] }
+        let data = NSMutableData()
+        var box = CGRect(origin: .zero, size: v.bounds.size)
+        guard let consumer = CGDataConsumer(data: data as CFMutableData),
+              let ctx = CGContext(consumer: consumer, mediaBox: &box, nil) else { return [:] }
+        ctx.beginPDFPage(nil)
+        if v.isFlipped { ctx.translateBy(x: 0, y: box.height); ctx.scaleBy(x: 1, y: -1) }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: v.isFlipped)
+        v.draw(v.bounds)
+        NSGraphicsContext.restoreGraphicsState()
+        ctx.endPDFPage()
+        ctx.closePDF()
+        guard let provider = CGDataProvider(data: data as CFData), let doc = CGPDFDocument(provider),
+              let page = doc.page(at: 1) else { return [:] }
+        let counts = Counts()
+        // one table per operator, so each callback knows its own name
+        for op in ["RG", "rg", "CS", "cs", "SC", "sc", "SCN", "scn", "K", "k", "G", "g"] {
+            guard let one = CGPDFOperatorTableCreate() else { continue }
+            CGPDFOperatorTableSetCallback(one, op) { _, info in
+                guard let info else { return }
+                Unmanaged<Counts>.fromOpaque(info).takeUnretainedValue().ops["_", default: 0] += 1
+            }
+            let before = counts.ops["_"] ?? 0
+            let stream = CGPDFContentStreamCreateWithPage(page)
+            let scanner = CGPDFScannerCreate(stream, one, Unmanaged.passUnretained(counts).toOpaque())
+            CGPDFScannerScan(scanner)
+            CGPDFScannerRelease(scanner)
+            CGPDFContentStreamRelease(stream)
+            CGPDFOperatorTableRelease(one)
+            let n = (counts.ops["_"] ?? 0) - before
+            counts.ops["_"] = before
+            if n > 0 { counts.ops[op] = n }
+        }
+        counts.ops["_"] = nil
+        return counts.ops
     }
 
     /// The marks drawn by the layer into a Display P3 picture (a MacBook's screen), read back as sRGB: within [r] of
