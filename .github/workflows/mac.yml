@@ -65,6 +65,12 @@ jobs:
           cat smoke.log
           test $code -eq 0
           grep -q "SMOKE OK" smoke.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac-smoke-captures
+          path: mac/smoke-capture-*.jpg
+          if-no-files-found: ignore
       - name: Zip ContrastInk-Mac.zip
         run: |
           cd build/Build/Products/Release

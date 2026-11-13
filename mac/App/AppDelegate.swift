@@ -78,10 +78,9 @@ enum SmokeTest {
         let px = pixel(c.ink, 0.375, 0.375)
         check(px.map { $0.alphaComponent > 0.8 && $0.redComponent > 0.8 && $0.greenComponent < 0.4 } ?? false,
               "the mark is drawn in red where it was drawn (\(px.map { "r \($0.redComponent) g \($0.greenComponent) a \($0.alphaComponent)" } ?? "no pixels"))")
-        // the swatch's own sRGB numbers (#FF3B30), not device RGB (more saturated on a P3 display)
-        let swatch = Ink.rgb(Settings.colors[0]) ?? (1, 0, 0)
-        check(px.map { abs($0.redComponent - swatch.r) < 0.05 && abs($0.greenComponent - swatch.g) < 0.05 && abs($0.blueComponent - swatch.b) < 0.05 } ?? false,
-              "the red ink is the swatch's sRGB red \(Settings.colors[0]) (\(px.map { "r \($0.redComponent) g \($0.greenComponent) b \($0.blueComponent)" } ?? "no pixels"))")
+        // the swatch's own sRGB numbers (#FF3B30) on a P3 display, not device RGB (more saturated there)
+        let p3 = inkOnP3(c.ink, 0.375, 0.375, Settings.colors[0])
+        check(p3 == nil, "on a P3 display the red ink is the swatch's sRGB red \(Settings.colors[0]) (\(p3 ?? "it is"))")
         let empty = pixel(c.ink, 0.8, 0.2)
         check(empty.map { $0.alphaComponent < 0.05 } ?? false, "the rest of the layer is see-through")
 
@@ -144,9 +143,10 @@ enum SmokeTest {
     }
 
     /// The tablet's picture, taken for real by ScreenGrabber (ScreenCaptureKit, the toolbar's windows left out by
-    /// number, as the tablet link does): the toolbar must be absent. The same capture leaving nothing out must show
-    /// the toolbar, so the check can fail (and sharingType .none is seen to be ignored). Without Screen Recording
-    /// permission this says so and checks nothing more.
+    /// number, as the tablet link does). sharingType .none alone isn't relied on (ScreenCaptureKit may ignore it), so
+    /// for these captures the toolbar is made capturable: the capture leaving nothing out must show it (the check can
+    /// fail), the tablet's capture must not. What .none alone does is logged. The pictures are kept as
+    /// smoke-capture-*.jpg. Without Screen Recording permission this says so and checks nothing more.
     private static func captureCheck(_ c: AppController, then done: @escaping () -> Void) {
         let t = c.toolbar.panel
         guard #available(macOS 14.0, *) else {
@@ -162,25 +162,68 @@ enum SmokeTest {
             ScreenGrabber.Target(display: AppController.displayNumber(screen), pixelWidth: Int(screen.frame.width * scale),
                                  pixelHeight: Int(screen.frame.height * scale), exclude: exclude)
         }
-        let grabber = ScreenGrabber()
         var ended = false
-        func end() { if !ended { ended = true; done() } }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
-            if !ended { check(false, "live capture: ScreenCaptureKit gave pictures within 20 s"); end() }
+        func end() { if !ended { ended = true; t.sharingType = .none; done() } }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
+            if !ended { check(false, "live capture: ScreenCaptureKit gave pictures within 30 s"); end() }
         }
-        grabber.jpeg(target([])) { all in
-            grabber.jpeg(target(c.toolbar.windowNumbers)) { tablet in
-                DispatchQueue.main.async {
-                    guard !ended else { return }
-                    let shown = toolbarShare(all, panel: t.frame, screen: screen.frame)
-                    let left = toolbarShare(tablet, panel: t.frame, screen: screen.frame)
-                    func pct(_ v: Double?) -> String { v.map { "\(Int($0 * 100))% of its box is its colour" } ?? "no picture" }
-                    check((shown ?? 0) > 0.3, "live capture, nothing left out: the toolbar is in the picture (\(pct(shown))), so this check can fail")
-                    check(left.map { $0 < 0.05 } ?? false, "live capture (ScreenCaptureKit): the toolbar is absent from the tablet's picture (\(pct(left)))")
+        /// One capture (a fresh grabber: no window list kept from before), its share of toolbar colour, on the main queue.
+        func capture(_ name: String, exclude: [Int], then next: @escaping (Double?) -> Void) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                ScreenGrabber().jpeg(target(exclude)) { jpeg in
+                    DispatchQueue.main.async {
+                        guard !ended else { return }
+                        if let jpeg { try? jpeg.write(to: URL(fileURLWithPath: "smoke-capture-\(name).jpg")) }
+                        next(toolbarShare(jpeg, panel: t.frame, screen: screen.frame))
+                    }
+                }
+            }
+        }
+        func pct(_ v: Double?) -> String { v.map { "\(Int($0 * 100))% of its box is its colour" } ?? "no picture" }
+        print("     toolbar at \(t.frame) on a screen \(screen.frame) at \(scale)x")
+        capture("flag-only", exclude: []) { flagOnly in
+            print("     sharingType .none alone, nothing left out: the toolbar is \((flagOnly ?? 0) > 0.3 ? "IN" : "not in") the capture (\(pct(flagOnly)))")
+            t.sharingType = .readOnly
+            capture("all", exclude: []) { shown in
+                check((shown ?? 0) > 0.3, "live capture, nothing left out (toolbar capturable): the toolbar is in the picture (\(pct(shown))), so this check can fail")
+                capture("tablet", exclude: c.toolbar.windowNumbers) { left in
+                    check(left.map { $0 < 0.05 } ?? false, "live capture (ScreenCaptureKit), as the tablet gets it: the toolbar is absent (\(pct(left)))")
                     end()
                 }
             }
         }
+    }
+
+    /// The marks drawn by the layer into a Display P3 picture (a MacBook's screen), read back as sRGB: within [r] of
+    /// (fx, fy) there must be solid ink of exactly [hex] (the swatch). Device-RGB ink would keep its numbers in P3 and
+    /// read back more saturated. Nil when it matches, else what was found.
+    private static func inkOnP3(_ v: NSView, _ fx: Double, _ fy: Double, _ hex: String, r: Int = 6) -> String? {
+        let w = Int(v.bounds.width), h = Int(v.bounds.height)
+        guard w > 0, h > 0, let want = Ink.rgb(hex), let p3 = CGColorSpace(name: CGColorSpace.displayP3),
+              let srgb = CGColorSpace(name: CGColorSpace.sRGB),
+              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: p3,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return "no P3 picture" }
+        if v.isFlipped { ctx.translateBy(x: 0, y: CGFloat(h)); ctx.scaleBy(x: 1, y: -1) }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: v.isFlipped)
+        v.draw(v.bounds)
+        NSGraphicsContext.restoreGraphicsState()
+        guard let data = ctx.data else { return "no pixels" }
+        let px = data.bindMemory(to: UInt8.self, capacity: w * h * 4)
+        let cx = Int(Double(w) * fx), cy = Int(Double(h) * fy)   // the bitmap's first row is the picture's top
+        var best = Double.infinity, found = "no solid ink"
+        for y in max(0, cy - r)...min(h - 1, cy + r) {
+            for x in max(0, cx - r)...min(w - 1, cx + r) {
+                let i = (y * w + x) * 4
+                guard px[i + 3] >= 250 else { continue }
+                let comps: [CGFloat] = [CGFloat(px[i]) / 255, CGFloat(px[i + 1]) / 255, CGFloat(px[i + 2]) / 255, 1]
+                guard let c = CGColor(colorSpace: p3, components: comps)?.converted(to: srgb, intent: .defaultIntent, options: nil),
+                      let s = c.components, s.count >= 3 else { continue }
+                let d = max(abs(Double(s[0]) - want.r), abs(Double(s[1]) - want.g), abs(Double(s[2]) - want.b))
+                if d < best { best = d; found = String(format: "P3 %d %d %d = sRGB %.3f %.3f %.3f", px[i], px[i + 1], px[i + 2], s[0], s[1], s[2]) }
+            }
+        }
+        return best < 0.03 ? nil : found
     }
 
     /// The share of the toolbar's box (its edges left out) in a captured JPEG that is the toolbar's background colour.
