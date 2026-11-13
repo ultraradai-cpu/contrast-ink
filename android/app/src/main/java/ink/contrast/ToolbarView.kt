@@ -2,7 +2,10 @@ package ink.contrast
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
@@ -12,6 +15,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
+import ink.contrast.core.CleanRecording
 import ink.contrast.core.Settings
 import ink.contrast.core.Tool
 import ink.contrast.core.clock
@@ -44,10 +48,44 @@ class ToolbarView(context: Context, private val app: InkService) : LinearLayout(
     private var folded = false
     private val names = HashMap<View, String>()   // every button's name, shown or not as the settings say
 
+    /**
+     * [CleanRecording.BEACON_COLORS] side by side. Shown only while a recording (Android 14+) works out what Android
+     * records: the recorder looks for it in the video's frames, where the toolbar is on the screen.
+     */
+    private val beacon = object : View(context) {
+        private val paint = Paint()
+        override fun onDraw(canvas: Canvas) {
+            val third = width / 3f
+            CleanRecording.BEACON_COLORS.forEachIndexed { i, c ->
+                paint.color = c
+                canvas.drawRect(i * third, 0f, (i + 1) * third, height.toFloat(), paint)
+            }
+        }
+    }.apply { visibility = GONE; importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO }
+
+    /** Shows or hides the beacon. */
+    fun showBeacon(on: Boolean) {
+        val v = if (on) VISIBLE else GONE
+        if (beacon.visibility == v) return
+        beacon.visibility = v
+        app.barResized()
+    }
+
+    /** The beacon's rectangle on the screen, or null when it isn't showing (or not laid out yet). */
+    fun beaconOnScreen(): Rect? {
+        if (beacon.visibility != VISIBLE || beacon.width == 0 || !beacon.isAttachedToWindow) return null
+        val at = IntArray(2)
+        beacon.getLocationOnScreen(at)
+        return Rect(at[0], at[1], at[0] + beacon.width, at[1] + beacon.height)
+    }
+
     init {
         orientation = VERTICAL
         background = GradientDrawable().apply { setColor(barColor); cornerRadius = 12 * dp }
         setPadding((6 * dp).toInt(), (4 * dp).toInt(), (6 * dp).toInt(), (4 * dp).toInt())
+
+        // the beacon: three colours across the top while a recording works out whether the toolbar is in it
+        addView(beacon, LayoutParams(LayoutParams.MATCH_PARENT, (10 * dp).toInt()).apply { bottomMargin = (2 * dp).toInt() })
 
         // row 1 (stays when the toolbar is small): move, drawing on/off, undo, recording, make small, quit
         val row1 = row()

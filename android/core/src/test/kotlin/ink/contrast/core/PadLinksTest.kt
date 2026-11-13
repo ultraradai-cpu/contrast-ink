@@ -90,4 +90,16 @@ class PadLinksTest {
         l.connectAnywayOverUsb()
         assertTrue("\"Connect anyway\" does", l.tryUsb())
     }
+
+    /** "It doesn't" to the first-time PC check over the cable: not asked again every 2 s, only after Connect. */
+    @Test fun aPcCheckDeclinedOverTheCablePausesIt() {
+        val l = PadLinks()
+        assertTrue(l.tryUsb())
+        l.usbDeclined()
+        assertEquals(Usb.PAUSED, l.usb)
+        assertFalse("not tried again by itself", l.tryUsb())
+        assertEquals("its late end changes nothing", Then.NOTHING, l.usbEnded())
+        l.resumeUsb()
+        assertTrue("Connect tries it again", l.tryUsb())
+    }
 }

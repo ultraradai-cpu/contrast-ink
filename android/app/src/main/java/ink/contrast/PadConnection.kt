@@ -43,7 +43,8 @@ class PadConnection(
     private val listener: Listener,
     /**
      * Over the USB cable (docs/pad-protocol.md, "USB (phase 2)"): to 127.0.0.1:47830, which `adb reverse` on the PC
-     * carries to it; the code is empty and a PC met the first time isn't asked about. Tried every 2 s, so a try
+     * carries to it; the code is empty. A PC met the first time is still asked about (its PC check), as on Wi-Fi:
+     * any app on the tablet could be listening there. Tried every 2 s, so a try
      * that finds nothing (refused at once when the cable or the PC isn't there) leaves nothing in the log.
      */
     val overCable: Boolean = false,

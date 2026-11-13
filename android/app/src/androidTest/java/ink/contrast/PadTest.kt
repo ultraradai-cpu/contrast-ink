@@ -211,7 +211,7 @@ class PadTest {
         fun close() { try { server.close(); session?.socket?.close() } catch (e: IOException) {} }
 
         companion object {
-            /** The spec's "PC public key" (private key 22..22): its PC check is 6FC6-6A90. */
+            /** The spec's "PC public key" (private key 22..22): its PC check is 6FC6-6A90-4861-71CA. */
             val VECTOR_PC_KEY = ByteArray(65) {
                 "04D65A93977CAA3D1B081852FF57A79E465F1660577304BAEAD505DD3A48589CF350185E895372DF6221EA3A137557E473FDDB6755F05BD507C3C533FCE9C91285"
                     .substring(it * 2, it * 2 + 2).toInt(16).toByte()
@@ -261,7 +261,7 @@ class PadTest {
     }
 
     /** The first-time question about the PC check: shown, with nothing sent after HELLO while it is open. */
-    private fun firstTimeCheckShows(check: String = "6FC6-6A90") {
+    private fun firstTimeCheckShows(check: String = "6FC6-6A90-4861-71CA") {
         assertNotNull("the first time, the PC check is asked about before anything else is sent", device.wait(Until.findObject(
             By.text("First time with TEST-PC: does the PC show the PC check $check? (⚙ Settings, beside the code)")), 8000))
         assertNull("nothing is sent after HELLO while the check is open", pc.got.poll(2, TimeUnit.SECONDS))
@@ -435,10 +435,17 @@ class PadTest {
         val usb = FakePc("", port = PadProtocol.USB_PORT).also { cable = it }
         openPadEmpty()
         assertNotNull("the tablet tries the cable by itself (HELLO)", usb.next(PadProtocol.HELLO, 10000))
-        assertNotNull("no PC check question over the cable: the PROOF at once, made with the empty code", usb.next(PadProtocol.PROOF))
+        // the cable proves nothing (any app on the tablet can listen there): the first time, the PC check is asked
+        // about, as on Wi-Fi, before anything else goes
+        assertNotNull("the first time over the cable, the PC check is asked about", device.wait(Until.findObject(
+            By.text("First time with TEST-PC on the USB cable: does the PC show the PC check 6FC6-6A90-4861-71CA? (⚙ Settings, beside the code)")), 8000))
+        assertNull("nothing is sent after HELLO while the check is open", usb.got.poll(2, TimeUnit.SECONDS))
+        shot("27a first time over the cable, the PC check")
+        press("It matches")
+        assertNotNull("then the PROOF, made with the empty code", usb.next(PadProtocol.PROOF))
         assertNotNull("the pictures come", usb.next(PadProtocol.FRAME_ACK))
         assertNotNull("the title says the cable", device.wait(Until.findObject(By.text("TEST-PC · By the USB cable")), 4000))
-        assertNull("nothing was asked", device.findObject(By.desc("It matches")))
+        assertNull("the question is gone", device.findObject(By.desc("It matches")))
         assertArrayEquals("the PC's key is remembered under its own name", FakePc.VECTOR_PC_KEY,
             Base64.getDecoder().decode(prefs.getString(PadActivity.PIN_PREFIX + "TEST-PC", "")))
         device.waitForIdle()
@@ -448,6 +455,19 @@ class PadTest {
         usb.close()
         assertNotNull("back to the connect screen", device.wait(Until.findObject(By.desc("Connect")), 10000))
         assertNotNull("saying why", device.findObject(By.textStartsWith("The USB connection to the PC ended.")))
+    }
+
+    /** Something on the cable that isn't the PC (another app on the tablet): "It doesn't", nothing sent, not asked again. */
+    @Test fun aPcCheckThatDoesntMatchOverTheCableSendsNothing() {
+        val usb = FakePc("", port = PadProtocol.USB_PORT).also { cable = it }
+        openPadEmpty()
+        assertNotNull("the tablet tries the cable by itself (HELLO)", usb.next(PadProtocol.HELLO, 10000))
+        assertNotNull("the PC check is asked about", device.wait(Until.findObject(By.textStartsWith("First time with TEST-PC on the USB cable")), 8000))
+        press("It doesn't")
+        assertNotNull("the presenter is told plainly", device.wait(Until.findObject(By.text("Don't connect: this may not be your PC.")), 4000))
+        assertNull("nothing is sent after HELLO, and the cable isn't tried again by itself", usb.got.poll(6, TimeUnit.SECONDS))
+        assertNull("the PC isn't remembered", prefs.getString(PadActivity.PIN_PREFIX + "TEST-PC", null))
+        shot("27c the cable's PC check doesn't match")
     }
 
     @Test fun theCableTakesOverFromWifiAndHandsBack() {

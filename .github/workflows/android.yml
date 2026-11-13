@@ -1,8 +1,8 @@
 name: Android
 
 # Every push that changes the Android app: test the shared rules, build the APK, run the app on an Android
-# emulator over another app (tap-through, every tool, undo, clear, eraser) and keep the screenshots as
-# "android-screenshots". On main, the APK also goes to the "android-latest" release: one download link.
+# emulator over another app (tap-through, every tool, undo, clear, eraser, recording, pad mode), on Android 10, 14
+# and 15, and keep the screenshots as "android-screenshots-api<N>". On main, the APK also goes to the "android-latest" release: one download link.
 on:
   push:
     paths: ["android/**", ".github/workflows/android.yml"]
@@ -13,7 +13,14 @@ permissions:
 
 jobs:
   android:
+    name: Android (emulator API ${{ matrix.api }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 35 and 34: clean recording (one app, the video drawing); 29: the old path, the whole screen straight to
+        # the encoder. Tests of recording one app skip themselves where Android doesn't offer "A single app".
+        api: [29, 34, 35]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -46,7 +53,7 @@ jobs:
         env:
           CONTRAST_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         with:
-          api-level: 35
+          api-level: ${{ matrix.api }}
           target: google_apis
           arch: x86_64
           disable-animations: true
@@ -58,18 +65,20 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: android-screenshots
+          name: android-screenshots-api${{ matrix.api }}
           path: |
             android/shots/
             android/app/build/reports/androidTests/
       - name: Name the APK
+        if: matrix.api == 35
         run: cp android/app/build/outputs/apk/release/app-release.apk ContrastInk.apk
       - uses: actions/upload-artifact@v4
+        if: matrix.api == 35
         with:
           name: ContrastInk-apk
           path: ContrastInk.apk
       - name: Update the android-latest release (main only)
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && matrix.api == 35
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

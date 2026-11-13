@@ -69,6 +69,9 @@ class InkView(context: Context, private val host: Host) : View(context) {
     /** The newest mark's opacity, 0 to 1 (for the app's own test). */
     val lastMarkAlpha get() = marks.drawing.lastOrNull()?.let { Color.alpha(it.color) / 255f }
     val canUndo get() = marks.canUndo
+    /** Goes up whenever a mark, or the line or shape being drawn, changes: not when only the laser moves (the recorder copies the layer less often then). */
+    var marksVersion = 0L
+        private set
 
     init { updateDescription() }
 
@@ -98,6 +101,7 @@ class InkView(context: Context, private val host: Host) : View(context) {
     private fun changed() {
         updateDescription()
         host.marksChanged()
+        marksVersion++
         invalidate()
     }
 
@@ -144,6 +148,7 @@ class InkView(context: Context, private val host: Host) : View(context) {
             MotionEvent.ACTION_UP -> { move(p); finishLive(commit = true) }
             MotionEvent.ACTION_CANCEL -> finishLive(commit = false)
         }
+        marksVersion++
         invalidate()
         return true
     }
@@ -226,7 +231,7 @@ class InkView(context: Context, private val host: Host) : View(context) {
         val start = shapeStart
         val end = shapeEnd
         live = null; shapeStart = null; shapeEnd = null; liveErasing = false
-        if (!commit) { invalidate(); return }
+        if (!commit) { marksVersion++; invalidate(); return }
         val mark = when {
             line != null && line.isNotEmpty() -> newMark(line, s, smooth = true)
             start != null && end != null && !Shapes.tooSmall(start, end) -> newMark(shapePoints(start, end, s), s, smooth = false)

@@ -79,7 +79,8 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
         const val MAX_PICTURE_PX = 4096
         /** After a session drops, quiet tries before "Lost the PC" shows (a Wi-Fi blip is usually over by then). */
         const val QUIET_RETRIES = 2
-        private const val CHECK_WIFI = "Check the tablet and the PC are on the same Wi-Fi, and that Contrast Ink on the PC has ⚙ Settings → Let a Tablet Draw Here ticked."
+        private const val DONT_CONNECT = "Don't connect: this may not be your PC."
+        private const val CHECK_WIFI ="Check the tablet and the PC are on the same Wi-Fi, and that Contrast Ink on the PC has ⚙ Settings → Let a Tablet Draw Here ticked."
     }
 
     private val dp by lazy { resources.displayMetrics.density }
@@ -101,6 +102,8 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
     /** The first time with a PC: "does the PC show this PC check?", over either screen, until answered. */
     private lateinit var checkPanel: LinearLayout
     private lateinit var checkText: TextView
+    /** The connection the question is about (Wi-Fi's or the cable's), while it is open. */
+    private var checking: PadConnection? = null
 
     // the pad
     private lateinit var padScreen: LinearLayout
@@ -239,7 +242,7 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
         }
         col.addView(text("Use this tablet as a pad", 26f, bold = true))
         col.addView(text("On the PC, open Contrast Ink and tick ⚙ Settings → Let a Tablet Draw Here: it shows a 6-digit code. Both must be on the same Wi-Fi.", 15f))
-        col.addView(text("Or plug the tablet into the PC with a USB cable (USB debugging on): the pad opens by itself, no code needed.", 15f).apply {
+        col.addView(text("Or plug the tablet into the PC with a USB cable (USB debugging on): the pad opens by itself, no code needed (the first time with a PC, compare its PC check).", 15f).apply {
             setTextColor(grey)
         })
         statusText = text("", 15f).apply { setTextColor(warn); visibility = View.GONE }
@@ -293,19 +296,30 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
     private fun buildCheckPanel(): LinearLayout {
         checkText = text("", 20f, bold = true).apply { gravity = Gravity.CENTER }
         val matches = button("It matches") {
+            val c = checking
             hideCheck()
-            connection?.confirm()
-            if (connectScreen.visibility == View.VISIBLE) statusText.text = "Connecting to $pcName…"
+            c?.confirm()
+            if (connectScreen.visibility == View.VISIBLE && c != null)
+                statusText.text = if (c === usbConnection) "Connecting over the USB cable…" else "Connecting to $pcName…"
         }.apply {
             background = GradientDrawable().apply { setColor(blue); cornerRadius = 10 * dp }
             setTextColor(Color.WHITE)
         }
         val doesnt = button("It doesn't") {
+            val c = checking
             hideCheck()
-            connection?.decline()
+            c?.decline()
+            if (c != null && c === usbConnection) {
+                // whatever answers on the cable isn't asked about again until Connect
+                usbConnection = null
+                links.usbDeclined()
+                if (padScreen.visibility == View.VISIBLE) Toast.makeText(this, DONT_CONNECT, Toast.LENGTH_LONG).show()
+                else showConnect(DONT_CONNECT)
+                return@button
+            }
             connection = null
             links.wifiEnded()
-            showConnect("Don't connect: this may not be your PC.")
+            showConnect(DONT_CONNECT)
         }
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -322,10 +336,14 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
         }
     }
 
-    private fun hideCheck() { checkPanel.visibility = View.GONE }
+    private fun hideCheck() { checkPanel.visibility = View.GONE; checking = null }
+
+    /** The question is about [c], which ended or was replaced: it goes. */
+    private fun hideCheckFor(c: PadConnection?) { if (checking === c) hideCheck() }
 
     private fun showConnect(message: String?, keyChanged: Boolean = false) {
-        hideCheck()
+        // a question about the cable's PC stays (its connection waits for it); one about a closed Wi-Fi link goes
+        if (checking == null || checking !== usbConnection) hideCheck()
         main.removeCallbacks(retry)
         reconnecting = false
         statusText.text = message ?: ""
@@ -366,6 +384,7 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
     private fun open() {
         val (host, port) = target ?: return
         main.removeCallbacks(retry)
+        hideCheckFor(connection)
         connection?.close()
         connection = null
         links.wifiEnded()
@@ -492,19 +511,26 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
         if (c === usbConnection) {
             usbPcName = name
             usbAcceptAnyway = null   // used once: from now on the new key is the one remembered
+            // the cable proves nothing (any app on this tablet can listen where the PC would be): a PC met for the
+            // first time is compared as on Wi-Fi, nothing sent until then
+            if (needsCheck) askCheck(c, "First time with $name on the USB cable: does the PC show the PC check $pcCheck? (⚙ Settings, beside the code)")
             return
         }
         if (c !== connection) return
         pcName = name
         acceptAnyway = null   // used once: from now on the new key is the one remembered
         if (connectScreen.visibility == View.VISIBLE) statusText.text = "Connecting to $name (PC check $pcCheck)…"
-        if (needsCheck) {
-            // nothing goes to the PC until the presenter has compared: a machine pretending to be it learns nothing
-            checkText.text = "First time with $name: does the PC show the PC check $pcCheck? (⚙ Settings, beside the code)"
-            checkText.contentDescription = checkText.text
-            checkPanel.visibility = View.VISIBLE
-        }
+        // nothing goes to the PC until the presenter has compared: a machine pretending to be it learns nothing
+        if (needsCheck) askCheck(c, "First time with $name: does the PC show the PC check $pcCheck? (⚙ Settings, beside the code)")
         updateTitle()
+    }
+
+    /** Asks the presenter whether [c]'s PC check matches the PC's. A newer question replaces an older one (which then times out). */
+    private fun askCheck(c: PadConnection, question: String) {
+        checking = c
+        checkText.text = question
+        checkText.contentDescription = question
+        checkPanel.visibility = View.VISIBLE
     }
 
     override fun onMessage(c: PadConnection, m: PcMessage) {
@@ -513,9 +539,9 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
             if (connectScreen.visibility == View.VISIBLE) pad.clearPicture()
             links.usbOpened()
             main.removeCallbacks(retry)
+            hideCheckFor(connection)
             connection?.close()
             connection = null
-            hideCheck()
             stopDiscovery()
             pcName = usbPcName
         }
@@ -584,12 +610,12 @@ class PadActivity : Activity(), PadConnection.Listener, PadView.Host {
     }
 
     override fun onClosed(c: PadConnection, end: PadConnection.End) {
-        if (c === usbConnection) { usbConnection = null; usbEnded(end); return }
+        if (c === usbConnection) { hideCheckFor(c); usbConnection = null; usbEnded(end); return }
         if (c !== connection) return   // an old connection's end: a newer one is already running
         connection = null
         links.wifiEnded()
         if (isFinishing) return
-        hideCheck()
+        hideCheckFor(c)
         val inSession = padScreen.visibility == View.VISIBLE
         when {
             end.why == PadConnection.Why.CHECK_TIMEOUT -> showConnect(sentence(end))

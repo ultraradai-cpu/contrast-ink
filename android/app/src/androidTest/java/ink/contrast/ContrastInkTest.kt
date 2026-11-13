@@ -64,6 +64,15 @@ class ContrastInkTest {
         // a test that failed while Android's recording question or app picker was up: close it for the next test
         if (InkService.running?.recorder?.active != true) repeat(2) { device.pressBack(); Thread.sleep(300) }
         inst.runOnMainSync { InkService.running?.quit() }
+        // what a test made fail or slow is back to normal for the next one
+        VideoCompositor.failSetUpForTest = false
+        VideoCompositor.failNextFrameForTest = false
+        ScreenRecorder.displayDelayForTest = 0
+        ScreenRecorder.maxFileBytesForTest = null
+        ScreenRecorder.freeBytesForTest = null
+        // a recording stopped by quitting is saved first: the service ends after that
+        val until = System.currentTimeMillis() + 30000
+        while (InkService.running != null && System.currentTimeMillis() < until) Thread.sleep(200)
     }
 
     private fun shot(name: String) { device.takeScreenshot(File(shots, "$name.png")) }
@@ -199,12 +208,20 @@ class ContrastInkTest {
         val choice = device.wait(Until.findObject(By.text(Pattern.compile("${oneApp.pattern()}|${entireScreen.pattern().removePrefix("(?i)")}"))), 5000)
         shot("$shotName a, Android asks")
         if (choice == null) runCatching { device.dumpWindowHierarchy(File(shots, "$shotName a, Android asks.xml")) }
-        if (singleApp) assertNotNull("Android offers \"A single app\" (Android 14+)", choice)
+        if (singleApp && choice == null) {
+            // some Android 14 builds ask without offering one app: nothing to test there
+            device.pressBack()
+            assumeTrue("this Android doesn't offer \"A single app\"", false)
+        }
         if (choice != null && !want.matcher(choice.text).matches()) {
             choice.click()   // opens the list of the two
             val option = device.wait(Until.findObject(By.text(want)), 3000)
+            if (singleApp && option == null) {
+                repeat(2) { device.pressBack(); Thread.sleep(300) }
+                assumeTrue("this Android doesn't offer \"A single app\"", false)
+            }
             assertNotNull("Android's list has \"${if (singleApp) "A single app" else "Entire screen"}\"", option)
-            option.click()
+            option!!.click()
             device.waitForIdle()
         }
         val start = device.wait(Until.findObject(By.text(Pattern.compile("(?i)start( now| recording)?|next|share screen|record( screen| app)?"))), 8000)
@@ -229,7 +246,8 @@ class ContrastInkTest {
 
     /** Waits for "Saved to the Gallery", and finds that video in the Gallery. */
     private fun savedVideo(shotName: String): Pair<String, Uri> {
-        val saved = device.wait(Until.findObject(By.desc(Pattern.compile("Saved to the Gallery: .*"))), 30000)
+        // (a recording that stopped by itself says why first)
+        val saved = device.wait(Until.findObject(By.desc(Pattern.compile("(?s).*Saved to the Gallery: .*"))), 30000)
         shot(shotName)
         assertNotNull("the video is saved to the Gallery (the toolbar says where)", saved)
         val name = saved!!.contentDescription.toString().substringAfterLast('/')
@@ -342,8 +360,10 @@ class ContrastInkTest {
         answerRecordingQuestion(singleApp = false, shotName = "09")
         assertNotNull("recording: ⏹ replaces ⏺", device.wait(Until.findObject(By.desc("Stop recording")), 8000))
         assertTrue("recording", recorder { it.active })
-        if (Build.VERSION.SDK_INT >= 34)
-            assertTrue("Android 14+: the recorder sees the toolbar in the picture: the entire screen", waitForMode(CleanRecording.Mode.ENTIRE_SCREEN))
+        if (Build.VERSION.SDK_INT >= 34) {
+            assertTrue("Android 14+: the recorder sees the toolbar's beacon in the picture: the entire screen", waitForMode(CleanRecording.Mode.ENTIRE_SCREEN))
+            assertTrue("no frame-sized bitmaps for the marks: the picture has them", !recorder { it.inkBitmapsAllocated })
+        }
         press("Draw on / off")
         drag(0.15f, 0.55f, 0.85f, 0.65f)
         Thread.sleep(1500)
@@ -403,27 +423,54 @@ class ContrastInkTest {
      * drawn into the video by Contrast Ink. Checked in the saved video's last frame: the red line is there, the
      * toolbar's rectangle has none of the toolbar's colour.
      */
-    @Test fun recordsOneAppWithoutTheToolbar() {
+    @Test fun recordsOneAppWithoutTheToolbar() = recordOneApp("3", Color.WHITE)
+
+    /**
+     * A dark slide, here exactly the toolbar's own colour (a #1E1E1E background was close enough before), under the
+     * toolbar: the old check took it for the toolbar ("entire screen") and the one-app video had no marks at all.
+     */
+    @Test fun recordsOneAppOverADarkSlide() = recordOneApp("4", TOOLBAR_COLOR)
+
+    /**
+     * The first frame comes 3 s late (starting the mic and the encoder can take that long): before, the recorder had
+     * stopped looking after 1.5 s, never decided, and the one-app video had no marks at all.
+     */
+    @Test fun recordsOneAppWhenTheFirstFrameIsLate() {
+        ScreenRecorder.displayDelayForTest = 3000
+        recordOneApp("5", Color.WHITE)
+    }
+
+    /**
+     * Android 14+: "A single app" (the stand-in other app) records that app without the toolbar, and the marks are
+     * drawn into the video by Contrast Ink. Checked in the saved video's last frame: the red line is there, and (on a
+     * light slide) the toolbar's rectangle has none of the toolbar's colour. [n]: the screenshots' number.
+     */
+    private fun recordOneApp(n: String, background: Int) {
         assumeTrue("one app can be recorded from Android 14", Build.VERSION.SDK_INT >= 34)
-        device.executeShellCommand("am start -W -n ${inst.context.packageName}/ink.contrast.OtherAppActivity")
+        device.executeShellCommand("am start -W --activity-clear-task -n ${inst.context.packageName}/ink.contrast.OtherAppActivity " +
+            "--ei ${OtherAppActivity.EXTRA_BACKGROUND} $background")
         device.wait(Until.findObject(By.text("Not tapped")), 8000)
         redPen()
 
         press("Record the screen")
-        answerRecordingQuestion(singleApp = true, shotName = "30")
+        answerRecordingQuestion(singleApp = true, shotName = "${n}0")
         assertNotNull("recording: ⏹ replaces ⏺", device.wait(Until.findObject(By.desc("Stop recording")), 10000))
         assertTrue("the recorder sees no toolbar in the picture: one app", waitForMode(CleanRecording.Mode.SINGLE_APP))
+        assertTrue("it says so", device.wait(Until.hasObject(By.desc(Pattern.compile("Recording one app: .*"))), 6000))
         assertNotNull("the stand-in app is in front", device.wait(Until.findObject(By.text(Pattern.compile("Not tapped|Tapped"))), 4000))
         press("Draw on / off")
         drag(0.15f, 0.55f, 0.85f, 0.65f)
         Thread.sleep(1500)
-        shot("31 recording one app, red line")
+        shot("${n}1 recording one app, red line")
+        val beaconGone = System.currentTimeMillis() + 5000
+        while (beaconShowing() && System.currentTimeMillis() < beaconGone) Thread.sleep(200)
+        assertTrue("decided for good: the toolbar's beacon is gone", !beaconShowing())
         val bar = toolbarOnScreen()
 
         press("Stop recording")
-        val (_, uri) = savedVideo("32 saved")
-        ctx.contentResolver.openInputStream(uri)!!.use { input -> File(shots, "33 the one-app recording.mp4").outputStream().use { input.copyTo(it) } }
-        val frame = lastFrame(uri, "33b last frame of the one-app video")
+        val (_, uri) = savedVideo("${n}2 saved")
+        ctx.contentResolver.openInputStream(uri)!!.use { input -> File(shots, "${n}3 the one-app recording.mp4").outputStream().use { input.copyTo(it) } }
+        val frame = lastFrame(uri, "${n}3b last frame of the one-app video")
         ctx.contentResolver.delete(uri, null, null)
 
         // it is the stand-in app: its blue lower half
@@ -432,8 +479,186 @@ class ContrastInkTest {
         assertTrue("the video shows the stand-in app (its blue button), not ${Integer.toHexString(blue)}",
             Color.blue(blue) > 150 && Color.red(blue) < 120)
         assertRedLine(frame, "one app")
-        val share = toolbarShare(frame, bar)
-        assertTrue("one app: no toolbar in the video (${(share * 1000).toInt() / 10f}% of its box is its colour)", share < 0.02f)
+        if (background == Color.WHITE) {
+            val share = toolbarShare(frame, bar)
+            assertTrue("one app: no toolbar in the video (${(share * 1000).toInt() / 10f}% of its box is its colour)", share < 0.02f)
+        }
+    }
+
+    /**
+     * Android 14+, one app: the recorded app goes out of sight (the home screen in front). The recorder knows, says
+     * so once, and draws no marks over the app's frozen last picture meanwhile; back in sight, they are drawn again.
+     */
+    @Test fun noMarksOverTheRecordedAppWhileItIsOutOfSight() {
+        assumeTrue("one app can be recorded from Android 14", Build.VERSION.SDK_INT >= 34)
+        device.executeShellCommand("am start -W -n ${inst.context.packageName}/ink.contrast.OtherAppActivity")
+        device.wait(Until.findObject(By.text("Not tapped")), 8000)
+        redPen()
+        press("Record the screen")
+        answerRecordingQuestion(singleApp = true, shotName = "60")
+        assertNotNull(device.wait(Until.findObject(By.desc("Stop recording")), 10000))
+        assertTrue(waitForMode(CleanRecording.Mode.SINGLE_APP))
+
+        device.pressHome()
+        assertTrue("the recorder knows the app is out of sight", waitFor { !it.recordedAppVisible })
+        assertTrue("and says so", device.wait(Until.hasObject(By.desc(CleanRecording.HIDDEN_NOTICE)), 5000))
+        assertTrue("no marks are drawn into the video meanwhile", !compositorDrawsInk())
+        shot("61 the recorded app out of sight")
+
+        device.executeShellCommand("am start -W -n ${inst.context.packageName}/ink.contrast.OtherAppActivity")
+        assertTrue("back in sight", waitFor { it.recordedAppVisible })
+        assertTrue("the marks are drawn into the video again", compositorDrawsInk())
+        press("Stop recording")
+        val (_, uri) = savedVideo("62 saved")
+        ctx.contentResolver.delete(uri, null, null)
+    }
+
+    /** Android 14+: OpenGL doesn't start. The recording goes on all the same, straight to the encoder, and says so. */
+    @Test fun recordsWhenTheGraphicsFailToStart() {
+        assumeTrue("the video drawing is used from Android 14", Build.VERSION.SDK_INT >= 34)
+        VideoCompositor.failSetUpForTest = true
+        device.executeShellCommand("am start -W -n ${inst.context.packageName}/ink.contrast.OtherAppActivity")
+        device.wait(Until.findObject(By.text("Not tapped")), 8000)
+        redPen()
+        press("Record the screen")
+        answerRecordingQuestion(singleApp = false, shotName = "40")
+        assertNotNull("recording all the same", device.wait(Until.findObject(By.desc("Stop recording")), 10000))
+        assertTrue("it says the video drawing failed", device.wait(Until.hasObject(By.desc(Pattern.compile("(?s).*graphics failed.*"))), 6000))
+        assertTrue("straight to the encoder", recorder { it.active && !it.compositing })
+        press("Draw on / off")
+        drag(0.15f, 0.55f, 0.85f, 0.65f)
+        Thread.sleep(1500)
+        shot("41 recording without the video drawing")
+        press("Stop recording")
+        val (_, uri) = savedVideo("42 saved")
+        val frame = lastFrame(uri, "42b last frame, the graphics failed at the start")
+        ctx.contentResolver.delete(uri, null, null)
+        assertRedLine(frame, "graphics failed at the start, entire screen")
+    }
+
+    /** Android 14+: OpenGL fails in the middle of a lecture. The recording goes on (and keeps what came before). */
+    @Test fun keepsRecordingWhenTheGraphicsFailMidway() {
+        assumeTrue("the video drawing is used from Android 14", Build.VERSION.SDK_INT >= 34)
+        device.executeShellCommand("am start -W -n ${inst.context.packageName}/ink.contrast.OtherAppActivity")
+        device.wait(Until.findObject(By.text("Not tapped")), 8000)
+        redPen()
+        press("Record the screen")
+        answerRecordingQuestion(singleApp = false, shotName = "43")
+        assertNotNull(device.wait(Until.findObject(By.desc("Stop recording")), 10000))
+        assertTrue(waitForMode(CleanRecording.Mode.ENTIRE_SCREEN))
+        assertTrue("through the video drawing at first", recorder { it.compositing })
+        Thread.sleep(1500)
+
+        VideoCompositor.failNextFrameForTest = true
+        press("Draw on / off")   // the screen changes: a new frame, which fails
+        assertTrue("the video drawing gave up", waitFor { !it.compositing })
+        assertTrue("still recording", recorder { it.active })
+        assertTrue("it says so", device.wait(Until.hasObject(By.desc(Pattern.compile("(?s).*graphics failed.*"))), 6000))
+        drag(0.15f, 0.55f, 0.85f, 0.65f)
+        Thread.sleep(2000)
+        shot("44 recording after the graphics failed")
+        press("Stop recording")
+        val (_, uri) = savedVideo("45 saved")
+        val ms = MediaMetadataRetriever().run {
+            setDataSource(ctx, uri)
+            val d = extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLong() ?: 0
+            release(); d
+        }
+        val frame = lastFrame(uri, "45b last frame, the graphics failed midway")
+        ctx.contentResolver.delete(uri, null, null)
+        assertTrue("the video holds both halves ($ms ms)", ms >= 4000)
+        assertRedLine(frame, "after the graphics failed: the picture goes straight to the encoder")
+    }
+
+    /** A file nearing its size limit: the recording goes on in part 2, and every part reaches the Gallery. */
+    @Test fun aLongLectureGoesOnInASecondPart() {
+        ScreenRecorder.maxFileBytesForTest = 1_500_000
+        device.executeShellCommand("am start -W -n ${inst.context.packageName}/ink.contrast.OtherAppActivity")
+        device.wait(Until.findObject(By.text("Not tapped")), 8000)
+        press("Laser pointer")
+        if (drawing()) press("Draw on / off")
+        press("Record the screen")
+        answerRecordingQuestion(singleApp = false, shotName = "50")
+        assertNotNull(device.wait(Until.findObject(By.desc("Stop recording")), 10000))
+        press("Draw on / off")
+        // the laser moving keeps the picture changing, and the file growing
+        val until = System.currentTimeMillis() + 60000
+        var i = 0
+        while (System.currentTimeMillis() < until && !recorder { it.partCount >= 2 }) {
+            drag(0.1f, 0.5f + (i % 4) * 0.1f, 0.9f, 0.9f - (i % 4) * 0.1f); i++
+        }
+        assertTrue("the recording went on in a second file", recorder { it.partCount >= 2 })
+        assertTrue("still recording", recorder { it.active })
+        shot("51 recording, part 2")
+        drag(0.1f, 0.6f, 0.9f, 0.7f)
+        press("Stop recording")
+        val saved = device.wait(Until.findObject(By.desc(Pattern.compile("Saved to the Gallery in \\d+ parts: .*"))), 60000)
+        shot("52 saved in parts")
+        assertNotNull("saved in parts, all of them in the Gallery", saved)
+        val names = saved!!.contentDescription.toString().substringAfter(": ").split(", ").map { it.substringAfterLast('/') }
+        assertTrue("named part 1, part 2 … ($names)", names[0].endsWith(" part 1.mp4") && names[1].endsWith(" part 2.mp4"))
+        for (name in names) {
+            ctx.contentResolver.query(MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.Video.Media._ID), "${MediaStore.Video.Media.DISPLAY_NAME} = ?", arrayOf(name), null)!!.use {
+                assertTrue("\"$name\" is in the Gallery", it.moveToFirst())
+                val uri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, it.getLong(0))
+                val ms = MediaMetadataRetriever().run {
+                    setDataSource(ctx, uri)
+                    val d = extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLong() ?: 0
+                    release(); d
+                }
+                assertTrue("\"$name\" plays ($ms ms)", ms > 0)
+                ctx.contentResolver.delete(uri, null, null)
+            }
+        }
+    }
+
+    /** Little space left: warned when it starts; nearly none: it stops by itself, and the video is kept. */
+    @Test fun lowSpaceWarnsThenStopsAndKeepsTheVideo() {
+        ScreenRecorder.freeBytesForTest = 600_000_000
+        device.executeShellCommand("am start -W -n ${inst.context.packageName}/ink.contrast.OtherAppActivity")
+        device.wait(Until.findObject(By.text("Not tapped")), 8000)
+        redPen()
+        press("Record the screen")
+        answerRecordingQuestion(singleApp = false, shotName = "55")
+        assertNotNull(device.wait(Until.findObject(By.desc("Stop recording")), 10000))
+        assertTrue("warned: under 1 GB", device.wait(Until.hasObject(By.desc(Pattern.compile("(?s).*Less than 1 GB free.*"))), 6000))
+        press("Draw on / off")
+        drag(0.15f, 0.55f, 0.85f, 0.65f)
+        Thread.sleep(2000)
+
+        ScreenRecorder.freeBytesForTest = 100_000_000
+        inst.runOnMainSync { InkService.running?.recorder?.checkSpace() }
+        assertTrue("stopped by itself", !recorder { it.active })
+        val saved = device.wait(Until.findObject(By.desc(Pattern.compile("(?s)The recording stopped: less than 200 MB free.*Saved to the Gallery: .*"))), 30000)
+        shot("56 stopped for space, kept")
+        assertNotNull("says why, and the video is kept", saved)
+        val (_, uri) = savedVideo("56b saved")
+        val frame = lastFrame(uri, "56c last frame, stopped for space")
+        ctx.contentResolver.delete(uri, null, null)
+        assertRedLine(frame, "stopped for space")
+    }
+
+    private fun waitFor(check: (ScreenRecorder) -> Boolean): Boolean {
+        val until = System.currentTimeMillis() + 8000
+        while (System.currentTimeMillis() < until) {
+            if (recorder(check)) return true
+            Thread.sleep(200)
+        }
+        return false
+    }
+
+    private fun beaconShowing(): Boolean {
+        var on = false
+        inst.runOnMainSync { on = InkService.running?.beaconOnScreen() != null }
+        return on
+    }
+
+    /** Whether the compositor draws the marks into frames now. */
+    private fun compositorDrawsInk(): Boolean {
+        var on = false
+        inst.runOnMainSync { on = InkService.running?.recorder?.drawsInkIntoVideo == true }
+        return on
     }
 
     private fun recorder(check: (ScreenRecorder) -> Boolean): Boolean {
