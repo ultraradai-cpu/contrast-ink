@@ -32,6 +32,8 @@ final class Stage: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate, UI
     private var swipes: [UISwipeGestureRecognizer] = []
     private let twoFingerTap = UITapGestureRecognizer()
     private var shownPage = -1
+    /// Which page and size the slide's picture is (it is drawn away from the main thread, then shown).
+    private var pictureFor: (page: Int, width: CGFloat)?
     private var shownDrawing = PKDrawing()
     private var applying = false               // a drawing set by the app, not drawn by the presenter
     private var pageSize = CGSize(width: 1024, height: 768)
@@ -53,6 +55,9 @@ final class Stage: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate, UI
         canvas.showsVerticalScrollIndicator = false
         canvas.showsHorizontalScrollIndicator = false
         canvas.contentInsetAdjustmentBehavior = .never
+        // the canvas is a scroll view: on iPadOS 17 it would take Page Up / Page Down (a presenter clicker's keys)
+        // to scroll, and the slide wouldn't change
+        if #available(iOS 17.0, *) { canvas.allowsKeyboardScrolling = false }
         canvas.accessibilityIdentifier = "canvas"
         // PencilKit swaps black and white ink in dark mode: marks must look the same as in the recording and on the projector
         canvas.overrideUserInterfaceStyle = .light
@@ -102,9 +107,34 @@ final class Stage: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate, UI
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    // MARK: Page Up / Page Down / Return
+
+    // A presenter clicker sends Page Down / Page Up (some send Return). iPadOS keeps those keys for scrolling and
+    // default buttons and doesn't hand them to SwiftUI's keyboard shortcuts, so the stage has its own key commands,
+    // with priority over the system's; it is the first responder while the slides show (or the canvas inside it is).
+    override var canBecomeFirstResponder: Bool { true }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil { DispatchQueue.main.async { [weak self] in _ = self?.becomeFirstResponder() } }
+    }
+
+    override var keyCommands: [UIKeyCommand]? {
+        let next = #selector(nextSlide), previous = #selector(previousSlide)
+        let commands = [UIKeyCommand(input: UIKeyCommand.inputPageDown, modifierFlags: [], action: next),
+                        UIKeyCommand(input: "\r", modifierFlags: [], action: next),
+                        UIKeyCommand(input: UIKeyCommand.inputPageUp, modifierFlags: [], action: previous)]
+        for c in commands { c.wantsPriorityOverSystemBehavior = true }
+        return commands
+    }
+
+    @objc private func nextSlide() { lecture.next() }
+    @objc private func previousSlide() { lecture.previous() }
+
     // MARK: showing the slide and its marks
 
     func refresh() {
+        if window != nil, !isFirstResponder { becomeFirstResponder() }
         guard let deck = lecture.deck else { return }
         if lecture.page != shownPage {
             shownPage = lecture.page
@@ -143,10 +173,28 @@ final class Stage: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate, UI
         canvas.contentOffset = .zero
         slide.frame = CGRect(origin: .zero, size: frame.size)
         let px = frame.width * (window?.screen.scale ?? 2)
-        slide.image = deck.image(shownPage, pixelWidth: px)
+        showPicture(deck, px)
         deck.drawAhead(around: shownPage, pixelWidth: px)
         canvas.sendSubviewToBack(slide)
         if let window { slideRectChanged?(canvas.convert(canvas.bounds, to: window), window) }
+    }
+
+    /// The slide's picture: from the cache at once, else drawn or decoded away from the main thread (a big
+    /// picture would hold up the Pencil). Meanwhile the old size of this slide stays, never another slide's.
+    private func showPicture(_ deck: Deck, _ px: CGFloat) {
+        let page = shownPage
+        if let pictureFor, pictureFor.page == page, pictureFor.width == px { return }
+        if let img = deck.cachedImage(page, pixelWidth: px) {
+            slide.image = img
+            pictureFor = (page, px)
+            return
+        }
+        if pictureFor?.page != page { slide.image = nil }
+        deck.loadImage(page, pixelWidth: px) { [weak self, weak deck] img in
+            guard let self, let deck, self.lecture.deck === deck, self.shownPage == page else { return }
+            self.slide.image = img
+            self.pictureFor = (page, px)
+        }
     }
 
     // MARK: tools
@@ -178,7 +226,10 @@ final class Stage: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate, UI
         lecture.canvasChanged(canvasView.drawing, erasing: canvasView.tool is PKEraserTool)
     }
 
-    func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) { inStroke = true }
+    func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
+        inStroke = true
+        lecture.beginStroke()   // the stroke is this slide's, even if the slide changes before the pen lifts
+    }
 
     func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
         inStroke = false
@@ -227,6 +278,7 @@ final class Stage: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate, UI
             shapeStart = CGPoint(x: p.x - t.x / z, y: p.y - t.y / z)
             preview.strokeColor = lecture.inkColor.cgColor
             preview.lineWidth = CGFloat(Settings.widths[lecture.settings.width]) * z
+            lecture.beginStroke()
             fallthrough
         case .changed:
             let pts = shapePoints(to: slidePoint(g), circle: g.modifierFlags.contains(.shift) || Lecture.shiftHeld)
@@ -239,10 +291,11 @@ final class Stage: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate, UI
         case .ended:
             preview.path = nil
             let end = slidePoint(g)
-            guard !Shapes.tooSmall(Pt(shapeStart.x, shapeStart.y), Pt(end.x, end.y)) else { return }
+            guard !Shapes.tooSmall(Pt(shapeStart.x, shapeStart.y), Pt(end.x, end.y)) else { return lecture.cancelStroke() }
             lecture.add(shape: shapePoints(to: end, circle: g.modifierFlags.contains(.shift) || Lecture.shiftHeld))
         default:
             preview.path = nil
+            lecture.cancelStroke()
         }
     }
 

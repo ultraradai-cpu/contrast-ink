@@ -15,7 +15,7 @@ permissions:
 jobs:
   ios:
     runs-on: macos-15
-    timeout-minutes: 40
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: ios
@@ -34,7 +34,8 @@ jobs:
           echo "simulator: $(xcrun simctl list devices available | grep "$sim")"
           xcodebuild test -project ContrastInk.xcodeproj -scheme ContrastInk \
             -destination "id=$sim" -resultBundlePath results.xcresult \
-            CODE_SIGNING_ALLOWED=NO | tail -200
+            CODE_SIGNING_ALLOWED=NO > test.log 2>&1 || { tail -200 test.log; exit 1; }
+          tail -200 test.log
       - name: Save the screenshots
         if: always()
         run: |
@@ -43,6 +44,8 @@ jobs:
             xcrun xcresulttool export attachments --path results.xcresult --output-path shots || true
           fi
           ls -la shots
+          # every failed check, with the steps just before it (the tail above can miss an early test's)
+          if [ -f test.log ]; then grep -n -B12 -E "error: -\[|Test Case .* failed" test.log | grep -v -E "Requesting snapshot|Checking existence|Find the" | tail -300 || true; fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:

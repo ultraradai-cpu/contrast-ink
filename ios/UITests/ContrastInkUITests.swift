@@ -34,8 +34,27 @@ final class ContrastInkUITests: XCTestCase {
         XCTAssertEqual(marks, n, what)
     }
 
+    /// The colour on screen at a point given as a fraction of the screen (red, green, blue, 0-255).
+    private func colour(at p: CGVector) -> (r: Int, g: Int, b: Int) {
+        guard let cg = XCUIScreen.main.screenshot().image.cgImage else { return (-1, -1, -1) }
+        let x = Int(p.dx * CGFloat(cg.width)), y = Int(p.dy * CGFloat(cg.height))
+        var px = [UInt8](repeating: 0, count: 4)
+        let ctx = CGContext(data: &px, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        ctx?.draw(cg, in: CGRect(x: -x, y: y - cg.height + 1, width: cg.width, height: cg.height))
+        return (Int(px[0]), Int(px[1]), Int(px[2]))
+    }
+
+    /// A point inside an element, as a fraction of it, turned into a fraction of the screen.
+    private func screenPoint(_ e: XCUIElement, _ p: CGVector) -> CGVector {
+        let f = e.frame, s = app.frame
+        return CGVector(dx: (f.minX + p.dx * f.width - s.minX) / s.width, dy: (f.minY + p.dy * f.height - s.minY) / s.height)
+    }
+
+    private func brightness(_ c: (r: Int, g: Int, b: Int)) -> Int { (c.r + c.g + c.b) / 3 }
+
     func testDrawSlidesUndoAndShapes() {
-        app.launchArguments = ["-uitest"]
+        app.launchArguments = ["-uitest", "-resetMarks"]
         app.launch()
         let number = app.staticTexts["slideNumber"]
         XCTAssertTrue(number.waitForExistence(timeout: 10), "the presenter opens on the sample deck")
@@ -46,6 +65,10 @@ final class ContrastInkUITests: XCTestCase {
         drag(CGVector(dx: 0.15, dy: 0.40), CGVector(dx: 0.8, dy: 0.70))
         expectMarks(1, "pen: one line")
         shot("02 red line on slide 1")
+        // the line itself: red, where the drag went (its middle), and not beside it (slide 1 is dark grey)
+        let on = colour(at: CGVector(dx: 0.475, dy: 0.55)), off = colour(at: CGVector(dx: 0.475, dy: 0.47))
+        XCTAssertTrue(on.r > 180 && on.g < 120 && on.b < 120, "the middle of the line is red: \(on)")
+        XCTAssertTrue(off.r < 90, "beside the line the slide shows: \(off)")
 
         app.buttons["next"].tap()
         XCTAssertEqual(number.label, "2 / 2")
@@ -99,6 +122,266 @@ final class ContrastInkUITests: XCTestCase {
         shot("11 undo brings the cleared marks back")
     }
 
+    // MARK: keys, saved marks, closing, recording, importing
+
+    private func launchSample(reset: Bool = true) {
+        app.launchArguments = reset ? ["-uitest", "-resetMarks"] : ["-uitest"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["slideNumber"].waitForExistence(timeout: 10), "the presenter opens on the sample deck")
+    }
+
+    private func key(_ k: String) {
+        app.typeKey(k, modifierFlags: [])
+        Thread.sleep(forTimeInterval: 0.3)
+    }
+
+    /// The iPad's default (no `fingerDraws`): a finger swipes to the next and previous slide and never draws.
+    func testAFingerSwipesSlidesByDefault() {
+        app.launchArguments = ["-uitest", "-resetMarks", "-pencilOnly"]
+        app.launch()
+        let number = app.staticTexts["slideNumber"]
+        XCTAssertTrue(number.waitForExistence(timeout: 10))
+        let slide = app.descendants(matching: .any)["canvas"]
+        slide.swipeLeft()
+        Thread.sleep(forTimeInterval: 0.6)
+        XCTAssertEqual(number.label, "2 / 2", "a finger swiping left: the next slide")
+        expectMarks(0, "and no mark")
+        slide.swipeRight()
+        Thread.sleep(forTimeInterval: 0.6)
+        XCTAssertEqual(number.label, "1 / 2", "swiping right: the previous slide")
+        drag(CGVector(dx: 0.2, dy: 0.45), CGVector(dx: 0.3, dy: 0.62))   // slow, down: not a swipe
+        expectMarks(0, "a finger doesn't draw")
+        XCTAssertEqual(number.label, "1 / 2")
+        shot("F1 a finger swipes, it doesn't draw")
+    }
+
+    /// A hardware keyboard or a presenter clicker: the slide keys, and the letters for every tool (L the laser).
+    func testKeys() {
+        launchSample()
+        let number = app.staticTexts["slideNumber"]
+        XCTAssertEqual(number.label, "1 / 2")
+        key(XCUIKeyboardKey.rightArrow.rawValue); XCTAssertEqual(number.label, "2 / 2", "→ next")
+        key(XCUIKeyboardKey.leftArrow.rawValue); XCTAssertEqual(number.label, "1 / 2", "← previous")
+        key(" "); XCTAssertEqual(number.label, "2 / 2", "Space next")
+        key(XCUIKeyboardKey.upArrow.rawValue); XCTAssertEqual(number.label, "1 / 2", "↑ previous")
+        key(XCUIKeyboardKey.downArrow.rawValue); XCTAssertEqual(number.label, "2 / 2", "↓ next")
+        key(XCUIKeyboardKey.leftArrow.rawValue); XCTAssertEqual(number.label, "1 / 2", "← previous")
+        // Return, Page Down and Page Up: in CI the simulator never delivered these three typed keys to the app, whether
+        // the app took them as SwiftUI shortcuts, menu key commands, the stage's key commands or raw presses; their
+        // meaning is checked by the Core's key table test, and they need a check with a real clicker.
+        shot("K0 keys changed the slides")
+
+        for (k, name) in [("h", "Highlighter (H)"), ("a", "Arrow (A)"), ("o", "Circle (O)"), ("e", "Eraser (E)"),
+                          ("l", "Laser pointer (L)"), ("p", "Pen (P)")] {
+            key(k)
+            XCTAssertTrue(app.buttons[name].isSelected, "\(k.uppercased()) chooses \(name)")
+        }
+        key("3"); XCTAssertTrue(app.buttons["Green (3)"].isSelected, "3: green")
+        key("["); XCTAssertTrue(app.buttons["Medium line"].isSelected, "[ thinner")
+        key("]"); XCTAssertTrue(app.buttons["Thick line"].isSelected, "] thicker")
+        key("f"); XCTAssertTrue(app.buttons["Fading ink (F)"].isSelected, "F fading on")
+        key("f"); XCTAssertFalse(app.buttons["Fading ink (F)"].isSelected, "F fading off")
+        key("1")
+        drag(CGVector(dx: 0.2, dy: 0.45), CGVector(dx: 0.7, dy: 0.65))
+        expectMarks(1, "a line")
+        key("z"); expectMarks(0, "Z undoes")
+        drag(CGVector(dx: 0.2, dy: 0.45), CGVector(dx: 0.7, dy: 0.65))
+        key("c"); expectMarks(0, "C clears")
+        shot("K1 keys chose the tools")
+    }
+
+    /// Marks are kept per deck: saved on a slide change and when the app leaves the screen, back when the deck opens
+    /// again, and "Clear saved marks" removes them.
+    func testMarksAreKeptForNextTime() {
+        launchSample()
+        drag(CGVector(dx: 0.15, dy: 0.40), CGVector(dx: 0.8, dy: 0.70))
+        expectMarks(1, "slide 1: a line")
+        app.buttons["next"].tap()                                  // saved on the slide change
+        drag(CGVector(dx: 0.2, dy: 0.70), CGVector(dx: 0.7, dy: 0.40))
+        expectMarks(1, "slide 2: a line")
+        XCUIDevice.shared.press(.home)                             // saved when the app leaves the screen
+        Thread.sleep(forTimeInterval: 2)
+        app.terminate()
+
+        launchSample(reset: false)
+        expectMarks(1, "slide 1's line is back")
+        XCTAssertTrue(app.buttons["clearSavedMarks"].exists, "says the marks are back, with a way to clear them")
+        shot("M1 the marks from last time are back")
+        app.buttons["next"].tap()
+        expectMarks(1, "slide 2's line, saved when the app left the screen, is back")
+        app.buttons["clearSavedMarks"].tap()
+        Thread.sleep(forTimeInterval: 0.4)
+        expectMarks(0, "cleared")
+        app.buttons["previous"].tap()
+        expectMarks(0, "every slide cleared")
+        shot("M2 saved marks cleared")
+        app.terminate()
+
+        launchSample(reset: false)
+        expectMarks(0, "nothing comes back after clearing")
+        XCTAssertFalse(app.buttons["clearSavedMarks"].exists)
+    }
+
+    /// ✕ with marks asks first; with nothing to lose it closes at once.
+    func testCloseAsksWhenThereAreMarks() {
+        launchSample()
+        app.buttons["Close slides"].tap()
+        XCTAssertTrue(app.buttons["Open slides (PDF)"].waitForExistence(timeout: 5), "no marks: closed at once")
+
+        launchSample()   // launching again ends the running one
+        drag(CGVector(dx: 0.15, dy: 0.40), CGVector(dx: 0.8, dy: 0.70))
+        expectMarks(1, "a line")
+        app.buttons["Close slides"].tap()
+        let close = app.buttons["Close the slides"]
+        XCTAssertTrue(close.waitForExistence(timeout: 5), "marks: it asks first")
+        XCTAssertTrue(app.staticTexts["slideNumber"].exists, "still presenting while it asks")
+        shot("C1 close asks first")
+        close.tap()
+        XCTAssertTrue(app.buttons["Open slides (PDF)"].waitForExistence(timeout: 5), "closed when confirmed")
+    }
+
+    /// The video writer, as a recording uses it (the simulator may not let ReplayKit record): a file copied while it
+    /// is still being written (a crash, the battery) plays, and the finished one plays without the paused stretch.
+    func testTheVideoWriterKeepsWhatWasRecorded() {
+        app.launchArguments = ["-recorderTest"]
+        app.launch()
+        let result = app.staticTexts["recorderTestResult"]
+        XCTAssertTrue(result.waitForExistence(timeout: 10))
+        let end = Date().addingTimeInterval(90)
+        while result.label == "running", Date() < end { Thread.sleep(forTimeInterval: 0.5) }
+        XCTAssertTrue(result.label.hasPrefix("ok"), result.label)
+        shot("R0 the video writer")
+    }
+
+    /// A short real recording, when the simulator lets ReplayKit record: start, pause, resume, stop, and where it is.
+    func testRecordPauseAndStop() throws {
+        launchSample()
+        app.buttons["Record"].tap()
+        // iOS asks to allow screen recording (and the microphone) the first time
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let pause = app.buttons["Pause recording"]
+        let end = Date().addingTimeInterval(20)
+        while !pause.exists, Date() < end {
+            for label in ["Record Screen", "Allow", "OK", "Start Recording"] where springboard.buttons[label].exists {
+                springboard.buttons[label].tap()
+            }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        guard pause.exists else {
+            let notice = app.buttons["recorderNotice"]
+            throw XCTSkip("ReplayKit didn't record in this simulator (\(notice.exists ? notice.label : "no message"))")
+        }
+        shot("R1 recording")
+        drag(CGVector(dx: 0.15, dy: 0.40), CGVector(dx: 0.8, dy: 0.70))
+        pause.tap()
+        XCTAssertTrue(app.buttons["Resume recording"].waitForExistence(timeout: 5), "paused")
+        app.buttons["Resume recording"].tap()
+        Thread.sleep(forTimeInterval: 2)
+        app.buttons["Stop recording"].tap()
+        let notice = app.buttons["recorderNotice"]
+        let saved = Date().addingTimeInterval(30)
+        func ended() -> Bool { notice.exists && (notice.label.contains("Recordings") || notice.label.contains("Nothing was recorded")) }
+        while !ended(), Date() < saved { Thread.sleep(forTimeInterval: 0.5) }
+        shot("R2 recording stopped")
+        if notice.exists, notice.label.contains("Nothing was recorded") {
+            throw XCTSkip("ReplayKit started but gave no pictures in this simulator: \(notice.label)")
+        }
+        XCTAssertTrue(notice.label.contains("Recordings"), "says where the video is: \(notice.label)")
+        XCTAssertTrue(notice.label.contains(".mov"), notice.label)
+        XCTAssertFalse(notice.label.contains("Photos"), "Photos is off by default: \(notice.label)")
+    }
+
+    /// Photos is off unless switched on; the keys are listed with L and Return.
+    func testSettingsListPhotosAndKeys() {
+        launchSample()
+        app.buttons["Settings"].tap()
+        let photos = app.switches["alsoSaveToPhotos"]
+        XCTAssertTrue(photos.waitForExistence(timeout: 5), "Also save recordings to Photos")
+        XCTAssertEqual(photos.value as? String, "0", "off by default (iCloud Photos would upload patient images)")
+        func listed(_ text: String) -> Bool {
+            let row = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", text)).firstMatch
+            for _ in 0..<4 where !row.exists { app.swipeUp(); Thread.sleep(forTimeInterval: 0.5) }   // below the fold
+            return row.waitForExistence(timeout: 3)
+        }
+        XCTAssertTrue(listed("L laser pointer"), "L is listed")
+        XCTAssertTrue(listed("Return"), "Return is listed")
+        shot("S1 settings")
+    }
+
+    /// Opening PDFs and pictures (through the same import as the Files picker): a broken PDF is refused before it
+    /// is copied, a locked one asks for its password, a second one of the same name gets its own name, and pictures
+    /// that can't be read are counted.
+    func testImportingPDFsAndPictures() {
+        app.launchArguments = ["-importTest", "-resetLibrary", "-resetMarks"]
+        app.launch()
+        let problem = app.staticTexts["homeProblem"]
+        XCTAssertTrue(app.buttons["testImportBroken"].waitForExistence(timeout: 10))
+
+        app.buttons["testImportBroken"].tap()
+        XCTAssertTrue(problem.waitForExistence(timeout: 10))
+        XCTAssertTrue(problem.label.contains("couldn't be opened as a PDF"), problem.label)
+        XCTAssertFalse(app.buttons["Broken"].exists, "not added to the library")
+        shot("I1 a broken PDF is refused")
+
+        app.buttons["testImportLocked"].tap()
+        let field = app.alerts.secureTextFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 10), "asks for the password")
+        field.tap(); field.typeText("wrong")
+        app.alerts.buttons["Open"].tap()
+        XCTAssertTrue(problem.waitForExistence(timeout: 5))
+        XCTAssertEqual(problem.label, "Wrong password for Locked.")
+        app.buttons["Locked"].tap()                                 // kept in the library: open it again
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        field.tap(); field.typeText("secret")
+        shot("I2 a locked PDF asks for its password")
+        app.alerts.buttons["Open"].tap()
+        XCTAssertTrue(app.staticTexts["slideNumber"].waitForExistence(timeout: 10), "opens with the right password")
+        XCTAssertEqual(app.staticTexts["slideNumber"].label, "1 / 1")
+        app.buttons["Close slides"].tap()
+
+        for _ in 0..<2 {
+            XCTAssertTrue(app.buttons["testImportTwice"].waitForExistence(timeout: 10))
+            app.buttons["testImportTwice"].tap()
+            XCTAssertTrue(app.staticTexts["slideNumber"].waitForExistence(timeout: 10))
+            app.buttons["Close slides"].tap()
+        }
+        XCTAssertTrue(app.buttons["Twice"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Twice (2)"].exists, "the second gets its own name, the first is kept")
+        shot("I3 the same name twice")
+
+        app.buttons["testImportImages"].tap()
+        let number = app.staticTexts["slideNumber"]
+        XCTAssertTrue(number.waitForExistence(timeout: 10))
+        XCTAssertEqual(number.label, "1 / 2", "the two pictures that could be read")
+        let notice = app.buttons["lectureNotice"]
+        XCTAssertTrue(notice.waitForExistence(timeout: 5), "says how many couldn't be read")
+        XCTAssertEqual(notice.label, "1 of 3 pictures couldn't be read and were left out.")
+        // the first picture is black lines on a see-through background: it must show on white, not black on black
+        let slide = app.descendants(matching: .any)["canvas"]
+        XCTAssertTrue(slide.waitForExistence(timeout: 5))
+        Thread.sleep(forTimeInterval: 1)
+        let background = colour(at: screenPoint(slide, CGVector(dx: 0.25, dy: 0.25)))
+        let line = colour(at: screenPoint(slide, CGVector(dx: 0.25, dy: 0.5)))
+        XCTAssertGreaterThan(brightness(background), 200, "the see-through background is white: \(background)")
+        XCTAssertLessThan(brightness(line), 80, "the black line shows on it: \(line)")
+        shot("I4 pictures, one unreadable")
+    }
+
+    /// A sideloaded copy warns 48 hours before it stops opening.
+    func testExpiryWarning() {
+        app.launchArguments = ["-expiresIn", "7200"]
+        app.launch()
+        let warning = app.staticTexts["expiryWarning"]
+        XCTAssertTrue(warning.waitForExistence(timeout: 10), "warned on the home screen")
+        XCTAssertTrue(warning.label.contains("in 2 hours"), warning.label)
+        shot("E1 the copy expires soon")
+        app.terminate()
+        app.launchArguments = ["-expiresIn", "\(5 * 24 * 3600)"]
+        app.launch()
+        XCTAssertTrue(app.buttons["Open slides (PDF)"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["expiryWarning"].exists, "not days ahead")
+    }
+
     // MARK: pad mode
 
     /// A PC name no earlier run of the app has paired with (the app remembers each PC's key by its name).
@@ -121,14 +404,16 @@ final class ContrastInkUITests: XCTestCase {
     }
 
     /// The first time with a PC: its check is shown and nothing but HELLO has gone until the presenter answers.
-    private func expectCheck(_ pc: FakePC, connection: Int, _ check: String) {
+    /// `onThePad`: asked while already on the pad (a new PC on the cable while on Wi-Fi).
+    private func expectCheck(_ pc: FakePC, connection: Int, _ check: String, onThePad: Bool = false) {
         let first = app.staticTexts["padFirstTime"]
         XCTAssertTrue(first.waitForExistence(timeout: 10), "the first time with this PC: its check, to compare")
         XCTAssertTrue(first.label.contains(check), "the PC check for this key (\(check)): \(first.label)")
+        XCTAssertEqual(check.count, 19, "16 hex digits in four groups")
         Thread.sleep(forTimeInterval: 1)
         XCTAssertEqual(pc.messages.filter { $0.connection == connection }.map(\.type), [0x01],
                        "no PROOF before the presenter says the check matches")
-        XCTAssertFalse(app.buttons["Pen"].exists, "not on the pad yet")
+        if !onThePad { XCTAssertFalse(app.buttons["Pen"].exists, "not on the pad yet") }
     }
 
     private var picture: XCUIElement { app.descendants(matching: .any)["padPicture"] }
@@ -143,7 +428,7 @@ final class ContrastInkUITests: XCTestCase {
         defer { pc.stop() }
         launchPad(pc)
         try checkHello(pc, connection: 1)
-        expectCheck(pc, connection: 1, "6FC6-6A90")   // the spec's PC check for this key
+        expectCheck(pc, connection: 1, "6FC6-6A90-4861-71CA")   // the spec's PC check for this key: 16 digits
         shot("P0 first time with this PC: compare the PC check")
         app.buttons["padCheckMatches"].tap()
         XCTAssertNotNil(pc.waitFor(0x04, where: { $0.connection == 1 }), "PROOF once the check matches")
@@ -166,6 +451,12 @@ final class ContrastInkUITests: XCTestCase {
         pc.pace(Self.testScreen())
         XCTAssertNotNil(pc.waitFor(0x03, after: before), "FRAME_ACK once the picture is on screen")
         XCTAssertTrue(pictureShown, "the picture is shown")
+        // really on screen: the PC's black square in the middle, white around it
+        Thread.sleep(forTimeInterval: 0.5)
+        let square = colour(at: screenPoint(picture, CGVector(dx: 0.5, dy: 0.55)))
+        let around = colour(at: screenPoint(picture, CGVector(dx: 0.12, dy: 0.55)))
+        XCTAssertLessThan(brightness(square), 60, "the black square: \(square)")
+        XCTAssertGreaterThan(brightness(around), 200, "the white around it: \(around)")
         let acks = pc.messages.count
         XCTAssertNotNil(pc.waitFor(0x03, after: acks), "the next FRAME after the ACK, and its ACK")
         Thread.sleep(forTimeInterval: 0.5)
@@ -343,6 +634,9 @@ final class ContrastInkUITests: XCTestCase {
 
         XCTAssertTrue(cable.dial(), "the cable PC reaches the app's 127.0.0.1:47830")
         try checkHello(cable, connection: 1)
+        expectCheck(cable, connection: 1, cable.check, onThePad: true)   // a new PC on the cable: compared first
+        shot("U3b a new PC on the cable: compare its check")
+        app.buttons["padCheckMatches"].tap()
         XCTAssertNotNil(cable.waitFor(0x04, where: { $0.connection == 1 }), "PROOF over the cable, with the empty code")
         XCTAssertTrue(byCable.waitForExistence(timeout: 10), "says it's by the USB cable")
         XCTAssertTrue(wifi.waitClosed(connection: 1), "the Wi-Fi connection is closed")
@@ -353,9 +647,10 @@ final class ContrastInkUITests: XCTestCase {
         shot("U4 the cable took over from Wi-Fi")
     }
 
-    /// Pad mode open with nothing typed; the PC connects through the cable: the pad opens by itself, no code, no
-    /// first-time question, and says it's by the cable. A second cable connection is closed; unplugging with no code
-    /// typed goes back to the connect screen.
+    /// Pad mode open with nothing typed; the PC connects through the cable: no code, but the first time its PC check
+    /// is shown and nothing but HELLO goes until "It matches" (the cable is not proof on its own: docs/pad-protocol.md,
+    /// "USB (phase 2)"). Then the pad opens and says it's by the cable. A second cable connection is closed;
+    /// unplugging with no code typed goes back to the connect screen; plugging in again goes on at once (remembered).
     func testPadByCableWithNoCode() throws {
         app.launchArguments = ["-padCable"]
         app.launch()
@@ -368,9 +663,13 @@ final class ContrastInkUITests: XCTestCase {
         defer { cable.stop() }
         XCTAssertTrue(cable.dial(), "the cable PC reaches the app's 127.0.0.1:47830")
         try checkHello(cable, connection: 1)
-        XCTAssertNotNil(cable.waitFor(0x04, where: { $0.connection == 1 }), "PROOF at once, made with the empty code")
+        expectCheck(cable, connection: 1, cable.check)
+        XCTAssertTrue(app.staticTexts["padFirstTime"].label.contains("USB cable"), "says it's the PC on the cable")
+        shot("U0b the first time over the cable: compare the PC check")
+        app.buttons["padCheckMatches"].tap()
+        XCTAssertNotNil(cable.waitFor(0x04, where: { $0.connection == 1 }), "PROOF once it matches, made with the empty code")
         XCTAssertTrue(app.buttons["Pen"].waitForExistence(timeout: 10), "the pad opens with no typing")
-        XCTAssertFalse(app.staticTexts["padFirstTime"].exists, "no first-time question over the cable")
+        XCTAssertTrue(waitGone(app.staticTexts["padFirstTime"]), "the check is gone once answered")
         XCTAssertTrue(byCable.waitForExistence(timeout: 5))
         XCTAssertEqual(byCable.label, "By the USB cable")
         cable.pace(Self.testScreen())
@@ -392,6 +691,50 @@ final class ContrastInkUITests: XCTestCase {
         XCTAssertTrue(app.textFields["padCode"].waitForExistence(timeout: 10), "back to the connect screen")
         XCTAssertFalse(app.buttons["Pen"].exists)
         shot("U2 unplugged with no code: the connect screen")
+
+        // plugged in again: the same PC, remembered, goes on at once
+        XCTAssertTrue(cable.dial(), "the cable PC again")
+        try checkHello(cable, connection: 2)
+        XCTAssertNotNil(cable.waitFor(0x04, where: { $0.connection == 2 }), "PROOF at once: the PC is remembered")
+        XCTAssertTrue(app.buttons["Pen"].waitForExistence(timeout: 10), "the pad again")
+        XCTAssertFalse(app.staticTexts["padFirstTime"].exists, "no question the second time")
+    }
+
+    /// No PC advertises itself on the Wi-Fi: after about 8 s the connect screen suggests a hotspot or the cable.
+    func testPadHotspotHintWhenNoPCIsFound() {
+        app.launchArguments = ["-padCable"]   // the connect screen, with no PC anywhere
+        app.launch()
+        XCTAssertTrue(app.textFields["padCode"].waitForExistence(timeout: 10))
+        let hint = app.staticTexts["padHotspotHint"]
+        XCTAssertFalse(hint.exists, "not at once: PCs take a moment to show up")
+        XCTAssertTrue(hint.waitForExistence(timeout: 15), "after about 8 s with nothing found")
+        XCTAssertTrue(hint.label.contains("192.168.137.1"), hint.label)
+        XCTAssertTrue(hint.label.contains("USB cable"), hint.label)
+        shot("H1 no PC found: the hotspot hint")
+    }
+
+    /// The first time over the cable, "It doesn't": nothing after HELLO, and the PC's next tries aren't let in.
+    func testPadByCableCheckDoesntMatch() throws {
+        app.launchArguments = ["-padCable"]
+        app.launch()
+        XCTAssertTrue(app.textFields["padCode"].waitForExistence(timeout: 10))
+        let cable = FakePC(name: Self.freshName("CABLE-PC"), code: "")
+        defer { cable.stop() }
+        XCTAssertTrue(cable.dial())
+        try checkHello(cable, connection: 1)
+        expectCheck(cable, connection: 1, cable.check)
+        app.buttons["padCheckDiffers"].tap()
+        XCTAssertTrue(cable.waitClosed(connection: 1), "closed")
+        let text = app.staticTexts["padMessage"]
+        XCTAssertTrue(text.waitForExistence(timeout: 5), "says why it stopped")
+        XCTAssertTrue(text.label.contains("Don't connect"), text.label)
+        XCTAssertEqual(cable.messages.filter { $0.connection == 1 }.map(\.type), [0x01], "nothing after HELLO, not even PROOF")
+        // the PC dials again a few seconds later: closed, not asked again
+        XCTAssertTrue(cable.dial())
+        XCTAssertTrue(cable.waitClosed(connection: 2), "the refused PC isn't let in")
+        XCTAssertFalse(app.staticTexts["padFirstTime"].exists)
+        XCTAssertFalse(app.buttons["Pen"].exists)
+        shot("U6 the cable PC's check didn't match")
     }
 
     /// Over Wi-Fi first, then the cable: the app switches to it and closes the Wi-Fi connection.
@@ -420,17 +763,18 @@ final class ContrastInkUITests: XCTestCase {
         shot("U5 unplugged: back on Wi-Fi by itself")
     }
 
-    /// A stand-in for a PC's screen: a dark slide with a title bar and a grid, 1600 x 900 like a FRAME.
+    /// A stand-in for a PC's screen: white with a black square and a title bar, 1600 x 900 like a FRAME.
     static func testScreen() -> Data {
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         let img = UIGraphicsImageRenderer(size: CGSize(width: 1600, height: 900), format: format).image { ctx in
-            UIColor(red: 0.08, green: 0.1, blue: 0.14, alpha: 1).setFill()
+            // white, with a black square in the middle (the test samples both) under a blue title bar
+            UIColor.white.setFill()
             ctx.fill(CGRect(x: 0, y: 0, width: 1600, height: 900))
+            UIColor.black.setFill()
+            ctx.fill(CGRect(x: 600, y: 270, width: 400, height: 400))
             UIColor(red: 0.15, green: 0.39, blue: 0.92, alpha: 1).setFill()
             ctx.fill(CGRect(x: 0, y: 0, width: 1600, height: 120))
-            UIColor.white.withAlphaComponent(0.25).setFill()
-            for i in 1..<8 { ctx.fill(CGRect(x: i * 200, y: 120, width: 2, height: 780)) }
             ("The PC's screen" as NSString).draw(at: CGPoint(x: 60, y: 30),
                 withAttributes: [.font: UIFont.boldSystemFont(ofSize: 56), .foregroundColor: UIColor.white])
         }

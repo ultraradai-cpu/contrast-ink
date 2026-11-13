@@ -45,6 +45,12 @@ public enum Crop {
         return Rect(x, image.height - yTop - h, w, h)
     }
 
+    /// The slide's rectangle on the display, from its rectangle in its window and where the window is on the display
+    /// (Split View, Slide Over, Stage Manager: the window is smaller than the display and moved).
+    public static func onScreen(stageInWindow r: Rect, windowOrigin o: Pt) -> Rect {
+        Rect(r.x + o.x, r.y + o.y, r.width, r.height)
+    }
+
     /// The size to write the video at: the crop itself, scaled down to fit `maxWidth` wide, even numbers.
     public static func outputSize(_ crop: Size, maxWidth: Double = 1920) -> Size {
         guard crop.width > 0, crop.height > 0 else { return Size(0, 0) }

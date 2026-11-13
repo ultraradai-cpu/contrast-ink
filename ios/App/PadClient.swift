@@ -47,7 +47,7 @@ final class PadClient: ObservableObject {
     @Published private(set) var state = PadState()
     /// The latest picture of the PC's screen.
     @Published private(set) var picture: UIImage?
-    /// The PC's check (XXXX-XXXX), shown in the toolbar.
+    /// The PC's check (XXXX-XXXX-XXXX-XXXX), shown in the toolbar.
     @Published private(set) var pcCheck: String?
 
     /// The session open now goes through the USB cable, not the Wi-Fi.
@@ -57,6 +57,10 @@ final class PadClient: ObservableObject {
     @Published private(set) var cablePaused = false
     /// A PC on the cable answered with another key than the one remembered for its name, while Wi-Fi was in use.
     @Published private(set) var cableNotice: String?
+
+    /// The first time with the PC on the cable: its check, waiting for the presenter (nothing more is sent to it).
+    struct CableCheck: Equatable { let name: String; let check: String }
+    @Published private(set) var cableCheck: CableCheck?
 
     /// The code typed last, kept only while the app runs (the PC makes a new one each time it starts).
     private(set) var lastCode = ""
@@ -136,7 +140,21 @@ final class PadClient: ObservableObject {
     func cableMayCome() -> Bool { route.cableArrived() }
 
     /// The cable connection being let in ended before its session opened.
-    func cableFailed() { route.cableFailed() }
+    func cableFailed() { route.cableFailed(); cableCheck = nil }
+
+    /// The first time with the PC on the cable: show its check (the PROOF waits for the presenter).
+    func cableAsks(name: String, check: String) { cableCheck = CableCheck(name: name, check: check) }
+
+    /// "It matches" / "It doesn't" for the PC on the cable.
+    func cableCheckMatches() { cableCheck = nil; cable.checkMatches() }
+    func cableCheckDiffers() { cable.checkDiffers() }
+
+    /// The check of the PC on the cable ended without a match (denied, or too long): say why.
+    func cableCheckEnded(_ why: String) {
+        cableCheck = nil
+        if welcome == nil, connection == nil { phase = .rejected("USB cable: " + why) }
+        else { cableNotice = "On the USB cable: " + why }
+    }
 
     /// The PC on the cable isn't the one paired with under its name: say so (nothing more was sent to it).
     func cableWarned(name: String, check: String, key: Data) {
@@ -168,6 +186,7 @@ final class PadClient: ObservableObject {
         heldProof = nil
         byCable = true
         cableNotice = nil
+        cableCheck = nil
         cableWarnedKey = nil
         welcome = s.welcome
         pcCheck = s.check
@@ -333,6 +352,7 @@ final class PadClient: ObservableObject {
         sessionKey = nil
         byCable = false
         cableNotice = nil
+        cableCheck = nil
         cableWarnedKey = nil
         route.forget()
         phase = .idle
