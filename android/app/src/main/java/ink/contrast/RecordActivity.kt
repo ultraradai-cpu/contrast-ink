@@ -28,6 +28,7 @@ class RecordActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         // still on screen here: Android 14 lets a recording start only while the app is in front
         if (resultCode == RESULT_OK && data != null) InkService.running?.startRecording(resultCode, data)
+        else InkService.running?.recordingRefused()
         finish()
     }
 }

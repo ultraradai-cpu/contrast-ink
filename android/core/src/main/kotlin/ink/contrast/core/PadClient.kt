@@ -9,9 +9,10 @@ package ink.contrast.core
  *   for a PC it knows, or once the presenter [confirm]s the PC check the first time → the PC's WELCOME (sealed) →
  *   [seal] / [receive] both ways.
  *
- * [overCable]: the link goes through the USB cable (docs/pad-protocol.md, "USB (phase 2)"): the code is empty, and a
- * PC met for the first time gets its PROOF at once (the cable is the proof of being in the room), while a
- * remembered key that differs still stops, as on Wi-Fi.
+ * [overCable]: the link goes through the USB cable (docs/pad-protocol.md, "USB (phase 2)"): the code is empty. The
+ * cable is not proof on its own (any app on the tablet can listen on its loopback address), so the rest is as on
+ * Wi-Fi: a PC met for the first time waits for the presenter to compare its PC check, a remembered key that differs
+ * stops.
  *
  * Threads: [proof] and [seal] are called from the one thread that writes, [receive] from the one that reads; each
  * direction's seal is only ever used by its own thread.
@@ -53,8 +54,8 @@ class PadClient(
     /**
      * The CHALLENGE's key against [remembered], the key kept for this PC's name (null: never met).
      * [acceptAnyway]: the key the presenter chose "Connect anyway" for, after the warning; it is checked like a new PC.
-     * A PC met before goes on at once (and a new one over the cable); a new one on Wi-Fi waits for the presenter to compare the PC check, so a machine
-     * pretending to be the PC never gets a PROOF to try codes against; a changed key stops here.
+     * A PC met before goes on at once; a new one (on Wi-Fi or over the cable) waits for the presenter to compare the
+     * PC check, so a machine pretending to be the PC never gets a PROOF to try codes against; a changed key stops here.
      */
     fun answer(c: PcMessage.Challenge, remembered: ByteArray?, acceptAnyway: ByteArray? = null): Answer {
         check(phase == Phase.CHALLENGED) { "one answer to one CHALLENGE" }
@@ -63,7 +64,6 @@ class PadClient(
             PcKey.CHANGED -> { phase = Phase.STOPPED; Answer.Changed }
             PcKey.NEW -> {
                 if (PadCrypto.readPoint(c.key) == null) throw PadProtocolException("The PC's key isn't a P-256 public key")
-                if (overCable) return Answer.Proof(proof(c))   // no "It matches" over the cable
                 challenge = c
                 phase = Phase.AWAITING_CHECK
                 Answer.Check(PadCrypto.pcCheck(c.key))

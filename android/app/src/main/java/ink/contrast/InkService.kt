@@ -155,7 +155,8 @@ class InkService : Service(), InkView.Host {
     /**
      * Drawing: the layer takes every touch. Not drawing: touches pass through. Android 12 and later only let a touch
      * through a window of another app when that window is at most 80% opaque, so the layer is drawn at 80% then
-     * (the marks look a little lighter while you aren't drawing; recordings show them the same way).
+     * (the marks look a little lighter while you aren't drawing, and so does a recording of the entire screen; a
+     * recording of one app has them drawn in by the recorder at full strength).
      */
     private fun applyDrawing() {
         inkParams.flags = if (drawing) inkParams.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
@@ -201,16 +202,22 @@ class InkService : Service(), InkView.Host {
         return m.widthPixels to m.heightPixels
     }
 
-    /**
-     * The toolbar's rectangle on the screen, in pixels, or null when it isn't showing. The recorder looks there in the
-     * first video frames to tell a recording of the entire screen (the toolbar is in it) from one of a single app.
-     */
+    /** The toolbar's rectangle on the screen, in pixels, or null when it isn't showing. */
     fun toolbarOnScreen(): android.graphics.Rect? {
         if (!::bar.isInitialized || !bar.isAttachedToWindow || bar.width == 0) return null
         val at = IntArray(2)
         bar.getLocationOnScreen(at)
         return android.graphics.Rect(at[0], at[1], at[0] + bar.width, at[1] + bar.height)
     }
+
+    /**
+     * The toolbar's beacon (three colours) on or off. The recorder looks for it in the first video frames to tell a
+     * recording of the entire screen (the toolbar is in it) from one of a single app.
+     */
+    fun showBeacon(on: Boolean) { if (!destroyed && ::bar.isInitialized) bar.showBeacon(on) }
+
+    /** The beacon's rectangle on the screen, in pixels, or null when it isn't showing. */
+    fun beaconOnScreen(): android.graphics.Rect? = if (::bar.isInitialized) bar.beaconOnScreen() else null
 
     /** A message on the toolbar (from any thread). */
     fun notice(text: String) = main.post { if (!destroyed && ::bar.isInitialized) bar.notice(text) }
@@ -225,7 +232,11 @@ class InkService : Service(), InkView.Host {
         if (recorder.active) { recorder.stop(saveToGallery = true); return }
         if (recorder.saving) { bar.notice("Still saving the last recording to the Gallery: one moment."); return }
         // Android 14+ asks "A single app" or "Entire screen": say which one keeps the toolbar out, before it asks
-        if (recorder.clean) bar.notice("When Android asks, choose \"A single app\" and pick your slides app: the toolbar then stays out of the video.")
+        if (recorder.clean) {
+            bar.notice("When Android asks, choose \"A single app\" and pick your slides app: the toolbar then stays out of the video.")
+            // shown before the first frame, so the first frame of an entire-screen recording has it
+            showBeacon(true)
+        }
         // Android asks the presenter first, in its own window: a small invisible screen asks for us
         startActivity(Intent(this, RecordActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
@@ -236,13 +247,17 @@ class InkService : Service(), InkView.Host {
         // must come before the screen is asked for (Android 14)
         val fg = runCatching { startInForeground(recording = true) }
         if (fg.isFailure) {
+            showBeacon(false)
             bar.notice("Recording didn't start: Android refused (${fg.exceptionOrNull()?.message ?: "no reason given"}).")
             return
         }
         val problem = recorder.start(resultCode, data)
-        if (problem != null) { runCatching { startInForeground(recording = false) }; bar.notice(problem) }
+        if (problem != null) { showBeacon(false); runCatching { startInForeground(recording = false) }; bar.notice(problem) }
         bar.refresh()
     }
+
+    /** The presenter said no to Android's question (or it closed): the beacon goes. */
+    fun recordingRefused() { if (!recorder.active) showBeacon(false) }
 
     /** The recording ended (and is saved, or couldn't be): may be called from the saving thread. */
     fun recordingEnded(message: String?) {

@@ -239,4 +239,37 @@ object Recording {
         while (taken(name)) name = "Lecture $stamp (${n++}).mp4"
         return name
     }
+
+    /**
+     * A long lecture goes on in a new file when one gets near [MAX_FILE_BYTES] (MP4 files on a phone stop at 4 GB):
+     * part [part] of the recording first named [first]. "Lecture 2026-11-12 093015.mp4", 2 →
+     * "Lecture 2026-11-12 093015 part 2.mp4". The first file is called part 1 once there is a second.
+     */
+    fun partName(first: String, part: Int): String = first.removeSuffix(".mp4") + " part $part.mp4"
+
+    /** The size a video file is allowed to grow to before the recording goes on in the next part. */
+    const val MAX_FILE_BYTES = 3_500_000_000L
+
+    /** Free space under this when a recording starts, or while it runs: the presenter is warned. */
+    const val LOW_SPACE_BYTES = 1_000_000_000L
+    /** Free space under this while recording: the recording stops and is kept (a full disk would break the file). */
+    const val STOP_SPACE_BYTES = 200_000_000L
+
+    enum class Space { OK, LOW, STOP }
+
+    /** What to do with [freeBytes] left on the phone while recording. */
+    fun space(freeBytes: Long): Space = when {
+        freeBytes < STOP_SPACE_BYTES -> Space.STOP
+        freeBytes < LOW_SPACE_BYTES -> Space.LOW
+        else -> Space.OK
+    }
+
+    /**
+     * Whether a video file whose recording didn't stop cleanly is kept anyway. Only a small file (stopped before much was
+     * recorded) is deleted: anything bigger may be a whole lecture, and most players play what is there.
+     */
+    fun keepAfterFailedStop(bytes: Long): Boolean = bytes > KEEP_BYTES
+
+    /** See [keepAfterFailedStop]. */
+    const val KEEP_BYTES = 2_000_000L
 }

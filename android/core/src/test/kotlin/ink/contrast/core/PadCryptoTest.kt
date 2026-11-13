@@ -86,7 +86,7 @@ class PadCryptoTest {
         assertArrayEquals(firstProof, PadSeal(toPcKey).seal(PadProtocol.command("hello")))
     }
 
-    @Test fun vectorPcCheck() = assertEquals("6FC6-6A90", PadCrypto.pcCheck(pcPublic))
+    @Test fun vectorPcCheck() = assertEquals("all 16 digits: the first 8 bytes of SHA-256", "6FC6-6A90-4861-71CA", PadCrypto.pcCheck(pcPublic))
 
     @Test fun hkdfRfc5869Case1() = assertArrayEquals(
         hex("3CB25F25FAACD57A90434F64D0362F2A2D2D0A90CF1A5A4C5DB02D56ECC4C5BF34007208D5B887185865"),
@@ -239,7 +239,7 @@ class PadCryptoTest {
 
     @Test fun firstTimeWaitsForTheCheck() {
         val t = Tablet()
-        assertEquals(PadClient.Answer.Check("6FC6-6A90"), t.challenged(null))
+        assertEquals(PadClient.Answer.Check("6FC6-6A90-4861-71CA"), t.challenged(null))
         assertEquals(PadClient.Phase.AWAITING_CHECK, t.client.phase)
         assertTrue("nothing sent after HELLO until the presenter confirms", t.sent.isEmpty())
         try { t.client.receive(t.pc.sealed(welcome())); fail("nothing sealed is taken before the PROOF") } catch (e: PadProtocolException) {}
@@ -279,7 +279,7 @@ class PadCryptoTest {
 
         // "Connect anyway" connects again, letting this key through: it shows the check like a first time
         val again = Tablet()
-        assertEquals(PadClient.Answer.Check("6FC6-6A90"), again.challenged(tabletPublic, acceptAnyway = pcPublic))
+        assertEquals(PadClient.Answer.Check("6FC6-6A90-4861-71CA"), again.challenged(tabletPublic, acceptAnyway = pcPublic))
         assertTrue("nothing until the check is confirmed", again.sent.isEmpty())
         again.confirm()
         assertTrue("then the PROOF", again.proofOpens())
@@ -292,20 +292,35 @@ class PadCryptoTest {
         try { client.answer(c, null); fail("an unreadable key stops the handshake") } catch (e: PadProtocolException) {}
     }
 
-    /** USB: the code is empty ("contrastink pad v2 " as info), and a new PC gets its PROOF without the check. */
+    /**
+     * USB: the code is empty ("contrastink pad v2 " as info). The cable proves nothing (any app on the tablet can
+     * listen where the PC would be), so a PC met for the first time waits for the PC check, as on Wi-Fi.
+     */
     @Test fun overTheCable() {
         try { PadClient("123456", "t", overCable = true); fail("no code over the cable") } catch (e: IllegalArgumentException) {}
         val client = PadClient("", "t", overCable = true)
         val point = PadDecoderForPc.hello(client.hello())
         val pc = Pc("", point)
         client.receive(challenge())
-        val a = client.answer(challenge(), null)
-        assertTrue("the first time too, the PROOF at once", a is PadClient.Answer.Proof)
-        val proof = (a as PadClient.Answer.Proof).bytes
+        assertEquals("the first time, the PC check before anything is sent", PadClient.Answer.Check("6FC6-6A90-4861-71CA"), client.answer(challenge(), null))
+        assertEquals(PadClient.Phase.AWAITING_CHECK, client.phase)
+        val proof = client.confirm()
         assertArrayEquals("opened with the empty code's keys", PadProtocol.command("hello"), pc.open.open(proof.copyOfRange(5, proof.size)))
         assertNull("not with a code's", Pc("123456", point).open.open(proof.copyOfRange(5, proof.size)))
         client.receive(pc.sealed(welcome()))
         assertEquals(PadClient.Phase.OPEN, client.phase)
+
+        // a remembered key that matches: the PROOF at once
+        val known = PadClient("", "t", overCable = true)
+        known.receive(challenge())
+        assertTrue("a remembered PC goes on at once over the cable", known.answer(challenge(), pcPublic) is PadClient.Answer.Proof)
+
+        // "It doesn't": nothing is ever sent
+        val declined = PadClient("", "t", overCable = true)
+        declined.receive(challenge())
+        assertTrue(declined.answer(challenge(), null) is PadClient.Answer.Check)
+        declined.decline()
+        try { declined.confirm(); fail("no PROOF once declined") } catch (e: IllegalStateException) {}
 
         // a remembered key that differs still stops, over the cable too
         val other = PadClient("", "t", overCable = true)
