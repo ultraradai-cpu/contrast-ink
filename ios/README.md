@@ -102,6 +102,11 @@ OBS on the PC records it.
 
 For patient images, a private network or the PC's own hotspot is still the safest choice.
 
+**Can't find the PC?** Hospital Wi-Fi often blocks devices from seeing each other. When no PC shows up for about 8
+seconds, or a typed address can't be reached, the connect screen says so: join the PC's hotspot (Windows: **Settings →
+Network → Mobile hotspot**; the PC is then usually `192.168.137.1`) or your phone's hotspot on both, or use the USB
+cable.
+
 **By the USB cable**: plug the iPad into the PC with its cable (the PC needs **iTunes** or **Apple Devices**
 installed, and the iPad must have tapped **Trust** for it). In pad mode the iPad switches to the cable by itself, even
 from the connect screen with nothing typed: no code is needed over the cable, and the pad says **By the USB cable**.

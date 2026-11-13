@@ -701,6 +701,19 @@ final class ContrastInkUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["padFirstTime"].exists, "no question the second time")
     }
 
+    /// No PC advertises itself on the Wi-Fi: after about 8 s the connect screen suggests a hotspot or the cable.
+    func testPadHotspotHintWhenNoPCIsFound() {
+        app.launchArguments = ["-padCable"]   // the connect screen, with no PC anywhere
+        app.launch()
+        XCTAssertTrue(app.textFields["padCode"].waitForExistence(timeout: 10))
+        let hint = app.staticTexts["padHotspotHint"]
+        XCTAssertFalse(hint.exists, "not at once: PCs take a moment to show up")
+        XCTAssertTrue(hint.waitForExistence(timeout: 15), "after about 8 s with nothing found")
+        XCTAssertTrue(hint.label.contains("192.168.137.1"), hint.label)
+        XCTAssertTrue(hint.label.contains("USB cable"), hint.label)
+        shot("H1 no PC found: the hotspot hint")
+    }
+
     /// The first time over the cable, "It doesn't": nothing after HELLO, and the PC's next tries aren't let in.
     func testPadByCableCheckDoesntMatch() throws {
         app.launchArguments = ["-padCable"]

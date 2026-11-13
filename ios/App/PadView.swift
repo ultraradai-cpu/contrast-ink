@@ -120,11 +120,26 @@ struct PadConnectView: View {
     @State private var address = UserDefaults.standard.string(forKey: PadView.addressKey) ?? ""
     @State private var code = ""
     @State private var problem: String?
+    /// No PC has shown up on this Wi-Fi for 8 s.
+    @State private var nothingFound = false
+
+    static let hotspotHint = "Can't find the PC? Hospital Wi-Fi often blocks this. Join the PC's hotspot (Windows: Mobile hotspot, usually 192.168.137.1) or your phone's hotspot, or use the USB cable."
+
+    /// Nothing found for a while, or a typed address couldn't be reached: the network is likely the problem.
+    private var showHotspotHint: Bool {
+        if case .lost = client.phase, client.welcome == nil { return true }
+        return nothingFound && client.found.isEmpty
+    }
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
+                    if showHotspotHint {
+                        Label(Self.hotspotHint, systemImage: "personalhotspot")
+                            .foregroundStyle(Color.offText)
+                            .accessibilityIdentifier("padHotspotHint")
+                    }
                     if let why = client.browseProblem {
                         Label(why, systemImage: "exclamationmark.triangle").foregroundStyle(Color.noticeText)
                             .accessibilityIdentifier("padBrowseProblem")
@@ -214,6 +229,10 @@ struct PadConnectView: View {
             }
         }
         // the UI test connects straight to its fake PC: no Bonjour (nor its permission prompt) in a test run
+        .task {
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            nothingFound = true
+        }
         .onAppear {
             if code.isEmpty { code = client.lastCode }
             if !PadLaunch.isTest { client.startBrowsing() }
