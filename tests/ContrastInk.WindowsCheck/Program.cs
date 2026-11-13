@@ -1310,6 +1310,7 @@ static class Program
         Check(System.Text.RegularExpressions.Regex.IsMatch(padText, @"PC check [0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}\b"),
               "⚙: the PC check shown is 16 digits (XXXX-XXXX-XXXX-XXXX)", padText.Replace("\n", " | "));
         Check(padText.Contains("(not found)"), "⚙: adb only in C:\\platform-tools counts as not found", padText.Replace("\n", " | "));
+        Check(padText.Contains("No shared Wi-Fi? Turn on Windows Mobile hotspot"), "⚙: the tablet link's lines point to the Mobile hotspot when there is no shared Wi-Fi", padText.Replace("\n", " | "));
         CheckPlantedAdbNotRun();
 
         // settings remembered: green pen chosen above; quit with ✕, start again, draw without choosing

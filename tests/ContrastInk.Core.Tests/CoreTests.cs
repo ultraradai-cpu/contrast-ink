@@ -749,6 +749,28 @@ public class PadProtocolTests
     static byte[] Hex(string h) => Convert.FromHexString(h.Replace(" ", ""));
 
     [Fact]
+    public void AddressesIncludeTheMobileHotspot()
+    {
+        var adapters = new[]
+        {
+            new PadAdapter("Loopback Pseudo-Interface 1", true, true, new[] { "127.0.0.1" }),
+            new PadAdapter("Local Area Connection* 10", true, false, new[] { "192.168.137.1" }),   // Mobile hotspot
+            new PadAdapter("Wi-Fi", true, false, new[] { "10.0.0.23" }),
+            new PadAdapter("Ethernet", true, false, new[] { "192.168.1.20", "169.254.12.7" }),
+            new PadAdapter("Ethernet 2", false, false, new[] { "172.16.0.5" }),                    // unplugged
+            new PadAdapter("vEthernet", true, false, new[] { "10.0.0.23", "not an address", "fe80::1" }),
+        };
+        var list = Pad.UsableAddresses(adapters);
+        Assert.Equal(new[] { "10.0.0.23", "192.168.1.20", "192.168.137.1" }, list);
+        Assert.Equal("10.0.0.23, 192.168.1.20, 192.168.137.1 (hotspot)", Pad.AddressText(list, Pad.Port));
+        Assert.Equal("192.168.137.1:47821 (hotspot)", Pad.AddressText(new[] { "192.168.137.1" }, 47821));
+        // only the hotspot: still listed (a PC sharing its own hotspot has no other address)
+        Assert.Equal(new[] { "192.168.137.1" }, Pad.UsableAddresses(new[] { adapters[1], adapters[0] }));
+        Assert.True(Pad.IsHotspot("192.168.137.1"));
+        Assert.False(Pad.IsHotspot("192.168.13.7"));
+    }
+
+    [Fact]
     public void SpecTestVectorsDecode()
     {
         var r = new PadReader();

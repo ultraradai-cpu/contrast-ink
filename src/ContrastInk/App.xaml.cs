@@ -318,14 +318,15 @@ public partial class App : Application
     /// <summary>The screen being drawn on, for the tablet link's threads (set by the UI thread when it changes).</summary>
     Native.RECT ScreenForPad() => padScreen?.Bounds ?? default;
 
-    /// <summary>Three short lines (a long text here once made ⚙ Settings tall enough to cover the slide); the
+    /// <summary>Four short lines (a long text here once made ⚙ Settings tall enough to cover the slide); the
     /// details are in the README, and in the hint shown while the pointer rests on them. Whether adb is found is
     /// what the tablet link last saw (looking at the disk here, on every change, held up the keyboard watcher).</summary>
     void ShowPad() => toolbar.ShowPad(pad == null ? null
         : pad.Connected != null ? $"Connected: {pad.Connected}" + (pad.OverUsb ? ", by the USB cable." : ", over Wi-Fi (plug in its cable to switch).")
         : $"Code {pad.Code}  ·  PC check {pad.PcCheck}"
-          + (PadServer.Addresses() is { Count: > 0 } a ? $"  ·  {a[0]}" + (pad.Port != Pad.Port ? $":{pad.Port}" : "") : "")
+          + (PadServer.Addresses() is { Count: > 0 } a ? "  ·  " + Pad.AddressText(a, pad.Port) : "")
           + $"\nOn the tablet: Use as a pad → {Environment.MachineName} → the code. Encrypted."
+          + "\nNo shared Wi-Fi? Turn on Windows Mobile hotspot (Settings → Network & internet) and join it from the tablet, or use the USB cable."
           + "\nUSB: iPad needs iTunes; Android needs USB debugging and platform-tools"
           + (Adb.Found != null ? " (found)." : " (not found)."));
 

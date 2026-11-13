@@ -80,6 +80,36 @@ public static class Pad
     /// The PC check shown beside the code: the first 8 bytes of SHA-256 of the PC's public key, "6FC6-6A90-4861-71CA".
     /// (4 bytes were too few: a fake key matching them could be searched for offline in about 2^32 tries.)
     /// </summary>
+    /// <summary>The address Windows gives itself on its own Mobile hotspot (192.168.137.x).</summary>
+    public static bool IsHotspot(string address) => address.StartsWith("192.168.137.", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Every IPv4 address a tablet could type to reach this PC, from all its adapters that are up: the Wi-Fi or
+    /// Ethernet ones and the Mobile hotspot's (a PC sharing its own hotspot has no other address the tablet can
+    /// reach). Not loopback, not self-assigned (169.254.x, no network behind it); each once; the hotspot's last.
+    /// </summary>
+    public static List<string> UsableAddresses(IEnumerable<PadAdapter> adapters)
+    {
+        var list = new List<string>();
+        foreach (var a in adapters)
+        {
+            if (!a.Up || a.Loopback) continue;
+            foreach (var text in a.IPv4)
+            {
+                if (!System.Net.IPAddress.TryParse(text, out var ip) || ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) continue;
+                var b = ip.GetAddressBytes();
+                if (b[0] == 127 || b[0] == 0 || (b[0] == 169 && b[1] == 254)) continue;
+                var s = ip.ToString();
+                if (!list.Contains(s)) list.Add(s);
+            }
+        }
+        return list.Where(x => !IsHotspot(x)).Concat(list.Where(IsHotspot)).ToList();
+    }
+
+    /// <summary>The addresses for the ⚙ panel: "192.168.1.20, 192.168.137.1 (hotspot)", each with the port when it isn't the usual one.</summary>
+    public static string AddressText(IReadOnlyList<string> addresses, int port) =>
+        string.Join(", ", addresses.Select(a => a + (port != Port ? $":{port}" : "") + (IsHotspot(a) ? " (hotspot)" : "")));
+
     public static string PcCheck(byte[] pcKey)
     {
         var h = System.Security.Cryptography.SHA256.HashData(pcKey);
@@ -228,3 +258,6 @@ public sealed class PadGuard
         allInARow = 0;
     }
 }
+
+/// <summary>A network adapter as <see cref="Pad.UsableAddresses"/> needs it: up or not, loopback or not, its IPv4 addresses.</summary>
+public sealed record PadAdapter(string Name, bool Up, bool Loopback, IReadOnlyList<string> IPv4);

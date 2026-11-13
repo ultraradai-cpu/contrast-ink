@@ -156,17 +156,16 @@ sealed class PadServer : IDisposable
         try { body(); } catch (Exception e) { App.Log(e); }
     }) { IsBackground = true, Name = name }.Start();
 
-    /// <summary>This PC's addresses on its networks, for typing into a tablet when the network hides names.</summary>
+    /// <summary>Every address of this PC a tablet could type (Wi-Fi, Ethernet, and Windows' Mobile hotspot, where the
+    /// PC itself is the network): the listener is on all of them (IPAddress.Any).</summary>
     public static List<string> Addresses()
     {
         try
         {
-            return NetworkInterface.GetAllNetworkInterfaces()
-                .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType != NetworkInterfaceType.Loopback)
-                .SelectMany(n => n.GetIPProperties().UnicastAddresses)
-                .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(a.Address)
-                            && !a.Address.ToString().StartsWith("169.254.", StringComparison.Ordinal))
-                .Select(a => a.Address.ToString()).Distinct().ToList();
+            return Pad.UsableAddresses(NetworkInterface.GetAllNetworkInterfaces().Select(n => new PadAdapter(n.Name,
+                n.OperationalStatus == OperationalStatus.Up, n.NetworkInterfaceType == NetworkInterfaceType.Loopback,
+                n.GetIPProperties().UnicastAddresses.Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork)
+                    .Select(a => a.Address.ToString()).ToList())));
         }
         catch (NetworkInformationException) { return new List<string>(); }
     }
@@ -690,9 +689,11 @@ sealed class DnsSd : IDisposable
         d.instance = DnsServiceConstructInstance($"{name}.{Pad.ServiceType}.local", $"{name}.local", IntPtr.Zero, IntPtr.Zero,
             (ushort)port, 0, 0, 1, new[] { "v" }, new[] { Pad.Version.ToString() });
         if (d.instance == IntPtr.Zero) return null;
+        // InterfaceIndex 0: answered on every interface, the Mobile hotspot's included; with no address given,
+        // Windows answers each query with this PC's address on the network it came from
         var req = new DNS_SERVICE_REGISTER_REQUEST
         {
-            Version = 1, pServiceInstance = d.instance,
+            Version = 1, InterfaceIndex = 0, pServiceInstance = d.instance,
             pRegisterCompletionCallback = Marshal.GetFunctionPointerForDelegate(Done),
         };
         d.request = Marshal.AllocHGlobal(Marshal.SizeOf<DNS_SERVICE_REGISTER_REQUEST>());

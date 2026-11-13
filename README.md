@@ -129,6 +129,11 @@ the PC's screen, and what you draw on it is drawn on the PC.
 4. Draw. The tablet's toolbar has the tools, colours, widths, undo, clear, the laser, and ‹ › to change slides
    (the app in front on the PC turns the page).
 
+**No shared Wi-Fi** (a lecture hall whose Wi-Fi keeps devices apart, or none at all): turn on Windows' **Mobile
+hotspot** (Settings → Network & internet → Mobile hotspot) and join it from the tablet. The ⚙ panel lists every
+address of the PC, the hotspot's marked "(hotspot)" (usually 192.168.137.1), and the tablet finds the PC there by
+name too; or use the USB cable.
+
 **By USB cable** (it switches to the cable by itself when plugged in, and back to Wi-Fi when unplugged):
 - iPad: install iTunes (or Apple Devices) on the PC, plug in, tap Trust on the iPad. No code needed by cable.
 - Android: once, on the tablet, Settings → About → tap Build number 7 times, then Developer options → USB
