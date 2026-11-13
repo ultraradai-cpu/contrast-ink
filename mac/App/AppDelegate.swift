@@ -94,6 +94,10 @@ enum SmokeTest {
         check(liveP3 == nil, "on a P3 display a live stroke is the swatch's sRGB green \(Settings.colors[2]) (\(liveP3 ?? "it is"))")
         // A bitmap converts device RGB as if it were sRGB, so the pixels above can't tell them apart (a mutation run
         // showed it). A PDF keeps the colour space each colour was set in: device RGB is written as RG / rg.
+        // What a regression would change: the colour handed to Quartz. (On macOS 15 Quartz draws device RGB as sRGB in a
+        // bitmap, a PDF and a P3 window alike, mutation runs showed, so no picture can tell them apart today.)
+        let ink = InkView.srgb(1, 0.231, 0.188, 1)
+        check(ink.colorSpace?.name == CGColorSpace.sRGB, "the ink's colours are sRGB CGColors (\(ink.colorSpace?.name.map { "\($0)" } ?? "no colour space"))")
         let ops = pdfColourOperators(c.ink)
         print("     the layer drawn as PDF sets its colours with: \(ops.sorted { $0.key < $1.key }.map { "\($0.key) ×\($0.value)" }.joined(separator: ", "))")
         check((ops["RG"] ?? 0) + (ops["rg"] ?? 0) == 0 && (ops["SC"] ?? 0) + (ops["SCN"] ?? 0) > 0,
