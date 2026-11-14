@@ -59,11 +59,21 @@ enum PadIdentity {
 
 /// Pictures of the screen for the tablet, at most 1600 px wide, as JPEG: ScreenCaptureKit on macOS 14 and later
 /// (leaving out the toolbar), CGDisplayCreateImage on macOS 13. Needs the Screen Recording permission: without it
-/// macOS gives only the desktop picture.
+/// macOS 14 and later give no picture at all (13 gives only the desktop picture). A failure is logged once per
+/// tablet connection, not with every try (twice a second).
 final class ScreenGrabber {
     private let queue = DispatchQueue(label: "screen grabber")
     private var content: AnyObject?   // SCShareableContent, refreshed every few seconds
     private var contentAt = Date.distantPast
+    private var said = OnceEach()   // the queue's only
+
+    /// A new tablet connection: a failure is logged again (once).
+    func newConnection() { queue.async { self.said.reset() } }
+
+    /// Logs a failure the first time in this connection. On `queue`.
+    private func note(_ what: String) {
+        if said.first(what) { Log.write("tablet picture: \(what) (said once per tablet connection)") }
+    }
 
     struct Target { var display: CGDirectDisplayID; var pixelWidth: Int; var pixelHeight: Int; var exclude: [Int] }
 
@@ -81,7 +91,7 @@ final class ScreenGrabber {
                 config.showsCursor = false
                 config.scalesToFit = true
                 SCScreenshotManager.captureImage(contentFilter: filter, configuration: config) { image, error in
-                    if let error { self.queue.async { self.content = nil }; Log.write("tablet picture: \(error.localizedDescription)") }
+                    if let error { self.queue.async { self.content = nil; self.note(error.localizedDescription) } }
                     done(image.flatMap { Self.encode($0) })
                 }
             }
@@ -101,7 +111,7 @@ final class ScreenGrabber {
             SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { c, error in
                 self.queue.async {
                     if let c { self.content = c; self.contentAt = Date() }
-                    else if let error { Log.write("tablet picture: \(error.localizedDescription)") }
+                    else if let error { self.note(error.localizedDescription) }
                     use(c)
                 }
             }
@@ -124,7 +134,8 @@ final class ScreenGrabber {
     static func resize(_ image: CGImage, _ w: Int, _ h: Int) -> CGImage? {
         if image.width == w && image.height == h { return image }
         guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
-                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue) else { return nil }
+                                  space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue) else { return nil }
         ctx.interpolationQuality = .medium
         ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
         return ctx.makeImage()
@@ -171,6 +182,9 @@ final class PadHost {
             self.grabber.jpeg(t, done)
         }
     }
+
+    /// A tablet connected: a failing picture is logged again, once.
+    func newConnection() { grabber.newConnection() }
 
     /// The screen the drawing layer covers (its display, its size in pixels) and the windows to leave out.
     func setTarget(_ t: ScreenGrabber.Target) { lock.lock(); target = t; lock.unlock() }
@@ -240,20 +254,30 @@ final class PadHost {
         return p.terminationStatus == 0 ? String(decoding: data, as: UTF8.self) : nil
     }
 
-    /// This Mac's IPv4 addresses on its networks, for typing into a tablet when the network hides names.
-    static func addresses() -> [String] {
-        var list: [(String, String)] = []
+    /// This Mac's addresses a tablet can reach (Wi-Fi, Ethernet, Internet Sharing; see PadPC.padAddresses), for
+    /// typing into a tablet when the network hides names.
+    static func addresses() -> [PadAddress] {
+        // which interfaces are Wi-Fi (en0 is Wi-Fi on a MacBook, Ethernet on many desktop Macs)
+        var wifi = Set<String>()
+        if let all = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] {
+            for i in all where SCNetworkInterfaceGetInterfaceType(i) == kSCNetworkInterfaceTypeIEEE80211 {
+                if let bsd = SCNetworkInterfaceGetBSDName(i) { wifi.insert(bsd as String) }
+            }
+        }
+        var list: [PadPC.Interface] = []
         var ifap: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifap) == 0, let first = ifap else { return [] }
         defer { freeifaddrs(ifap) }
         for p in sequence(first: first, next: { $0.pointee.ifa_next }) {
-            guard let a = p.pointee.ifa_addr, a.pointee.sa_family == UInt8(AF_INET),
-                  p.pointee.ifa_flags & UInt32(IFF_UP) != 0 else { continue }
+            guard let a = p.pointee.ifa_addr, a.pointee.sa_family == UInt8(AF_INET) else { continue }
             var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
             if getnameinfo(a, socklen_t(a.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
-                list.append((String(cString: p.pointee.ifa_name), String(cString: host)))
+                let name = String(cString: p.pointee.ifa_name)
+                let flags = p.pointee.ifa_flags
+                list.append(PadPC.Interface(name, String(cString: host), up: flags & UInt32(IFF_UP) != 0,
+                                            running: flags & UInt32(IFF_RUNNING) != 0, wifi: wifi.contains(name)))
             }
         }
-        return PadPC.usableAddresses(list.map { (interface: $0.0, address: $0.1) })
+        return PadPC.padAddresses(list)
     }
 }

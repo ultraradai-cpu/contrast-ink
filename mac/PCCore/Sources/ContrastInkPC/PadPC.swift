@@ -143,16 +143,50 @@ public enum PadPC {
         return String(format: "%06d", n)
     }
 
-    /// The Mac's addresses a tablet can be given by hand, from interface names and addresses (IPv4, not loopback,
-    /// not self-assigned 169.254).
-    public static func usableAddresses(_ all: [(interface: String, address: String)]) -> [String] {
-        var seen = Set<String>()
-        return all.compactMap { a in
-            let s = a.address
-            guard s.contains("."), !s.hasPrefix("127."), !s.hasPrefix("169.254."), !a.interface.hasPrefix("lo"),
-                  seen.insert(s).inserted else { return nil }
-            return s
+    /// The pad panel's line: every address a tablet can reach, each with its network ("Wi-Fi", "Ethernet",
+    /// "Internet Sharing"), with the port when it isn't the usual one. Nil when there is none.
+    public static func addressLine(_ addresses: [PadAddress], port: UInt16) -> String? {
+        guard !addresses.isEmpty else { return nil }
+        let suffix = port != 0 && port != PadProtocol.defaultPort ? ":\(port)" : ""
+        let all = addresses.map { "\($0.address)\(suffix) (\($0.kind.rawValue))" }
+        let list = all.count == 1 ? all[0] : all.dropLast().joined(separator: ", ") + " or " + all.last!
+        return "Or type the address \(list)."
+    }
+
+    /// One of the Mac's network interfaces with an address, as getifaddrs and SystemConfiguration describe it.
+    public struct Interface: Equatable, Sendable {
+        public var name: String, address: String, up: Bool, running: Bool, wifi: Bool
+        public init(_ name: String, _ address: String, up: Bool = true, running: Bool = true, wifi: Bool = false) {
+            self.name = name; self.address = address; self.up = up; self.running = running; self.wifi = wifi
         }
+    }
+
+    /// Subnets of virtual machines' own bridges (UTM / Apple Virtualization's vmnet, Parallels): not where a tablet is.
+    static let vmSubnets = ["192.168.64.", "10.211.55.", "10.37.129."]
+
+    /// The addresses a tablet can be given by hand: IPv4 on a network interface (en*: Wi-Fi, Ethernet, iPhone USB)
+    /// or Internet Sharing's bridge (bridge*), up and running. Left out: loopback, self-assigned 169.254, VPN
+    /// tunnels (utun), AirDrop's awdl/llw, and virtual machines' bridges and adapters (vmnet, vnic, a VM subnet).
+    public static func padAddresses(_ all: [Interface]) -> [PadAddress] {
+        var seen = Set<String>()
+        return all.compactMap { i in
+            let a = i.address
+            guard i.up, i.running, a.contains("."), !a.contains(":"), !a.hasPrefix("127."), !a.hasPrefix("169.254."),
+                  !seen.contains(a) else { return nil }
+            let kind: PadAddress.Kind
+            if Self.numbered(i.name, "en") { kind = i.wifi ? .wifi : .ethernet }
+            else if Self.numbered(i.name, "bridge"), !vmSubnets.contains(where: { a.hasPrefix($0) }) { kind = .internetSharing }
+            else { return nil }
+            seen.insert(a)
+            return PadAddress(address: a, kind: kind)
+        }
+    }
+
+    /// "en0", "bridge100": the prefix followed by digits only.
+    static func numbered(_ name: String, _ prefix: String) -> Bool {
+        guard name.hasPrefix(prefix) else { return false }
+        let rest = name.dropFirst(prefix.count)
+        return !rest.isEmpty && rest.allSatisfy(\.isNumber)
     }
 
     // MARK: bytes
@@ -225,32 +259,68 @@ public struct PadFrames {
     }
 }
 
-/// Wrong codes: a 6-digit code must not be guessable by a script on the same Wi-Fi. Five wrong in a row lock
-/// everyone out for 30 s; twenty wrong in all make a new code (the presenter sees it change).
+/// Wrong codes: a 6-digit code must not be guessable by a script on the same Wi-Fi (docs/pad-protocol.md, "Limits").
+/// Counted per address, so a stranger guessing from one address can't lock the presenter's own tablet out: five wrong
+/// in a row from one address lock that address out for 30 s. A backstop of fifteen wrong in a row from all addresses
+/// (a stranger changing address) locks everyone out for 30 s. Twenty wrong in all make a new code (the presenter sees
+/// it change). The cable doors have no code and are never counted.
 public struct PadGuard: Sendable {
-    public static let inARow = 5, beforeNewCode = 20
+    public static let inARow = 5, inARowFromAll = 15, beforeNewCode = 20
     public static let lockout: TimeInterval = 30
+    /// The most addresses remembered at once (a flood of addresses can't fill memory); the oldest go first.
+    public static let maxAddresses = 256
+    private struct From: Sendable { var inARow = 0; var lockedUntil = Date.distantPast; var last = Date.distantPast }
+    private var from: [String: From] = [:]
     private var wrongInARow = 0, wrongForThisCode = 0
-    private var lockedUntil = Date.distantPast
+    private var everyoneLockedUntil = Date.distantPast
     private let lockoutFor: TimeInterval
-    /// `lockout`: how long five wrong in a row lock everyone out (shorter only in tests).
+    /// `lockout`: how long a lockout lasts (shorter only in tests).
     public init(lockout: TimeInterval = PadGuard.lockout) { lockoutFor = lockout }
 
-    /// Whether codes may be tried at all right now.
-    public func locked(_ now: Date) -> Bool { now < lockedUntil }
+    /// Whether codes may be tried from this address right now.
+    public func locked(_ address: String, _ now: Date) -> Bool {
+        now < everyoneLockedUntil || now < (from[address]?.lockedUntil ?? .distantPast)
+    }
 
-    /// A wrong code was given. True: time for a new code.
-    public mutating func wrong(_ now: Date) -> Bool {
+    /// A wrong code was given from this address. True: time for a new code.
+    public mutating func wrong(_ address: String, _ now: Date) -> Bool {
         wrongForThisCode += 1
         wrongInARow += 1
-        if wrongInARow >= Self.inARow { wrongInARow = 0; lockedUntil = now.addingTimeInterval(lockoutFor) }
+        var f = from[address] ?? From()
+        f.inARow += 1
+        f.last = now
+        if f.inARow >= Self.inARow { f.inARow = 0; f.lockedUntil = now.addingTimeInterval(lockoutFor) }
+        from[address] = f
+        if wrongInARow >= Self.inARowFromAll { wrongInARow = 0; everyoneLockedUntil = now.addingTimeInterval(lockoutFor) }
+        if from.count > Self.maxAddresses {
+            // the addresses not locked out now, oldest first, go
+            let spare = from.filter { now >= $0.value.lockedUntil }.sorted { $0.value.last < $1.value.last }
+            for (k, _) in spare.prefix(from.count - Self.maxAddresses) { from[k] = nil }
+        }
         guard wrongForThisCode >= Self.beforeNewCode else { return false }
         wrongForThisCode = 0
         return true
     }
 
-    /// The right code: the count of guesses in a row starts again.
-    public mutating func right() { wrongInARow = 0 }
+    /// The right code from this address: its count of guesses in a row starts again, and so does the backstop's.
+    public mutating func right(_ address: String) {
+        wrongInARow = 0
+        from[address] = nil
+    }
+
+    /// How many addresses are remembered (for tests).
+    public var addressCount: Int { from.count }
+}
+
+/// The PC check from SHA-256 of the PC's public key: its first 8 bytes as 16 hex digits, XXXX-XXXX-XXXX-XXXX
+/// (docs/pad-protocol.md, "Version 2", step 1). Nil with fewer than 8 bytes.
+public enum PadCheck {
+    public static let bytes = 8
+    public static func text(hash: [UInt8]) -> String? {
+        guard hash.count >= bytes else { return nil }
+        let h = Array(hash.prefix(bytes).map { String(format: "%02X", $0) }.joined())
+        return stride(from: 0, to: 16, by: 4).map { String(h[$0..<$0 + 4]) }.joined(separator: "-")
+    }
 }
 
 /// What went wrong with the tablet link's listening, said as what the presenter can do about it (the raw error goes
@@ -300,4 +370,12 @@ struct FlatJSON: Decodable {
         guard let d = numbers[key], d.isFinite, d.rounded() == d, abs(d) < 1e9 else { return nil }
         return Int(d)
     }
+}
+
+/// An address of this Mac a tablet can connect to, and the network it is on.
+public struct PadAddress: Equatable, Sendable {
+    public enum Kind: String, Sendable { case wifi = "Wi-Fi", ethernet = "Ethernet", internetSharing = "Internet Sharing" }
+    public var address: String
+    public var kind: Kind
+    public init(address: String, kind: Kind) { self.address = address; self.kind = kind }
 }

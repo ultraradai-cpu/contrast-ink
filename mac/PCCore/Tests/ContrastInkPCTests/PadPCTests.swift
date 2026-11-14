@@ -109,22 +109,75 @@ final class PadPCTests: XCTestCase {
     func testGuard() {
         var g = PadGuard()
         let t0 = Date(timeIntervalSince1970: 1000)
-        for _ in 0..<4 { XCTAssertFalse(g.wrong(t0)) }
-        XCTAssertFalse(g.locked(t0))
-        XCTAssertFalse(g.wrong(t0))   // the fifth in a row
-        XCTAssertTrue(g.locked(t0))
-        XCTAssertTrue(g.locked(t0.addingTimeInterval(29)))
-        XCTAssertFalse(g.locked(t0.addingTimeInterval(30)))
-        g.right()
+        let a = "192.168.1.50"
+        for _ in 0..<4 { XCTAssertFalse(g.wrong(a, t0)) }
+        XCTAssertFalse(g.locked(a, t0))
+        XCTAssertFalse(g.wrong(a, t0))   // the fifth in a row from this address
+        XCTAssertTrue(g.locked(a, t0))
+        XCTAssertTrue(g.locked(a, t0.addingTimeInterval(29)))
+        XCTAssertFalse(g.locked(a, t0.addingTimeInterval(30)))
+        g.right(a)
         var newCode = false
-        for i in 0..<15 { if g.wrong(t0.addingTimeInterval(100 + Double(i) * 40)) { newCode = true } }
+        for i in 0..<15 { if g.wrong("10.0.0.\(i)", t0.addingTimeInterval(100 + Double(i) * 40)) { newCode = true } }
         XCTAssertTrue(newCode, "twenty wrong in all make a new code")
         // a right code in between doesn't reset the count towards a new code, only the run
         var h = PadGuard()
-        for _ in 0..<4 { _ = h.wrong(t0) }
-        h.right()
-        XCTAssertFalse(h.wrong(t0))
-        XCTAssertFalse(h.locked(t0))
+        for _ in 0..<4 { _ = h.wrong(a, t0) }
+        h.right(a)
+        XCTAssertFalse(h.wrong(a, t0))
+        XCTAssertFalse(h.locked(a, t0))
+    }
+
+    /// Wrong codes are counted per address: a stranger guessing can't lock the presenter's own tablet out.
+    func testGuardCountsPerAddress() {
+        var g = PadGuard()
+        let t0 = Date(timeIntervalSince1970: 1000)
+        for _ in 0..<PadGuard.inARow { _ = g.wrong("10.0.0.66", t0) }
+        XCTAssertTrue(g.locked("10.0.0.66", t0), "the guessing address is locked out")
+        XCTAssertFalse(g.locked("10.0.0.20", t0), "the presenter's tablet, at another address, is not")
+        // four from each of three addresses (twelve in a row from all): nobody else locked yet
+        var h = PadGuard()
+        for a in ["a", "b", "c"] { for _ in 0..<4 { _ = h.wrong(a, t0) } }
+        XCTAssertFalse(h.locked("a", t0))
+        XCTAssertFalse(h.locked("presenter", t0))
+        // the backstop: fifteen in a row from all addresses lock everyone out for 30 s
+        for a in ["d", "e", "f"] { _ = h.wrong(a, t0) }
+        XCTAssertTrue(h.locked("presenter", t0), "fifteen in a row from all addresses lock everyone")
+        XCTAssertTrue(h.locked("presenter", t0.addingTimeInterval(29)))
+        XCTAssertFalse(h.locked("presenter", t0.addingTimeInterval(30)))
+        // a right code breaks the run of the backstop
+        var r = PadGuard()
+        for i in 0..<14 { _ = r.wrong("x\(i % 3)", t0) }
+        r.right("presenter")
+        _ = r.wrong("x0", t0)
+        XCTAssertFalse(r.locked("presenter", t0))
+        // twenty in all from many addresses still make a new code
+        var n = PadGuard(lockout: 0)
+        var made = false
+        for i in 0..<PadGuard.beforeNewCode { if n.wrong("10.1.0.\(i)", t0) { made = true } }
+        XCTAssertTrue(made)
+        // a flood of addresses is not all remembered
+        var m = PadGuard(lockout: 0)
+        for i in 0..<1000 { _ = m.wrong("10.2.\(i / 256).\(i % 256)", t0.addingTimeInterval(Double(i))) }
+        XCTAssertLessThanOrEqual(m.addressCount, PadGuard.maxAddresses)
+    }
+
+    /// The 16-digit PC check (docs/pad-protocol.md): the first 8 bytes of SHA-256, XXXX-XXXX-XXXX-XXXX.
+    func testPcCheckIsSixteenDigits() {
+        // SHA-256 of the spec's PC public key begins 6F C6 6A 90 48 61 71 CA (asserted against CryptoKit on the Mac)
+        let hash: [UInt8] = [0x6F, 0xC6, 0x6A, 0x90, 0x48, 0x61, 0x71, 0xCA, 0x01, 0x02]
+        XCTAssertEqual(PadCheck.text(hash: hash), "6FC6-6A90-4861-71CA")
+        XCTAssertNil(PadCheck.text(hash: Array(hash.prefix(4))))
+    }
+
+    /// The Mac shows the same 16 digits the tablet (Core's PadCheckFormat, used by the iPad) shows for the same key.
+    func testMacAndTabletWriteThePcCheckAlike() {
+        var g = SystemRandomNumberGenerator()
+        for _ in 0..<50 {
+            let hash = (0..<32).map { _ in UInt8.random(in: 0...255, using: &g) }
+            XCTAssertEqual(PadCheck.text(hash: hash), PadCheckFormat.format(hash: Data(hash)))
+        }
+        XCTAssertEqual(PadCheckFormat.bytes, PadCheck.bytes)
     }
 
     func testCodesAndAddresses() {
@@ -132,8 +185,52 @@ final class PadPCTests: XCTestCase {
             let c = PadPC.newCode()
             XCTAssertTrue(PadProtocol.isCode(c), c)
         }
-        XCTAssertEqual(PadPC.usableAddresses([("lo0", "127.0.0.1"), ("en0", "192.168.1.20"), ("en0", "fe80::1"),
-                                              ("en5", "169.254.3.3"), ("en1", "192.168.1.20"), ("bridge100", "10.0.0.1")]),
-                       ["192.168.1.20", "10.0.0.1"])
+        typealias I = PadPC.Interface
+        XCTAssertEqual(PadPC.padAddresses([I("lo0", "127.0.0.1"), I("en0", "192.168.1.20", wifi: true), I("en0", "fe80::1"),
+                                           I("en5", "169.254.3.3"), I("en1", "192.168.1.20"), I("bridge100", "10.0.0.1")]),
+                       [PadAddress(address: "192.168.1.20", kind: .wifi), PadAddress(address: "10.0.0.1", kind: .internetSharing)])
+    }
+
+    /// Internet Sharing on: the Mac is 192.168.2.1 on bridge100, and a tablet on that shared Wi-Fi needs that address.
+    func testAddressListKeepsInternetSharingsBridge() {
+        typealias I = PadPC.Interface
+        let all = PadPC.padAddresses([I("lo0", "127.0.0.1"), I("en0", "10.20.30.40", wifi: true), I("bridge100", "192.168.2.1"),
+                                      I("bridge100", "fe80::1"), I("awdl0", "169.254.9.9")])
+        XCTAssertEqual(all, [PadAddress(address: "10.20.30.40", kind: .wifi), PadAddress(address: "192.168.2.1", kind: .internetSharing)])
+        XCTAssertEqual(PadPC.addressLine(all, port: PadProtocol.defaultPort),
+                       "Or type the address 10.20.30.40 (Wi-Fi) or 192.168.2.1 (Internet Sharing).")
+        XCTAssertEqual(PadPC.addressLine(all, port: 47900),
+                       "Or type the address 10.20.30.40:47900 (Wi-Fi) or 192.168.2.1:47900 (Internet Sharing).")
+        XCTAssertEqual(PadPC.addressLine([PadAddress(address: "192.168.2.1", kind: .internetSharing)], port: 0),
+                       "Or type the address 192.168.2.1 (Internet Sharing).")
+        XCTAssertNil(PadPC.addressLine([], port: 0))
+        XCTAssertEqual(PadPC.padAddresses([I("bridge100", "192.168.2.1")]), [PadAddress(address: "192.168.2.1", kind: .internetSharing)])
+        XCTAssertEqual(MacTexts.noSharedWifi,
+                       "No shared Wi-Fi? Internet Sharing needs Ethernet or iPhone USB as its source; otherwise use a phone hotspot or the USB cable.")
+    }
+
+    /// Only addresses a tablet can reach: no VPN tunnel, no AirDrop link, no virtual machine's network, nothing down.
+    func testAddressListLeavesOutUnreachableInterfaces() {
+        typealias I = PadPC.Interface
+        let all = PadPC.padAddresses([
+            I("utun3", "100.64.0.7"),                       // a VPN (Tailscale, a company VPN)
+            I("utun0", "10.8.0.2"),
+            I("awdl0", "169.254.1.1"), I("llw0", "169.254.1.2"),
+            I("bridge101", "192.168.64.1"),                 // UTM / Apple Virtualization (vmnet)
+            I("bridge102", "10.211.55.2"),                  // Parallels' shared network
+            I("vnic0", "10.211.55.3"), I("vmnet8", "172.16.5.1"), I("vboxnet0", "192.168.56.1"),
+            I("docker0", "172.17.0.1"),
+            I("en7", "192.168.0.50", running: false),      // an Ethernet adapter with no cable
+            I("en8", "192.168.9.9", up: false),
+            I("en1", "192.168.1.30"),                       // Ethernet
+            I("en0", "10.1.2.3", wifi: true),               // Wi-Fi
+            I("bridge100", "192.168.2.1"),                  // Internet Sharing
+            I("en10", "172.20.10.2"),                       // iPhone USB
+        ])
+        XCTAssertEqual(all, [PadAddress(address: "192.168.1.30", kind: .ethernet), PadAddress(address: "10.1.2.3", kind: .wifi),
+                             PadAddress(address: "192.168.2.1", kind: .internetSharing), PadAddress(address: "172.20.10.2", kind: .ethernet)])
+        XCTAssertFalse(PadPC.numbered("enx", "en"))
+        XCTAssertFalse(PadPC.numbered("en", "en"))
+        XCTAssertTrue(PadPC.numbered("bridge100", "bridge"))
     }
 }

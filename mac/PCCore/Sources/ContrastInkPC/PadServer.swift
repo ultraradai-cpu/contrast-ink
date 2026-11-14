@@ -150,7 +150,8 @@ public final class PadServer {
         public var proofWithin: TimeInterval = PadPC.proofWithin
         /// A tablet that can't take messages this long is dropped.
         public var writeStall: TimeInterval = PadPC.writeStall
-        /// How long five wrong codes in a row lock everyone out. Shorter only in tests.
+        /// How long five wrong codes in a row from one address lock it out (and fifteen from all, everyone).
+        /// Shorter only in tests.
         public var lockout: TimeInterval = PadGuard.lockout
         public init(name: String) { self.name = name }
     }
@@ -210,6 +211,8 @@ public final class PadServer {
         let pipe: PadPipe
         let door: Door
         var usb: Bool { !door.isWifi }
+        /// The address wrong codes are counted against (Wi-Fi only).
+        var address: String { if case .wifi(let a) = door { return a }; return "" }
         var accept: PadAccept
         var frames = PadFrames(maxLength: PadPC.helloMax)
         /// 0: waiting for HELLO, 1: CHALLENGE sent, waiting for PROOF, 2: in, 3: refused (the REJECT on its way),
@@ -235,7 +238,7 @@ public final class PadServer {
         self.config = config
         self.deliver = deliver
         guardian = PadGuard(lockout: config.lockout)
-        pcCheck = PadCrypto.check(key.publicKey.x963Representation)
+        pcCheck = PadIdentityCheck.check(key)
         _code = code ?? PadPC.newCode()
     }
 
@@ -466,7 +469,7 @@ public final class PadServer {
         switch p.accept.hello(type: type, payload: payload) {
         case .reject(let why): refuse(p, why)
         case .challenge(let m):
-            if !p.usb && guardian.locked(Date()) { refuse(p, PadPC.tooManyWrong); return }
+            if !p.usb && guardian.locked(p.address, Date()) { refuse(p, PadPC.tooManyWrong); return }
             write(p, m)
             p.step = 1
             p.deadline = Date().addingTimeInterval(config.proofWithin)
@@ -479,9 +482,9 @@ public final class PadServer {
     private func proof(_ p: Peer, _ type: UInt8, _ payload: Data) {
         let right = p.accept.proof(type: type, payload: payload, code: p.usb ? "" : _code)
         let now = Date()
-        if !p.usb && guardian.locked(now) { refuse(p, PadPC.tooManyWrong); return }
+        if !p.usb && guardian.locked(p.address, now) { refuse(p, PadPC.tooManyWrong); return }
         guard right else {
-            if !p.usb && guardian.wrong(now) {
+            if !p.usb && guardian.wrong(p.address, now) {
                 _code = PadPC.newCode()
                 let c = _code
                 deliver.async { [weak self] in self?.onCodeChanged?(c) }
@@ -489,7 +492,7 @@ public final class PadServer {
             refuse(p, PadPC.wrongCode)
             return
         }
-        if !p.usb { guardian.right() }
+        if !p.usb { guardian.right(p.address) }
         if p.door == .usbDoor {
             p.step = 4   // until the presenter answers, or the PROOF deadline passes
             let device = p.accept.device

@@ -148,12 +148,12 @@ final class MacRulesTests: XCTestCase {
     func testPadGuardLockoutCanBeShortened() {
         var g = PadGuard(lockout: 0)
         let t = Date()
-        for _ in 0..<PadGuard.inARow { _ = g.wrong(t) }
-        XCTAssertFalse(g.locked(t.addingTimeInterval(0.001)))
+        for _ in 0..<PadGuard.inARow { _ = g.wrong("a", t) }
+        XCTAssertFalse(g.locked("a", t.addingTimeInterval(0.001)))
         var normal = PadGuard()
-        for _ in 0..<PadGuard.inARow { _ = normal.wrong(t) }
-        XCTAssertTrue(normal.locked(t.addingTimeInterval(29)))
-        XCTAssertFalse(normal.locked(t.addingTimeInterval(31)))
+        for _ in 0..<PadGuard.inARow { _ = normal.wrong("a", t) }
+        XCTAssertTrue(normal.locked("a", t.addingTimeInterval(29)))
+        XCTAssertFalse(normal.locked("a", t.addingTimeInterval(31)))
     }
 
     /// The Mac's key in its own file: 0600 in a 0700 folder, raw 32 bytes; a file that can't be used is never

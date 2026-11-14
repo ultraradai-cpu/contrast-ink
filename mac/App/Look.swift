@@ -2,17 +2,19 @@ import AppKit
 import ContrastInkPC
 
 /// Contrast's colours, as on the Windows toolbar: dark ink bar, light grey text, logo blue for what is switched on.
+/// The values are ContrastInkPC's MacPalette, whose tests hold them to WCAG AA on the bar and under the pointer.
 enum Look {
-    static let bar = NSColor(hex: "#141A22")
-    static let ink = NSColor(hex: "#E3E8F0")
-    static let blue = NSColor(hex: "#2563EB")
-    static let grey = NSColor(hex: "#8A95A6")
-    static let hover = NSColor(hex: "#E3E8F0", alpha: 0.2)
-    static let separator = NSColor(hex: "#8A95A6", alpha: 0.25)
-    static let recRed = NSColor(hex: "#FF3B30")
-    static let amber = NSColor(hex: "#FFB020")
-    static let warning = NSColor(hex: "#FA8072")
-    static let laser = NSColor(hex: "#FF2D2D")
+    static let bar = NSColor(hex: MacPalette.bar)
+    static let ink = NSColor(hex: MacPalette.ink)
+    static let blue = NSColor(hex: MacPalette.blue)
+    static let blueText = NSColor(hex: MacPalette.blueText)
+    static let grey = NSColor(hex: MacPalette.grey)
+    static let hover = NSColor(hex: MacPalette.ink, alpha: CGFloat(MacPalette.hoverAlpha))
+    static let separator = NSColor(hex: MacPalette.grey, alpha: 0.25)
+    static let recRed = NSColor(hex: MacPalette.recRed)
+    static let amber = NSColor(hex: MacPalette.amber)
+    static let warning = NSColor(hex: MacPalette.warning)
+    static let laser = NSColor(hex: MacPalette.laserGlyph)
 }
 
 extension NSColor {
@@ -23,6 +25,7 @@ extension NSColor {
 }
 
 /// Where the app writes what went wrong: ~/Library/Logs/Contrast Ink.log (send it along with what you were doing).
+/// Kept under 1 MB: past that it becomes "Contrast Ink.old.log" (one old file).
 enum Log {
     static let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Contrast Ink.log")
     private static let lock = NSLock()
@@ -30,13 +33,7 @@ enum Log {
     static func write(_ text: String) {
         let line = "\(ISO8601DateFormatter().string(from: Date())) \(text)\n"
         lock.lock(); defer { lock.unlock() }
-        if let h = try? FileHandle(forWritingTo: url) {
-            h.seekToEndOfFile()
-            h.write(Data(line.utf8))
-            try? h.close()
-        } else {
-            try? Data(line.utf8).write(to: url)
-        }
+        LogFile.append(line, to: url)
         if ProcessInfo.processInfo.arguments.contains("--smoke-test") { FileHandle.standardError.write(Data(line.utf8)) }
     }
 }

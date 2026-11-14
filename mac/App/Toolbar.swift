@@ -94,7 +94,8 @@ final class BarButton: NSView {
             ring.stroke()
         }
         if let content { content(r, self); return }
-        let color = titleColor ?? (selected ? .white : Look.ink)
+        // white on the chosen (blue) button whatever its own colour: a red ● on blue can't be read
+        let color = selected ? .white : (titleColor ?? Look.ink)
         let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: fontSize), .foregroundColor: color]
         let s = NSAttributedString(string: title, attributes: attrs)
         let size = s.size()
@@ -186,6 +187,10 @@ final class Toolbar {
     private let askRow = NSStackView()
     private let askLabel = NSTextField(labelWithString: "")
     private var askAnswer: ((Bool) -> Void)?
+    // ✕ with marks, a recording or a tablet: Quit / Cancel
+    private let quitRow = NSStackView()
+    private let quitLabel = NSTextField(wrappingLabelWithString: "")
+    private var quitNow: (() -> Void)?
 
     // settings
     private let settingsStack = NSStackView()
@@ -252,12 +257,25 @@ final class Toolbar {
         askRow.addArrangedSubview(FirstMouseTextButton("Deny") { [weak self] in self?.answerAsk(false) })
         askRow.isHidden = true
         column.addArrangedSubview(askRow)
+        quitRow.orientation = .horizontal
+        quitRow.spacing = 6
+        quitRow.alignment = .centerY
+        quitRow.edgeInsets = NSEdgeInsets(top: 2, left: 6, bottom: 2, right: 6)
+        quitLabel.font = NSFont.systemFont(ofSize: 12)
+        quitLabel.textColor = Look.warning
+        quitLabel.isSelectable = false
+        quitLabel.preferredMaxLayoutWidth = 460
+        quitRow.addArrangedSubview(quitLabel)
+        quitRow.addArrangedSubview(FirstMouseTextButton("Quit") { [weak self] in self?.answerQuit(true) })
+        quitRow.addArrangedSubview(FirstMouseTextButton("Cancel") { [weak self] in self?.answerQuit(false) })
+        quitRow.isHidden = true
+        column.addArrangedSubview(quitRow)
 
         let c = controller
         row.addArrangedSubview(Grip(toolbar: self).also { g in
             gripDots = g.dots
         })
-        drawBtn = button("✏ Off", width: 62, size: 15, "Draw on / off (F9). Or hold Control to draw.") { c.toggleDrawing() }
+        drawBtn = button("✏ Off", width: 62, size: 15, "Draw on / off (F9).") { c.toggleDrawing() }
         row.addArrangedSubview(drawBtn)
         row.addArrangedSubview(separator())
         recBtn = button("⏺", "Record with OBS (start / stop)") { c.recorder.recordClicked() }
@@ -330,7 +348,7 @@ final class Toolbar {
         full.addArrangedSubview(settingsBtn)
         foldBtn = button("‹", width: 26, "Make the toolbar small / big") { c.toggleFold() }
         row.addArrangedSubview(foldBtn)
-        row.addArrangedSubview(button("✕", width: 28, size: 13, "Quit Contrast Ink") { NSApp.terminate(nil) })
+        row.addArrangedSubview(button("✕", width: 28, size: 13, "Quit Contrast Ink") { c.quitClicked() })
     }
 
     private func buildSettings() {
@@ -353,7 +371,7 @@ final class Toolbar {
         optNames = FirstMouseCheckbox("Show Button Names When the Pointer Rests on One") { on in c.change { $0.showButtonNames = on } }
         settingsStack.addArrangedSubview(optNames)
         heading("Drawing")
-        optControl = FirstMouseCheckbox("Hold Control to Draw") { on in c.change { $0.holdControlToDraw = on } }
+        optControl = FirstMouseCheckbox("Hold Control to Draw (Control-Click Still Clicks)") { on in c.change { $0.holdControlToDraw = on } }
         optZ = FirstMouseCheckbox("Z Key Undoes (⌘Z Always Works)") { on in c.change { $0.undoWithZ = on } }
         optRight = FirstMouseCheckbox("Right-Click Undoes") { on in c.change { $0.undoWithRightClick = on } }
         optEraser = FirstMouseCheckbox("Pen Tablet's Eraser End Erases") { on in c.change { $0.penEraserEnd = on } }
@@ -392,9 +410,10 @@ final class Toolbar {
     // MARK: showing
 
     /// Shows the current state: which tool, colour, width, and whether drawing is on.
-    func refresh(drawing: Bool, settings s: MacSettings, screens: Int) {
+    func refresh(drawing: Bool, settings s: MacSettings, screens: Int, covered: Int) {
         drawBtn.selected = drawing
         drawBtn.title = drawing ? "✏ On" : "✏ Off"
+        drawBtn.hint = s.holdControlToDraw ? "Draw on / off (F9). Or hold Control on its own for a moment to draw." : "Draw on / off (F9)."
         for (t, b) in toolButtons { b.selected = s.tool == t }
         for (i, b) in colorButtons.enumerated() { b.ringed = i == s.color }
         for (i, b) in widthButtons.enumerated() { b.selected = i == s.width }
@@ -402,7 +421,7 @@ final class Toolbar {
         if abs(opacity.doubleValue - s.opacity) > 0.001 { opacity.doubleValue = s.opacity }
         if abs(settingsOpacity.doubleValue - s.opacity) > 0.001 { settingsOpacity.doubleValue = s.opacity }
         screenBtn.isHidden = screens < 2
-        screenBtn.title = "🖥\(s.screen + 1)"
+        screenBtn.title = "🖥\(covered + 1)"
         full.isHidden = s.toolbarCollapsed
         foldBtn.title = s.toolbarCollapsed ? "›" : "‹"
         if s.toolbarCollapsed && settingsPanel.isVisible { hideSettings() }
@@ -461,6 +480,25 @@ final class Toolbar {
     }
 
     var asking: Bool { !askRow.isHidden }
+
+    /// ✕ when quitting would lose something: the question, with Quit and Cancel. `quit` runs only on Quit.
+    func confirmQuit(_ text: String, quit: @escaping () -> Void) {
+        quitNow = quit
+        quitLabel.stringValue = text
+        quitRow.isHidden = false
+        fit()
+    }
+
+    var confirmingQuit: Bool { !quitRow.isHidden }
+
+    /// Cancel (also what the smoke test presses).
+    func answerQuit(_ yes: Bool) {
+        let q = quitNow
+        quitNow = nil
+        quitRow.isHidden = true
+        fit()
+        if yes { q?() }
+    }
 
     private func answerAsk(_ yes: Bool) {
         let a = askAnswer
@@ -596,7 +634,7 @@ final class Grip: NSView {
         image.imageScaling = .scaleProportionallyUpOrDown
         image.frame = NSRect(x: 4, y: 8, width: 22, height: 22)
         addSubview(image)
-        dots.textColor = Look.blue
+        dots.textColor = Look.blueText
         dots.font = NSFont.systemFont(ofSize: 14)
         dots.frame = NSRect(x: 27, y: 9, width: 10, height: 20)
         addSubview(dots)

@@ -1,4 +1,5 @@
 import AppKit
+import ColorSync
 import ContrastInkCore
 import ContrastInkPC
 import CryptoKit
@@ -10,6 +11,13 @@ final class AppController {
     private(set) var drawing = false
     /// Drawing is on only while Control is held (let go: off again).
     private var heldByControl = false
+    /// The screen the layer covers now (in NSScreen.screens), and each screen's own marks.
+    private(set) var covered = 0
+    private var screenMarks = ScreenMarks()
+    /// The pen tablet's proximity events (which end is near), watched in every app: the drawing layer is never the
+    /// active window, so it may not be sent them itself.
+    private var proximityMonitors: [Any] = []
+    var watchesTabletProximity: Bool { proximityMonitors.count == 2 }
     let overlay = OverlayPanel()
     let ink = InkView()
     private(set) var toolbar: Toolbar!
@@ -34,15 +42,28 @@ final class AppController {
     }
 
     func start() {
+        // an older saved copy chose its screen by index only: remember that screen by its ID from now on
+        let ids = NSScreen.screens.map(Self.screenID)
+        if settings.screenID == nil, settings.screen > 0, ids.indices.contains(settings.screen) {
+            settings.screenID = ids[settings.screen]
+            if save, let d = settings.encoded() { UserDefaults.standard.set(d, forKey: defaultsKey) }
+        }
         cover()
         overlay.orderFrontRegardless()
         toolbar.place(x: settings.toolbarX, y: settings.toolbarY)
         apply(save: false)
         if !HotKey.register({ [weak self] in self?.toggleDrawing() }) {
-            toolbar.warn("F9 couldn't be set up (another app may use it): use the ✏ button, or hold Control to draw.")
+            toolbar.warn("F9 couldn't be set up (another app may use it): use the ✏ button, or switch on Hold Control to Draw in ⚙ Settings.")
         }
-        control.changed = { [weak self] down in self?.controlChanged(down) }
+        control.enabled = { [weak self] in self?.settings.holdControlToDraw ?? false }
+        control.changed = { [weak self] c in self?.controlChanged(c) }
         control.start()
+        if let m = NSEvent.addGlobalMonitorForEvents(matching: .tabletProximity, handler: { [weak self] e in self?.ink.proximity(e) }) {
+            proximityMonitors.append(m)
+        }
+        if let m = NSEvent.addLocalMonitorForEvents(matching: .tabletProximity, handler: { [weak self] e in self?.ink.proximity(e); return e }) {
+            proximityMonitors.append(m)
+        }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
             guard let self, self.drawing, e.window === self.overlay else { return e }
             return self.key(e) ? nil : e
@@ -62,32 +83,47 @@ final class AppController {
 
     // MARK: the drawing layer
 
-    /// The chosen screen; nil for the moment macOS lists none (a display being swapped): then nothing moves.
-    private var screen: NSScreen? {
-        let all = NSScreen.screens
-        return all.indices.contains(settings.screen) ? all[settings.screen] : (NSScreen.main ?? all.first)
+    static func displayNumber(_ s: NSScreen) -> CGDirectDisplayID {
+        (s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? CGMainDisplayID()
     }
 
-    /// Covers the chosen screen (a projector plugged in or out mid-lecture: the layer follows by itself).
+    /// A screen's lasting ID: its display UUID (the same each time that display is plugged in), else its number.
+    static func screenID(_ s: NSScreen) -> String {
+        let n = displayNumber(s)
+        if let u = CGDisplayCreateUUIDFromDisplayID(n)?.takeRetainedValue() { return CFUUIDCreateString(nil, u) as String }
+        return "display-\(n)"
+    }
+
+    /// Covers the chosen screen, found by its ID. A projector dropping out for a moment: the layer covers the main
+    /// screen meanwhile (the choice isn't changed or saved), and goes back when the projector returns. Each screen
+    /// keeps its own marks; a screen whose size changed gets its marks stretched to fit.
     private func cover() {
-        guard let screen else { return }   // the screens-changed notice that follows brings it back
+        let all = NSScreen.screens
+        let ids = all.map(Self.screenID)
+        // nil for the moment macOS lists no screen (a display being swapped): the screens-changed notice brings it back
+        guard let i = ScreenChoice.index(ids: ids, chosenID: settings.screenID, savedIndex: settings.screen) else { return }
+        let screen = all[i]
+        covered = i
         overlay.setFrame(screen.frame, display: true)
+        let marks = screenMarks.cover(ids[i], width: Double(screen.frame.width), height: Double(screen.frame.height), board: ink.board)
+        if marks != ink.board { ink.replaceBoard(marks); marksChanged() }
         let scale = screen.backingScaleFactor
-        let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? CGMainDisplayID()
-        pad?.setTarget(ScreenGrabber.Target(display: id, pixelWidth: Int(screen.frame.width * scale), pixelHeight: Int(screen.frame.height * scale),
-                                            exclude: toolbar.windowNumbers))
+        pad?.setTarget(ScreenGrabber.Target(display: Self.displayNumber(screen), pixelWidth: Int(screen.frame.width * scale),
+                                            pixelHeight: Int(screen.frame.height * scale), exclude: toolbar.windowNumbers))
     }
 
+    /// Screens plugged in or out: the layer follows, nothing is saved (the presenter's choice stays as it was).
     private func screensChanged() {
-        settings = settings.cleaned(screens: NSScreen.screens.count)
         cover()
-        apply()
+        apply(save: false)
     }
 
+    /// 🖥: the next screen, chosen (and saved) by its ID.
     func nextScreen() {
-        let n = NSScreen.screens.count
-        guard n > 1 else { return }
-        settings.screen = (settings.screen + 1) % n
+        let ids = NSScreen.screens.map(Self.screenID)
+        guard let n = ScreenChoice.next(ids: ids, covered: covered) else { return }
+        settings.screenID = ids[n]
+        settings.screen = n
         cover()
         apply()
     }
@@ -107,21 +143,38 @@ final class AppController {
             }
         } else {
             heldByControl = false
+            control.drawingStopped()
             let hadKeys = overlay.isKeyWindow
             overlay.mayBecomeKey = false
-            // the keyboard back to PowerPoint: activating it takes the key window from the drawing layer
-            if hadKeys { KeySender.front?.activate(options: []) }
+            if hadKeys { giveKeyboardBack() }
             ink.laser.hideDot()
         }
         apply(save: false)
     }
 
+    /// The keyboard back to PowerPoint (or whatever app is in front). The drawing layer gives up the key window
+    /// itself (taken off screen and put straight back, now unable to be key), then the app in front is activated;
+    /// on macOS 14 and later activation is cooperative, so this app yields it to that app first.
+    private func giveKeyboardBack() {
+        overlay.resignKey()
+        overlay.orderOut(nil)
+        overlay.orderFrontRegardless()
+        guard let front = KeySender.front, !front.isTerminated else { return }
+        if #available(macOS 14.0, *) {
+            NSApp.yieldActivation(to: front)
+            _ = front.activate(from: NSRunningApplication.current, options: [])
+        } else {
+            _ = front.activate(options: [])
+        }
+    }
+
     func toggleDrawing() { setDrawing(!drawing) }
 
-    private func controlChanged(_ down: Bool) {
-        guard settings.holdControlToDraw else { return }
-        if down, !drawing { heldByControl = true; setDrawing(true, keys: false) }
-        else if !down, heldByControl { setDrawing(false) }
+    private func controlChanged(_ c: ControlHold.Change) {
+        switch c {
+        case .start: if !drawing { heldByControl = true; setDrawing(true, keys: false) }
+        case .stop: if heldByControl { setDrawing(false) }
+        }
     }
 
     /// A key while the drawing layer has the keyboard. True when it was used.
@@ -188,7 +241,7 @@ final class AppController {
     /// Shows and saves the settings, and tells the tablet.
     private func apply(save: Bool = true) {
         settings = settings.cleaned(screens: NSScreen.screens.count)
-        toolbar.refresh(drawing: drawing, settings: settings, screens: NSScreen.screens.count)
+        toolbar.refresh(drawing: drawing, settings: settings, screens: NSScreen.screens.count, covered: covered)
         toolbar.setCanUndo(ink.board.canUndo)
         ink.needsDisplay = true
         if save && self.save, let d = settings.encoded() { UserDefaults.standard.set(d, forKey: defaultsKey) }
@@ -223,9 +276,9 @@ final class AppController {
         let p = PadHost(key: key, code: code)
         pad = p
         p.server.onMessage = { [weak self] t, m in self?.padMessage(t, m) }
-        p.server.onConnection = { [weak self] name, _ in
-            guard let self else { return }
-            if name == nil { self.ink.remoteCancel() } else { self.sendState() }
+        p.server.onConnection = { [weak self, weak p] name, _ in
+            guard let self, let p else { return }
+            if name == nil { self.ink.remoteCancel() } else { p.newConnection(); self.sendState() }
             self.showPad()
         }
         p.server.onCodeChanged = { [weak self] _ in
@@ -290,9 +343,8 @@ final class AppController {
         } else {
             let ports = p.server.ports
             lines.append("On the tablet: Contrast Ink → Use as a pad → \(PadHost.macName), code \(p.server.code). The first time, the tablet shows a PC check: it must be \(p.server.pcCheck).")
-            if let a = PadHost.addresses().first {
-                lines.append("Or type the address \(a)" + (ports.wifi != 0 && ports.wifi != PadProtocol.defaultPort ? ":\(ports.wifi)" : "") + ".")
-            }
+            if let line = PadPC.addressLine(PadHost.addresses(), port: ports.wifi) { lines.append(line) }
+            lines.append(MacTexts.noSharedWifi)
             lines.append("By USB cable, by itself when plugged in: an iPad in pad mode just needs the cable; an Android tablet needs USB debugging on and Google's platform-tools (adb) on this Mac"
                          + (p.adbFound ? " (found)." : " (not found yet: brew install android-platform-tools)."))
             if ports.usb != nil {
@@ -300,7 +352,7 @@ final class AppController {
             }
         }
         if !Permissions.screenRecording {
-            lines.append("The tablet's picture needs Screen Recording: System Settings → Privacy & Security → Screen Recording → Contrast Ink, then quit and reopen it.")
+            lines.append(MacTexts.screenRecordingForTablet)
         }
         if let padProblem { lines.append(padProblem.instruction) }
         toolbar.showPad(lines.joined(separator: "\n"))
@@ -346,6 +398,14 @@ final class AppController {
         case .width(let w): setWidth(w)
         case .opacity(let o): setOpacity(o)
         }
+    }
+
+    /// ✕: quits at once when nothing would be lost; otherwise asks first (marks on the screen, an OBS recording
+    /// Contrast Ink started, a connected tablet).
+    func quitClicked() {
+        let question = QuitCheck.question(marks: ink.board.marks.count, recording: recorder.active, tablet: pad?.server.connected != nil)
+        guard let question else { NSApp.terminate(nil); return }
+        toolbar.confirmQuit(question) { NSApp.terminate(nil) }
     }
 
     func quit() {

@@ -32,7 +32,8 @@ final class PadAcceptTests: XCTestCase {
         XCTAssertEqual(c.salt, Self.salt)
         XCTAssertEqual(c.name, "LAPTOP")
         XCTAssertEqual(a.device, "iPad")
-        XCTAssertEqual(PadIdentityCheck.check(Self.pcKey), "6FC6-6A90")
+        XCTAssertEqual(PadIdentityCheck.check(Self.pcKey), "6FC6-6A90-4861-71CA", "the spec's 16-digit PC check")
+        XCTAssertEqual(PadIdentityCheck.check(publicKey: Self.hex(Self.pcPublic)), "6FC6-6A90-4861-71CA")
     }
 
     func testTheSpecsProofOpensWithTheRightCodeOnly() {
