@@ -5,6 +5,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import ink.contrast.core.PadClient
+import ink.contrast.core.PadHints
 import ink.contrast.core.PadCrypto
 import ink.contrast.core.PadDecoder
 import ink.contrast.core.PadProtocol
@@ -14,6 +15,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
@@ -43,7 +45,8 @@ class PadConnection(
     private val listener: Listener,
     /**
      * Over the USB cable (docs/pad-protocol.md, "USB (phase 2)"): to 127.0.0.1:47830, which `adb reverse` on the PC
-     * carries to it; the code is empty and a PC met the first time isn't asked about. Tried every 2 s, so a try
+     * carries to it; the code is empty. A PC met the first time is still asked about (its PC check), as on Wi-Fi:
+     * any app on the tablet could be listening there. Tried every 2 s, so a try
      * that finds nothing (refused at once when the cable or the PC isn't there) leaves nothing in the log.
      */
     val overCable: Boolean = false,
@@ -84,7 +87,9 @@ class PadConnection(
     }
 
     class End(val why: Why, val everConnected: Boolean, val pcText: String? = null,
-              val pcName: String? = null, val pcKey: ByteArray? = null)
+              val pcName: String? = null, val pcKey: ByteArray? = null,
+              /** [Why.UNREACHABLE]: refused, nothing answered, or something else. */
+              val cause: PadHints.Cause = PadHints.Cause.OTHER)
 
     private val main = Handler(Looper.getMainLooper())
     private val writer = Executors.newSingleThreadExecutor { Thread(it, "pad-writer") }
@@ -180,8 +185,19 @@ class PadConnection(
         fail(when {
             r != null -> End(Why.REJECTED, welcomed, r)
             connected -> End(Why.LOST, welcomed)
-            else -> End(Why.UNREACHABLE, false)
+            else -> End(Why.UNREACHABLE, false, cause = causeOf(e))
         }, e)
+    }
+
+    /** What a failed connect says: "refused" (nobody listening), no answer (timed out, no route), or other. */
+    private fun causeOf(e: IOException?): PadHints.Cause {
+        val text = generateSequence<Throwable>(e) { it.cause }.joinToString(" ") { it.message ?: "" }
+        return when {
+            text.contains("ECONNREFUSED") || text.contains("refused", ignoreCase = true) -> PadHints.Cause.REFUSED
+            e is SocketTimeoutException || text.contains("ETIMEDOUT") || text.contains("EHOSTUNREACH") ||
+                text.contains("timed out", ignoreCase = true) -> PadHints.Cause.NO_ANSWER
+            else -> PadHints.Cause.OTHER
+        }
     }
 
     private fun read(input: InputStream) {

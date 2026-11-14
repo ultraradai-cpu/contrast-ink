@@ -111,6 +111,14 @@ class PadLinks {
         return true
     }
 
+    /**
+     * The presenter said the PC check of a PC on the cable doesn't match (nothing was sent): the cable isn't tried
+     * again until they tap Connect, so whatever answers there can't ask every 2 s.
+     */
+    fun usbDeclined() {
+        if (usb == Usb.TRYING) usb = Usb.PAUSED
+    }
+
     /** "Connect anyway" for the PC over the cable: try it again (the screen lets that one key through). */
     fun connectAnywayOverUsb() {
         if (usb == Usb.STOPPED || usb == Usb.PAUSED) usb = Usb.IDLE

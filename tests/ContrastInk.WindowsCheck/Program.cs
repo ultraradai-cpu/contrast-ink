@@ -6,6 +6,12 @@
 //
 // "control" starts the app with hiding from capture switched off (CONTRASTINK_TEST_NOHIDE=1) and requires the check
 // to SEE the toolbar: proof that the "toolbar is hidden" check can fail.
+// The tablet's picture has runs of its own (only the tablet link, quick):
+//   "padcontrol"  the picture whitened (CONTRASTINK_TEST_BLANKPAD=1): the picture checks must FAIL (proof that they can);
+//   "padfreeze"   the first picture sent for ever (CONTRASTINK_TEST_FREEZEPAD=1): the check that the picture follows a
+//                 change on the slide must FAIL (a frozen capture is caught);
+//   "padgdi"      the GDI copy forced (CONTRASTINK_TEST_FORCEGDI=1) and pictures 400 px wide: every check must pass;
+//   "padsmall"    Windows.Graphics.Capture with pictures 400 px wide (the downscaling exercised): every check must pass.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -31,7 +37,15 @@ static class Program
     [STAThread]
     static int Main(string[] args)
     {
-        if (args.Length < 3) { Console.Error.WriteLine("usage: <ContrastInk.exe> <out dir> normal|control"); return 2; }
+        // a copy of this program named adb.exe: a stand-in adb that writes down that it was run (and finds no tablet)
+        if (string.Equals(Path.GetFileNameWithoutExtension(Environment.ProcessPath), "adb", StringComparison.OrdinalIgnoreCase))
+        {
+            try { File.AppendAllText(Path.Combine(AppContext.BaseDirectory, AdbRan), string.Join(" ", args) + "\n"); } catch (IOException) { }
+            Console.WriteLine("List of devices attached");
+            Console.WriteLine();
+            return 0;
+        }
+        if (args.Length < 3) { Console.Error.WriteLine("usage: <ContrastInk.exe> <out dir> normal|control|padcontrol|padfreeze|padgdi|padsmall"); return 2; }
         (exe, outDir, runMode) = (Path.GetFullPath(args[0]), Path.GetFullPath(args[1]), args[2]);
         Directory.CreateDirectory(outDir);
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
@@ -56,9 +70,10 @@ static class Program
     static void Log(string s) { lines.Add(s); Console.WriteLine(s); }
     static void Check(bool ok, string what, string measured)
     {
-        if (!ok) failures++;
-        Log($"{(ok ? "PASS" : "FAIL")}  {what}  [{measured}]");
+        if (!ok && counting) failures++;
+        Log($"{(counting ? "" : "(control, not counted) ")}{(ok ? "PASS" : "FAIL")}  {what}  [{measured}]");
     }
+    static bool counting = true;   // false while the pad control runs checks that must fail
 
     static Process app = null!;
     static ProcessStartInfo startInfo = null!;
@@ -77,6 +92,15 @@ static class Program
         psi.Environment["CONTRASTINK_STATUS"] = status;
         psi.Environment["CONTRASTINK_TEST_PADCODE"] = PadCode;   // the tablet link, with a code this check knows
         if (runMode == "control") psi.Environment["CONTRASTINK_TEST_NOHIDE"] = "1";
+        if (runMode == "padcontrol") psi.Environment["CONTRASTINK_TEST_BLANKPAD"] = "1";
+        if (runMode == "padfreeze") psi.Environment["CONTRASTINK_TEST_FREEZEPAD"] = "1";
+        if (runMode == "padgdi") psi.Environment["CONTRASTINK_TEST_FORCEGDI"] = "1";
+        if (runMode is "padgdi" or "padsmall") psi.Environment["CONTRASTINK_TEST_PADWIDTH"] = SmallPicture.ToString();
+        // adb: none on the app's PATH; a stand-in in C:\platform-tools, a folder any user of a PC can create, which
+        // the app must never run (the restart in ToolbarAndPromises puts one on the PATH, which it must run)
+        psi.Environment["PATH"] = string.Join(Path.PathSeparator, (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator)
+            .Where(d => d.Trim().Length > 0 && !SafeExists(Path.Combine(d.Trim().Trim('"'), "adb.exe"))));
+        if (runMode == "normal") PlantAdb();
         app = Process.Start(psi)!;
         startInfo = psi; statusPath = status;
         try
@@ -109,6 +133,7 @@ static class Program
                 Key('C'); Key(VK.F9);
                 return failures;
             }
+            if (runMode.StartsWith("pad", StringComparison.Ordinal)) { PadPictureRun(st); return failures; }
             Normal(st, toolbar);
             return 0;
         }
@@ -116,6 +141,7 @@ static class Program
         {
             Log("      app still running at the end: " + !app.HasExited + (app.HasExited ? ", exit code " + app.ExitCode : ""));
             try { if (!app.HasExited) app.Kill(); } catch (InvalidOperationException) { }
+            if (plantedAdb) try { Directory.Delete(PlantedAdbDir, recursive: true); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
             // the app's own error log, if it wrote one
             var errLog = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ContrastInk", "error.log");
             bool errors = File.Exists(errLog);
@@ -243,6 +269,11 @@ static class Program
         Thread.Sleep(400);
         shot = Shot("08-eraser");
         Check(Diff(Closest(shot, (a1.X + a2.X) / 2, ay, red, 4), red) > 60, "eraser removes the arrow it touches", Hex(Closest(shot, (a1.X + a2.X) / 2, ay, red, 4)));
+        // the whole arrow, head too (touching the shaft once left the head behind would be a half-erased mark)
+        var e1 = Closest(shot, (int)side1.X, (int)side1.Y, red, 4); var e2 = Closest(shot, (int)side2.X, (int)side2.Y, red, 4);
+        var tip = Closest(shot, a2.X, ay, red, 4);
+        Check(Diff(e1, red) > 60 && Diff(e2, red) > 60 && Diff(tip, red) > 60, "eraser removes the arrowhead with it",
+              $"head sides {Hex(e1)} / {Hex(e2)}, tip {Hex(tip)}");
 
         // clear
         Key('P'); Key('1'); Thread.Sleep(150);
@@ -308,6 +339,81 @@ static class Program
     // ---------------------------------------------------------------- a tablet used as a pad
     const string PadCode = "246810";
 
+    // ---------------------------------------------------------------- which adb.exe the app runs
+    const string AdbRan = "adb-ran.txt";
+    const string PlantedAdbDir = @"C:\platform-tools";
+    static bool plantedAdb;
+    static string PathAdbDir => Path.Combine(Path.GetTempPath(), "contrastink-check-adb-on-path");
+
+    static bool SafeExists(string f) { try { return File.Exists(f); } catch (ArgumentException) { return false; } }
+
+    /// <summary>This program, copied into <paramref name="dir"/> as adb.exe (it then only writes down that it ran).</summary>
+    static void CopyStandInAdb(string dir)
+    {
+        Directory.CreateDirectory(dir);
+        foreach (var f in Directory.GetFiles(AppContext.BaseDirectory)) File.Copy(f, Path.Combine(dir, Path.GetFileName(f)), overwrite: true);
+        File.Copy(Environment.ProcessPath!, Path.Combine(dir, "adb.exe"), overwrite: true);
+        File.Delete(Path.Combine(dir, AdbRan));
+    }
+
+    static void PlantAdb()
+    {
+        try
+        {
+            if (Directory.Exists(PlantedAdbDir)) { Log("      C:\\platform-tools already exists on this machine: left as it is"); }
+            else { CopyStandInAdb(PlantedAdbDir); plantedAdb = true; }
+            CopyStandInAdb(PathAdbDir);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Log("      couldn't plant the stand-in adb: " + e.Message); }
+    }
+
+    /// <summary>The app must never run an adb.exe from C:\platform-tools (any user may create that folder).</summary>
+    static void CheckPlantedAdbNotRun()
+    {
+        if (!plantedAdb) { Check(false, "adb: a stand-in adb.exe could be put in C:\\platform-tools", "not planted"); return; }
+        var ran = Path.Combine(PlantedAdbDir, AdbRan);
+        Check(!File.Exists(ran), "adb: an adb.exe in C:\\platform-tools (a folder any user can create) is never run",
+              File.Exists(ran) ? "it ran: " + File.ReadAllText(ran).Trim() : "not run in " + (DateTime.Now - app.StartTime).TotalSeconds.ToString("0") + " s");
+    }
+
+    /// <summary>
+    /// The opacity slider dragged to 10% and back to 100%: dozens of values on the way. The settings file must be
+    /// written about once after it stops (each write was on the UI thread, which runs the keyboard watcher), not once per value.
+    /// </summary>
+    static void OpacityDragSavesOnce()
+    {
+        var box = ToolbarBox("Opacity");
+        if (box.IsEmpty) { Check(false, "toolbar: the opacity slider is there", "not found"); return; }
+        var file = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ContrastInk", "settings.json");
+        Thread.Sleep(1000);   // earlier changes saved first
+        int writes = 0;
+        using (var w = new FileSystemWatcher(Path.GetDirectoryName(file)!, "settings.json")
+               { NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.Size })
+        {
+            w.Changed += (_, _) => Interlocked.Increment(ref writes);
+            w.Created += (_, _) => Interlocked.Increment(ref writes);
+            w.Renamed += (_, _) => Interlocked.Increment(ref writes);
+            w.EnableRaisingEvents = true;
+            int y = box.Top + box.Height / 2;
+            Drag(new Point(box.Right - 3, y), new Point(box.Left - 20, y));
+            Drag(new Point(box.Left + 3, y), new Point(box.Right + 20, y));
+            Thread.Sleep(1500);
+        }
+        double saved = Settings.Load(file, 1).Opacity;
+        Check(writes >= 1 && writes <= 6 && saved > 0.95, "toolbar: dragging the opacity slider writes the settings once it stops, not on every step",
+              $"{writes} change(s) to settings.json, opacity saved {saved:0.00}");
+    }
+
+    /// <summary>The ⚙ panel's text about the tablet link (open while read), or "".</summary>
+    static string PadPanelText()
+    {
+        if (!Press("Settings")) return "";
+        Thread.Sleep(300);
+        var text = ToolbarName("Code ") ?? "";
+        Press("Settings");
+        return text;
+    }
+
     static byte[] PadPoint(float x, float y)
     {
         var b = new byte[8];
@@ -349,8 +455,9 @@ static class Program
         /// <summary>On a connection that is already open (the iPad's end of a USB connection the PC opened).</summary>
         public TestTablet(System.Net.Sockets.TcpClient open) { Tcp = open; Net = Tcp.GetStream(); }
 
-        /// <summary>The handshake with this code; true when the PC let it in (WELCOME opened).</summary>
-        public bool Pair(string code)
+        /// <summary>The handshake with this code; true when the PC let it in (WELCOME opened). The answer to the
+        /// PROOF is waited for up to <paramref name="answerMs"/> (longer where the presenter is asked first).</summary>
+        public bool Pair(string code, int answerMs = 5000)
         {
             using var mine = PadCrypto.NewKey();
             Net.Write(Pad.Message(Pad.Hello, JsonSerializer.Serialize(new { device = "check", version = 2, key = Convert.ToBase64String(PadCrypto.PublicPoint(mine)) })));
@@ -363,7 +470,7 @@ static class Program
             var (a, b) = PadCrypto.Keys(mine, PadCrypto.ReadPoint(PcKey)!, salt, code);
             toPc = new PadSeal(a); fromPc = new PadSeal(b);
             Net.Write(Pad.Message(PadCrypto.Proof, toPc.Seal(Pad.Message(Pad.Command, PadCrypto.ProofText))));
-            var answer = Read(g => g.Count > 0, 5000);
+            var answer = Read(g => g.Count > 0, answerMs);
             if (answer.Count == 0) return false;
             if (answer[0].type == Pad.Reject) { Refused = System.Text.Encoding.UTF8.GetString(answer[0].payload); return false; }
             return answer[0].type == Pad.Welcome;
@@ -425,16 +532,20 @@ static class Program
             bool paired = t.Pair(PadCode);
             Check(paired, "tablet link: the right code is let in, everything sealed from then on", paired ? "WELCOME opened" : "refused: " + t.Refused);
             if (!paired) return;
-            Check(t.PcKey != null && Pad.PcCheck(t.PcKey).Length == 9, "tablet link: the PC sends its own key (the tablet's PC check)", t.PcKey == null ? "none" : Pad.PcCheck(t.PcKey));
+            Check(t.PcKey != null && Pad.PcCheck(t.PcKey).Length == 19, "tablet link: the PC sends its own key (the tablet's 16-digit PC check)", t.PcKey == null ? "none" : Pad.PcCheck(t.PcKey));
             var got = t.Read(g => g.Any(x => x.type == Pad.Frame) && g.Any(x => x.type == Pad.State), 8000);
             var frame = got.FirstOrDefault(x => x.type == Pad.Frame);
             Size size = default;
             if (frame.payload != null) using (var img = Image.FromStream(new MemoryStream(frame.payload))) size = img.Size;
             Check(size.Width > 100 && Math.Abs((double)size.Width / size.Height - (double)screen.Width / screen.Height) < 0.02,
                   "tablet link: the tablet gets a picture of the screen", $"{(frame.payload?.Length ?? 0) / 1024} KB, {size.Width} x {size.Height}");
+            CapturePathCheck(st);
+            // what is IN the first picture, not just its size: the screen, as a capture of it shows it
+            PictureIsTheScreen(frame.payload, "the first picture (nothing drawn from the tablet)", "39-tablet-first");
             t.Send(Pad.FrameAck, Array.Empty<byte>());
             var next = t.Read(g => g.Any(x => x.type == Pad.Frame), 3000);
             Check(next.Any(x => x.type == Pad.Frame), "tablet link: the next picture comes once the last is acknowledged", $"{next.Count} messages");
+            FollowsSlideChange(t, "39b-tablet-slide-changed");
 
             // a red line drawn on the tablet, across the middle of the screen
             t.Send(Pad.Command, "clear");
@@ -456,14 +567,22 @@ static class Program
             t.Read(g => g.Any(x => x.type == Pad.Frame), 3000);   // the one already on its way
             t.Send(Pad.FrameAck, Array.Empty<byte>());
             var withLine = t.Read(g => g.Any(x => x.type == Pad.Frame), 3000).LastOrDefault(x => x.type == Pad.Frame);
-            Color inPicture = Color.Black;
+            Color inPicture = Color.Black, around = Color.Black, onScreen = Color.White;
             if (withLine.payload != null)
                 using (var img = new Bitmap(new MemoryStream(withLine.payload)))
                 {
                     double k = (double)img.Width / screen.Width;
                     inPicture = Closest(img, (int)((mx - screen.Left) * k), (int)((Row(5) - screen.Top) * k), red, 4);
+                    // and the slide is still there around the marks (it once turned black as soon as anything was drawn:
+                    // checking only the line's colour missed it)
+                    around = img.GetPixel((int)((mx - screen.Left) * k), (int)((Row(5) - 40 - screen.Top) * k));
                 }
+            using (var now = Shot("40b-around-the-line")) onScreen = now.GetPixel(mx, Row(5) - 40);
             Check(Diff(inPicture, red) <= 60, "tablet link: the tablet's picture shows the marks", Hex(inPicture));
+            Check(Diff(around, onScreen) <= 40, "tablet link: with marks, the tablet's picture still shows the slide around them (not black)",
+                  $"picture {Hex(around)}, screen {Hex(onScreen)}");
+            // and the whole picture, marks and all, is the screen (it once turned black as soon as anything was drawn)
+            PictureIsTheScreen(withLine.payload, "the picture with a line drawn", "40c-tablet-with-line");
 
             t.Send(Pad.Command, "undo");
             Thread.Sleep(500);
@@ -485,15 +604,15 @@ static class Program
             }
             Thread.Sleep(500);
 
-            // by the cable: Android's USB link reaches the PC's loopback USB door, where the code is empty
-            using (var cable = new TestTablet(Pad.UsbPort))
-                Check(cable.Pair(""), "USB: on the cable door (Android's adb reverse), no code is needed", cable.Refused);
+            // by the cable: an iPad through Apple's USB service needs no Allow (Apple's service vouches for it); then
+            // Android's USB link, which reaches the PC's loopback door, where the code is empty but the presenter allows it
+            IPadByCable();
+            CableDoorAsksFirst();
             using (var noCode = new TestTablet(port))
             {
                 noCode.Pair("");
                 Check(noCode.Refused == Pad.WrongCode, "USB: on the Wi-Fi port an empty code is still wrong", noCode.Refused);
             }
-            IPadByCable();
 
             // strangers holding places: two from one address at most, and the cable still works while they wait
             var stalled = new List<System.Net.Sockets.TcpClient>();
@@ -524,20 +643,220 @@ static class Program
             Thread.Sleep(500);
             Check(!app.HasExited, "tablet link: broken or oversized first messages from strangers don't end the app", app.HasExited ? "the app exited" : "still running");
 
-            // guessing: five wrong codes in a row lock everyone out for a while
-            string last = "";
+            // guessing: five wrong codes in a row lock that address out for a while. The right code first, so the wrong
+            // ones above (the empty code) no longer count and the run starts at one: tries 1 to 5 must each be told
+            // "Wrong code" (a lockout one early would pass a check of the 6th alone), and only the 6th is locked out.
+            using (var fresh = new TestTablet(port))
+                Check(fresh.Pair(PadCode), "tablet link: the right code again (the run of wrong codes starts afresh)", fresh.Refused);
+            var answers = new List<string>();
             for (int i = 0; i < 6; i++)
                 using (var g = new TestTablet(port))
                 {
                     g.Pair((100000 + i).ToString());
-                    last = g.Refused;
+                    answers.Add(g.Refused);
                 }
-            Check(last == Pad.TooManyWrong, "tablet link: after five wrong codes, guessing is locked out", last);
+            string Said(string a) => a == Pad.WrongCode ? "wrong code" : a == Pad.TooManyWrong ? "locked" : a.Length == 0 ? "(let in or no answer)" : a;
+            Check(answers.Take(5).All(a => a == Pad.WrongCode) && answers[5] == Pad.TooManyWrong,
+                  "tablet link: wrong codes 1 to 5 are each told \"Wrong code\", and only the 6th is locked out",
+                  string.Join(", ", answers.Select((a, i) => $"{i + 1}: {Said(a)}")));
+
+            // ...only for that address: a tablet at another address still gets in with the right code
+            // (127.0.0.2 is this machine too, seen by the PC as a different address)
+            var fromOther = new System.Net.Sockets.TcpClient(new System.Net.IPEndPoint(System.Net.IPAddress.Parse("127.0.0.2"), 0));
+            fromOther.Connect(System.Net.IPAddress.Loopback, port);
+            using (var other = new TestTablet(fromOther))
+            {
+                bool otherIn = other.Pair(PadCode);
+                Check(otherIn, "tablet link: wrong codes from one address don't lock out a tablet at another address", otherIn ? "let in" : "refused: " + other.Refused);
+            }
         }
         catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException or JsonException or ArgumentException or InvalidDataException or KeyNotFoundException or FormatException)
         {
             Check(false, "tablet link: the stand-in tablet's conversation", e.Message);
         }
+    }
+
+    const int SmallPicture = 400;   // the picture width in the padgdi and padsmall runs (the screen is wider)
+
+    /// <summary>
+    /// A run of the tablet's picture alone (see the top of this file): the first picture, the picture after the slide
+    /// changed, and the picture with a line drawn, each compared with the screen. In the two controls the picture checks
+    /// are not counted one by one: what counts is that the ones that must fail did.
+    /// </summary>
+    static void PadPictureRun(JsonElement st)
+    {
+        string tag = runMode.ToUpperInvariant();
+        bool control = runMode is "padcontrol" or "padfreeze";
+        int port = st.TryGetProperty("padPort", out var pp) ? pp.GetInt32() : 0;
+        Check(port > 0, tag + ": the PC listens for a tablet", "port " + port);
+        if (port == 0) return;
+        try
+        {
+            using var t = new TestTablet(port);
+            bool paired = t.Pair(PadCode);
+            Check(paired, tag + ": the stand-in tablet is let in", paired ? "WELCOME opened" : "refused: " + t.Refused);
+            if (!paired) return;
+            var first = t.Read(g => g.Any(x => x.type == Pad.Frame), 8000).FirstOrDefault(x => x.type == Pad.Frame).payload;
+            CapturePathCheck(st);
+            if (runMode is "padgdi" or "padsmall")
+            {
+                int width = 0;
+                if (first != null) using (var img = Image.FromStream(new MemoryStream(first))) width = img.Width;
+                Check(width == SmallPicture, $"{tag}: the picture is made smaller than the screen ({SmallPicture} px wide)", $"{width} px wide, the screen {screen.Width}");
+            }
+            counting = !control;
+            bool before = PictureIsTheScreen(first, "the first picture", "39-tablet-first");
+            bool follows = FollowsSlideChange(t, "39b-tablet-slide-changed");
+            byte[]? withLine = DrawLineAndGetPicture(t);
+            bool after = PictureIsTheScreen(withLine, "the picture with a line drawn", "40c-tablet-with-line");
+            counting = true;
+            t.Send(Pad.Command, "clear");
+            if (runMode == "padcontrol")
+                Check(first != null && withLine != null && !before && !follows && !after,
+                      "PAD CONTROL: with the tablet's picture whitened, the checks of the tablet's picture FAIL",
+                      $"pictures came: {first != null && withLine != null}; first {Verdict(before)}, after the slide changed {Verdict(follows)}, with a line {Verdict(after)}");
+            else if (runMode == "padfreeze")
+                Check(first != null && before && !follows,
+                      "FREEZE CONTROL: with the picture frozen after the first, the first still matches but the check that it follows the slide FAILS",
+                      $"first {Verdict(before)}, after the slide changed {Verdict(follows)}, with a line {Verdict(after)}");
+        }
+        catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException or JsonException or ArgumentException or InvalidDataException or KeyNotFoundException or FormatException)
+        {
+            counting = true;
+            Check(false, tag + ": the stand-in tablet's conversation", e.Message);
+        }
+    }
+
+    static string Verdict(bool passed) => passed ? "passed" : "failed";
+
+    /// <summary>The next picture after now: the one already on its way is acknowledged and skipped.</summary>
+    static byte[]? NextPicture(TestTablet t)
+    {
+        t.Send(Pad.FrameAck, Array.Empty<byte>());
+        t.Read(g => g.Any(x => x.type == Pad.Frame), 3000);
+        t.Send(Pad.FrameAck, Array.Empty<byte>());
+        return t.Read(g => g.Any(x => x.type == Pad.Frame), 3000).LastOrDefault(x => x.type == Pad.Frame).payload;
+    }
+
+    /// <summary>A red line drawn from the tablet across the screen, and the picture after it.</summary>
+    static byte[]? DrawLineAndGetPicture(TestTablet t)
+    {
+        t.Send(Pad.Command, "clear");
+        t.Send(Pad.Command, "tool:pen");
+        t.Send(Pad.Command, "color:0");
+        float fy = (float)(Row(5) - screen.Top) / screen.Height;
+        t.Send(Pad.StrokeBegin, PadPoint(0.2f, fy).Concat(new byte[] { 0 }).ToArray());
+        var pts = new List<byte> { 0, 10 };
+        for (int i = 1; i <= 10; i++) pts.AddRange(PadPoint(0.2f + 0.04f * i, fy));
+        t.Send(Pad.StrokePoints, pts.ToArray());
+        t.Send(Pad.StrokeEnd, Array.Empty<byte>());
+        Thread.Sleep(600);
+        return NextPicture(t);
+    }
+
+    /// <summary>
+    /// The slide changes after the tablet's first picture (a large blue block appears on it): the next picture must
+    /// show it, as the screen does. A capture that froze on its first frame fails here (the padfreeze control).
+    /// </summary>
+    static bool FollowsSlideChange(TestTablet t, string name)
+    {
+        slide.Invoke(() => slide.ShowBlock(true));
+        Thread.Sleep(500);
+        var pic = NextPicture(t);
+        bool same = PictureIsTheScreen(pic, "the picture after the slide changed", name);
+        var inPicture = Color.Black;
+        if (pic != null)
+            using (var img = new Bitmap(new MemoryStream(pic)))
+            {
+                double k = (double)img.Width / screen.Width;
+                var c = slide.BlockCenter;
+                inPicture = img.GetPixel(Math.Clamp((int)((c.X - screen.Left) * k), 0, img.Width - 1), Math.Clamp((int)((c.Y - screen.Top) * k), 0, img.Height - 1));
+            }
+        bool block = Diff(inPicture, Slide.BlockColor) <= 40;
+        Check(block, "tablet link: the picture follows the slide (the block that appeared is in it)", $"want {Hex(Slide.BlockColor)}, picture has {Hex(inPicture)}");
+        slide.Invoke(() => slide.ShowBlock(false));
+        Thread.Sleep(400);
+        NextPicture(t);
+        return same && block;
+    }
+
+    /// <summary>Which way the app made the tablet's picture (it writes it next to its status in test runs): logged,
+    /// and it must be the way the user gets: Windows.Graphics.Capture on Windows 11 (build 20348 on), the GDI copy on
+    /// Windows 10 (no capture border for the audience) and in the run that forces it.</summary>
+    static void CapturePathCheck(JsonElement st)
+    {
+        string file = statusPath + ".capture.txt", how = "";
+        var sw = Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < 3000 && (how = SafeRead(file)).Length == 0) Thread.Sleep(100);
+        Log("      tablet picture made by: " + (how.Length > 0 ? how : "(not reported)"));
+        int build = st.TryGetProperty("windowsBuild", out var b) ? b.GetInt32() : 0;
+        bool ok = runMode == "padgdi" ? how == "gdi (forced by the test)"
+                : build >= PadCaptureChoice.BorderlessBuild ? how == "wgc"
+                : how.StartsWith("gdi", StringComparison.Ordinal);
+        Check(ok, runMode == "padgdi" ? "tablet link: this run's picture is the GDI copy (forced)"
+                  : "tablet link: the picture is made the way the user gets it (Windows.Graphics.Capture on Windows 11, the GDI copy on Windows 10)",
+              $"Windows build {build}, made by: {(how.Length > 0 ? how : "not reported")}");
+    }
+
+    static string SafeRead(string f) { try { return File.Exists(f) ? File.ReadAllText(f).Trim() : ""; } catch (IOException) { return ""; } }
+
+    /// <summary>
+    /// The tablet's picture against a capture of the same screen taken now: both cut into a grid of cells, each cell's
+    /// mean colour compared, and the mean difference over the whole screen must be small; and the slide's black stripe
+    /// must be dark in the tablet's picture (a white picture differs from a white slide only there). True if both hold.
+    /// </summary>
+    static bool PictureIsTheScreen(byte[]? jpeg, string what, string name)
+    {
+        if (jpeg == null) { Check(false, $"tablet link: {what} matches the screen", "no picture came"); return false; }
+        using var pic = new Bitmap(new MemoryStream(jpeg));
+        pic.Save(Path.Combine(outDir, $"{runMode}-{name}-tablet.png"), ImageFormat.Png);
+        using var shot = Shot(name + "-screen");
+        const int GX = 32, GY = 18;
+        var a = CellMeans(pic, GX, GY); var b = CellMeans(shot, GX, GY);
+        double sum = 0, worst = 0; int worstCell = 0;
+        for (int i = 0; i < a.Length; i++)
+        {
+            double d = Math.Abs(a[i] - b[i]);
+            sum += d;
+            if (d > worst) { worst = d; worstCell = i / 3; }
+        }
+        double mean = sum / a.Length;
+        bool same = mean < 8;
+        Check(same, $"tablet link: {what} is the screen (grid {GX}x{GY}, mean difference from a capture of the screen under 8 of 255)",
+              $"mean {mean:0.0}, worst cell {worst:0} at column {worstCell % GX}, row {worstCell / GX}");
+        // the black stripe, away from the rows where lines are drawn
+        double k = (double)pic.Width / screen.Width;
+        int sx = (int)((slide.StripeCenterX - screen.Left) * k);
+        var samples = new[] { 0.12, 0.22, 0.88 }.Select(f => pic.GetPixel(Math.Clamp(sx, 0, pic.Width - 1), Math.Clamp((int)(pic.Height * f), 0, pic.Height - 1))).ToList();
+        bool dark = samples.All(c => c.R + c.G + c.B < 150);
+        Check(dark, $"tablet link: in {what}, the slide's black stripe is dark", string.Join(" ", samples.Select(Hex)));
+        return same && dark;
+    }
+
+    /// <summary>The mean colour (B, G, R) of each cell of a gx x gy grid over the picture.</summary>
+    static double[] CellMeans(Bitmap bmp, int gx, int gy)
+    {
+        var res = new double[gx * gy * 3];
+        var n = new int[gx * gy];
+        var data = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        try
+        {
+            var row = new byte[bmp.Width * 4];
+            for (int y = 0; y < bmp.Height; y++)
+            {
+                Marshal.Copy(data.Scan0 + y * data.Stride, row, 0, row.Length);
+                int cy = Math.Min(gy - 1, y * gy / bmp.Height);
+                for (int x = 0; x < bmp.Width; x++)
+                {
+                    int c = cy * gx + Math.Min(gx - 1, x * gx / bmp.Width);
+                    res[c * 3] += row[x * 4]; res[c * 3 + 1] += row[x * 4 + 1]; res[c * 3 + 2] += row[x * 4 + 2];
+                    n[c]++;
+                }
+            }
+        }
+        finally { bmp.UnlockBits(data); }
+        for (int c = 0; c < n.Length; c++) for (int j = 0; j < 3; j++) res[c * 3 + j] /= Math.Max(1, n[c]);
+        return res;
     }
 
     /// <summary>
@@ -591,7 +910,8 @@ static class Program
             if (tunnel == null) return;
             using var ipad = new TestTablet(tunnel);
             bool inByCable = ipad.Pair("");
-            Check(inByCable, "USB: the iPad is let in by the cable with no code", ipad.Refused);
+            Check(inByCable && ToolbarName("Allow") == null, "USB: the iPad is let in by the cable with no code, and no question for the presenter",
+                  inByCable ? "let in, " + (ToolbarName("Allow") == null ? "nothing asked" : "Allow shown") : ipad.Refused);
             if (!inByCable) return;
             ipad.Send(Pad.Command, "clear");
             ipad.Send(Pad.Command, "tool:pen");
@@ -614,6 +934,44 @@ static class Program
             Check(false, "USB: the stand-in iPad's conversation", e.Message);
         }
         finally { service.Stop(); }
+    }
+
+    /// <summary>
+    /// The Android cable door (127.0.0.1:47830, where adb reverse arrives): any program on the PC, or any app on the
+    /// tablet, can reach it, so the first session there in each run waits for the presenter's Allow on the toolbar.
+    /// Deny turns it away; Allow lets it in; after that the run doesn't ask again.
+    /// </summary>
+    static void CableDoorAsksFirst()
+    {
+        using (var denied = new TestTablet(Pad.UsbPort))
+        {
+            var pairing = System.Threading.Tasks.Task.Run(() => denied.Pair("", answerMs: 20000));
+            WaitFor(() => ToolbarName("Allow") != null || pairing.IsCompleted, 8000);
+            bool asked = ToolbarName("An Android tablet on the USB cable") != null && ToolbarName("Allow") != null;
+            bool inEarly = pairing.IsCompleted && pairing.Result;
+            Shot("43-cable-door-asks");
+            Press("Deny");
+            bool done = pairing.Wait(8000);
+            Check(asked && !inEarly && done && !pairing.Result && denied.Refused == Pad.NotAllowed,
+                  "USB: the first tablet on the Android cable door waits for the presenter, and Deny turns it away",
+                  $"asked {asked}, let in before an answer {inEarly}, answered {done}, refused: {denied.Refused}");
+        }
+        WaitFor(() => ToolbarName("Allow") == null, 2000);
+        Check(ToolbarName("Allow") == null, "USB: the question goes once answered", ToolbarName("Allow") == null ? "gone" : "still shown");
+        using (var cable = new TestTablet(Pad.UsbPort))
+        {
+            var pairing = System.Threading.Tasks.Task.Run(() => cable.Pair("", answerMs: 20000));
+            WaitFor(() => ToolbarName("Allow") != null || pairing.IsCompleted, 8000);
+            bool asked = ToolbarName("Allow") != null;
+            Press("Allow");
+            bool ok = pairing.Wait(8000) && pairing.Result;
+            Check(asked && ok, "USB: Allow lets the tablet on the Android cable door in, with no code", $"asked {asked}, let in {ok} {cable.Refused}");
+        }
+        using (var again = new TestTablet(Pad.UsbPort))
+        {
+            bool ok = again.Pair("");
+            Check(ok && ToolbarName("Allow") == null, "USB: once allowed, the cable door doesn't ask again in this run", ok ? "let in at once" : again.Refused);
+        }
     }
 
     static byte[] ReadN(System.Net.Sockets.NetworkStream s, int n)
@@ -815,12 +1173,13 @@ static class Program
             Check(obs.Recording && obs.Count("StartRecord") == 1, "⏺ starts OBS recording", $"recording {obs.Recording}, StartRecord asked {obs.Count("StartRecord")} time(s)");
             WaitFor(() => OnToolbar("Stop recording"), 2000);
             Check(OnToolbar("Stop recording") && !OnToolbar("OBS refused"), "the toolbar shows ⏹ while recording, and the old message is gone", OnToolbar("Stop recording") ? "⏹ shown" : "no ⏹");
-            Thread.Sleep(1500);
-            ppt.SlideShowWindows.Show.View.CurrentShowPosition = 2; Thread.Sleep(1500);
+            // slides 11 s apart: YouTube drops a chapter list with a chapter under 10 s, so shorter ones are merged
+            Thread.Sleep(11000);
+            ppt.SlideShowWindows.Show.View.CurrentShowPosition = 2; Thread.Sleep(11000);
             ppt.SlideShowWindows.Show.View.Hidden = 2;               // two hidden slides: position 3 in the show is slide 5
             ppt.SlideShowWindows.Show.View.HiddenFrom = 3;
-            ppt.SlideShowWindows.Show.View.CurrentShowPosition = 3; Thread.Sleep(1300);
-            Check(OnToolbar("0:0"), "the toolbar shows the recording time", OnToolbar("0:0") ? "timer shown" : "no timer");
+            ppt.SlideShowWindows.Show.View.CurrentShowPosition = 3; Thread.Sleep(11000);
+            Check(OnToolbar("0:"), "the toolbar shows the recording time", ToolbarName("0:") ?? "no timer");
             var names = string.Join(", ", obs.ChapterNames);
             Check(names == "Slide 2, Slide 5", "each slide change is a chapter in OBS's video, named by PowerPoint's own slide number", "chapters asked: " + names);
 
@@ -837,6 +1196,16 @@ static class Program
             Check(!obs.Paused && obs.Recording, "▶ resumes", $"paused {obs.Paused}, recording {obs.Recording}");
             WaitFor(() => obs.ChapterNames.Contains("Slide 6"), 2000);
             Check(obs.ChapterNames.Contains("Slide 6"), "after ▶, the slide moved to while paused gets its chapter", string.Join(", ", obs.ChapterNames));
+            Thread.Sleep(11000);
+
+            // the line to OBS drops while OBS goes on recording; Contrast Ink connects again and takes the same
+            // recording over: its chapters so far are kept (before, they were cleared and "Slide 6" stamped at 0:00)
+            obs.DropLine();
+            WaitFor(() => OnToolbar("Lost contact with OBS"), 4000);
+            Check(OnToolbar("Lost contact with OBS"), "the line to OBS dropping mid-recording: the toolbar says so", OnToolbar("Lost contact with OBS") ? "said" : "silent");
+            WaitFor(() => obs.Identified && OnToolbar("Stop recording"), 12000);
+            Check(OnToolbar("Stop recording"), "OBS reached again while still recording: the toolbar takes the recording over (⏹)", OnToolbar("Stop recording") ? "⏹ shown" : "still ⏺");
+            if (OnToolbar("Lost contact with OBS")) Press("Lost contact with OBS");   // dismissed (if a hover hint is not showing instead)
 
             Press("Stop recording");
             WaitFor(() => !obs.Recording, 3000);
@@ -845,7 +1214,10 @@ static class Program
             var chaptersFile = Path.Combine(outDir, "lecture-check chapters.txt");
             var lines = File.Exists(chaptersFile) ? File.ReadAllLines(chaptersFile) : Array.Empty<string>();
             Check(lines.Length == 4 && lines[0] == "0:00 Slide 1" && lines[1].EndsWith(" Slide 2") && lines[2].EndsWith(" Slide 5") && lines[3].EndsWith(" Slide 6") && lines[1] != "0:00 Slide 2",
-                  "a chapters file is saved beside the video, ready for a YouTube description", File.Exists(chaptersFile) ? string.Join(" | ", lines) : "no file");
+                  "a chapters file is saved beside the video, ready for a YouTube description (the chapters before the line dropped kept)",
+                  File.Exists(chaptersFile) ? string.Join(" | ", lines) : "no file");
+            var times = lines.Select(l => l.Split(' ')[0].Split(':').Select(int.Parse).Aggregate(0, (a, b) => a * 60 + b)).ToList();
+            Check(times.Count > 1 && times.Zip(times.Skip(1), (a, b) => b - a).All(g => g >= 10), "no chapter is shorter than 10 s (YouTube ignores the list otherwise)", string.Join(", ", times) + " s");
 
             ppt.SlideShowWindows.Show.View.HiddenFrom = int.MaxValue;
             // started from OBS itself: the toolbar follows
@@ -873,6 +1245,20 @@ static class Program
             Press("OBS stopped recording by itself");
             Check(!OnToolbar("OBS stopped recording by itself"), "clicking a message dismisses it", OnToolbar("OBS stopped recording by itself") ? "still there" : "gone");
 
+            // ⏹ answered late (OBS busy finishing the file): "OBS didn't stop" shows after 5 s, and goes when OBS
+            // then reports it stopped (it stayed, wrong, before)
+            Press("Record with OBS");
+            WaitFor(() => obs.Recording, 3000);
+            obs.StopLate = true;
+            Press("Stop recording");
+            WaitFor(() => OnToolbar("OBS didn't stop"), 7000);
+            bool saidLate = OnToolbar("OBS didn't stop");
+            WaitFor(() => !obs.Recording && !OnToolbar("OBS didn't stop"), 5000);
+            Thread.Sleep(300);
+            Check(saidLate && !OnToolbar("OBS didn't stop") && OnToolbar("Record with OBS"), "OBS answering ⏹ late: once it reports it stopped, \"OBS didn't stop\" goes",
+                  $"said after 5 s {saidLate}, still said {OnToolbar("OBS didn't stop")}, ready to record {OnToolbar("Record with OBS")}");
+            obs.StopLate = false;
+
             // the disk filling up
             obs.DiskMB = 900;
             Press("Record with OBS");
@@ -889,12 +1275,12 @@ static class Program
 
             // OBS closes while recording (after a slide change, so there are chapters to keep)
             ppt.SlideShowWindows.Show.View.CurrentShowPosition = 2; Thread.Sleep(1300);
-            var orphansBefore = Directory.GetFiles(outDir, "Contrast Ink chapters *.txt").Length;
+            var closedAt = DateTime.Now.AddSeconds(-1);   // (a file of the same minute, from the dropped line above, is written over)
             obs.Dispose(); obs = null;
             WaitFor(() => OnToolbar("Lost contact with OBS"), 4000);
             Check(OnToolbar("Lost contact with OBS") && OnToolbar("Record with OBS"), "OBS closing mid-recording: the toolbar says so", OnToolbar("Lost contact with OBS") ? "said" : "silent");
-            var orphans = Directory.GetFiles(outDir, "Contrast Ink chapters *.txt");
-            Check(orphans.Length > orphansBefore && OnToolbar("Lost contact with OBS"), "OBS closing mid-recording: the chapters are still saved in its recording folder",
+            var orphans = Directory.GetFiles(outDir, "Contrast Ink chapters *.txt").Where(f => File.GetLastWriteTime(f) >= closedAt).ToArray();
+            Check(orphans.Length > 0 && OnToolbar("Lost contact with OBS"), "OBS closing mid-recording: the chapters are still saved in its recording folder",
                   orphans.Length > 0 ? string.Join(" | ", File.ReadAllLines(orphans[^1])) : "no chapters file");
             Press("Lost contact with OBS");
         }
@@ -979,6 +1365,19 @@ static class Program
         var big = Native.WindowBox("Contrast Ink");
         Check(Math.Abs(big.Width - before.Width) <= 2, "› makes it big again", $"{small.Width} px -> {big.Width} px");
 
+        // the opacity slider dragged end to end: the settings file is written once it stops, not on every step
+        // (each write was on the thread that runs the keyboard watcher)
+        OpacityDragSavesOnce();
+
+        // ⚙: the tablet link's lines, with the 16-digit PC check; no adb found (none on the PATH, and the one in
+        // C:\platform-tools must not count)
+        var padText = PadPanelText();
+        Check(System.Text.RegularExpressions.Regex.IsMatch(padText, @"PC check [0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}\b"),
+              "⚙: the PC check shown is 16 digits (XXXX-XXXX-XXXX-XXXX)", padText.Replace("\n", " | "));
+        Check(padText.Contains("(not found)"), "⚙: adb only in C:\\platform-tools counts as not found", padText.Replace("\n", " | "));
+        Check(padText.Contains("No shared Wi-Fi? Turn on Windows Mobile hotspot"), "⚙: the tablet link's lines point to the Mobile hotspot when there is no shared Wi-Fi", padText.Replace("\n", " | "));
+        CheckPlantedAdbNotRun();
+
         // settings remembered: green pen chosen above; quit with ✕, start again, draw without choosing
         Press("Green (3)"); Press("Pen (P)"); Press("Draw on / off");   // drawing off before quitting
         Press("Quit Contrast Ink");
@@ -986,11 +1385,17 @@ static class Program
         Check(quit, "✕ quits the app", quit ? "exited" : "still running after 5 s");
         if (!quit) return;
         File.Delete(statusPath);
+        startInfo.Environment["PATH"] = PathAdbDir + Path.PathSeparator + startInfo.Environment["PATH"];   // now adb is on the PATH
         app = Process.Start(startInfo)!;
         var sw = Stopwatch.StartNew();
         while (!File.Exists(statusPath) && sw.Elapsed.TotalSeconds < 20) Thread.Sleep(200);
         Thread.Sleep(800);
         Check(File.Exists(statusPath), "it starts again after quitting", File.Exists(statusPath) ? "status written" : "no status");
+        WaitFor(() => File.Exists(Path.Combine(PathAdbDir, AdbRan)), 8000);
+        var pathRan = Path.Combine(PathAdbDir, AdbRan);
+        Check(File.Exists(pathRan), "adb: an adb.exe on the PATH is used (asked for the tablets plugged in)", File.Exists(pathRan) ? File.ReadAllText(pathRan).Trim().Replace("\n", " | ") : "never run");
+        padText = PadPanelText();
+        Check(padText.Contains("(found)"), "⚙: adb on the PATH shows as found", padText.Replace("\n", " | "));
         Key(VK.F9); Thread.Sleep(300);
         Drag(new Point(x1, Row(4)), new Point(x2, Row(4)));
         Thread.Sleep(400);
@@ -1062,6 +1467,34 @@ static class Program
     }
 
     // ---------------------------------------------------------------- finding the toolbar's button
+    /// <summary>The whole accessible name of the first toolbar element whose name starts so (visible ones only), or null.</summary>
+    static string? ToolbarName(string nameStarts)
+    {
+        foreach (var hwnd in Native.ProcessWindows("Contrast Ink"))
+        {
+            var root = System.Windows.Automation.AutomationElement.FromHandle(hwnd);
+            foreach (System.Windows.Automation.AutomationElement e in root.FindAll(System.Windows.Automation.TreeScope.Descendants, System.Windows.Automation.Condition.TrueCondition))
+                if (e.Current.Name.StartsWith(nameStarts, StringComparison.Ordinal)) return e.Current.Name;
+        }
+        return null;
+    }
+
+    /// <summary>The on-screen rectangle of the first toolbar element whose name starts so, or empty.</summary>
+    static Rectangle ToolbarBox(string nameStarts)
+    {
+        foreach (var hwnd in Native.ProcessWindows("Contrast Ink"))
+        {
+            var root = System.Windows.Automation.AutomationElement.FromHandle(hwnd);
+            foreach (System.Windows.Automation.AutomationElement e in root.FindAll(System.Windows.Automation.TreeScope.Descendants, System.Windows.Automation.Condition.TrueCondition))
+                if (e.Current.Name.StartsWith(nameStarts, StringComparison.Ordinal))
+                {
+                    var r = e.Current.BoundingRectangle;
+                    return new Rectangle((int)r.Left, (int)r.Top, (int)r.Width, (int)r.Height);
+                }
+        }
+        return Rectangle.Empty;
+    }
+
     static Point? FindToolbarButton(string nameStarts)
     {
         foreach (var hwnd in Native.ProcessWindows("Contrast Ink"))
@@ -1102,6 +1535,10 @@ sealed class Slide : Form
     public IntPtr Hwnd;
     public readonly int StripeLeft, StripeRight;
     public int StripeCenterX => (StripeLeft + StripeRight) / 2;
+    public static readonly Color BlockColor = Color.FromArgb(0x20, 0x50, 0xC0);
+    readonly Panel block;
+    public readonly Point BlockCenter;
+    public void ShowBlock(bool on) { block.Visible = on; if (on) block.BringToFront(); Update(); }
 
     public Slide(Rectangle screen)
     {
@@ -1114,6 +1551,11 @@ sealed class Slide : Form
         StripeLeft = screen.Left + (int)(screen.Width * 0.62);
         StripeRight = StripeLeft + 70;
         var stripe = new Panel { BackColor = Color.Black, Bounds = new Rectangle(StripeLeft - screen.Left, 0, 70, screen.Height) };
+        // the slide changing: a large block, above the rows the checks draw on, left of the stripe
+        block = new Panel { BackColor = BlockColor, Visible = false,
+            Bounds = new Rectangle((int)(screen.Width * 0.05), (int)(screen.Height * 0.05), (int)(screen.Width * 0.35), (int)(screen.Height * 0.22)) };
+        BlockCenter = new Point(screen.Left + block.Left + block.Width / 2, screen.Top + block.Top + block.Height / 2);
+        Controls.Add(block);
         stripe.MouseDown += (_, _) => Clicks++;
         Controls.Add(stripe);
         MouseDown += (_, _) => Clicks++;

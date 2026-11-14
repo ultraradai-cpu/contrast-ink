@@ -108,7 +108,10 @@ While recording, the toolbar shows the time, and a message under the buttons if:
 Click a message to dismiss it.
 
 **Chapters:** in a PowerPoint slide show, every slide change becomes a chapter, named by PowerPoint's own slide number. When you stop, a file named
-`<your video> chapters.txt` is saved next to the video, ready to paste into a YouTube description. With OBS 30.2 or newer
+`<your video> chapters.txt` is saved next to the video, ready to paste into a YouTube description. YouTube ignores
+the whole list if one chapter is shorter than 10 seconds, so a slide shown less than 10 seconds (clicked past) gives
+its place to the next one. A recording already running when Contrast Ink connects (started in OBS, or after Contrast
+Ink was restarted) gets its first chapter at the time it has reached. With OBS 30.2 or newer
 and the **Hybrid MP4** recording format (Settings → Output → Recording Format), the chapters are also inside the video.
 
 ## A Tablet as a Pad (Android or iPad)
@@ -126,15 +129,41 @@ the PC's screen, and what you draw on it is drawn on the PC.
 4. Draw. The tablet's toolbar has the tools, colours, widths, undo, clear, the laser, and ‹ › to change slides
    (the app in front on the PC turns the page).
 
+**No shared Wi-Fi** (a lecture hall whose Wi-Fi keeps devices apart, or none at all): turn on Windows' **Mobile
+hotspot** (Settings → Network & internet → Mobile hotspot) and join it from the tablet. The ⚙ panel lists the
+PC's addresses, the hotspot's marked "(hotspot)" (usually 192.168.137.1), and the tablet finds the PC there by
+name too; or use the USB cable. The firewall may treat the hotspot as a **public** network: if the tablet joins the
+hotspot but can't find or reach the PC, Contrast Ink is probably allowed through the firewall on private networks
+only (the question Windows asks the first time). Allow it on public networks too: Windows Security → Firewall & network
+protection → Allow an app through firewall → Change settings → Contrast Ink: tick **Public**. (Contrast Ink adds no
+firewall rule of its own; a copy of ContrastInk.exe in another folder is asked about again.) The panel shows at most
+three addresses: those of the networks with a router, and the hotspot's; virtual-machine, WSL, Docker and VPN adapters
+are left out.
+
 **By USB cable** (it switches to the cable by itself when plugged in, and back to Wi-Fi when unplugged):
 - iPad: install iTunes (or Apple Devices) on the PC, plug in, tap Trust on the iPad. No code needed by cable.
 - Android: once, on the tablet, Settings → About → tap Build number 7 times, then Developer options → USB
-  debugging on; on the PC, unzip Google's free platform-tools to `C:\platform-tools`. Plug in and allow the PC on
-  the tablet. No code needed by cable.
+  debugging on; on the PC, unzip Google's free platform-tools into `%LOCALAPPDATA%\Android\Sdk\platform-tools`
+  (so that `adb.exe` is in that folder; Android Studio puts it there already), or add the folder you unzipped it to
+  to your PATH. (`C:\platform-tools` is no longer used: any user of the PC can create that folder.) Plug in and allow
+  the PC on the tablet. No code needed by cable, but the first time in each run of Contrast Ink the toolbar asks
+  "An Android tablet on the USB cable wants to draw": press **Allow** (Deny, or no answer in 30 s, turns it away).
+  Any program on the PC can reach the cable's door, so only allow it when you just plugged your tablet in.
+- The first time with this PC, the tablet shows the PC check by cable too: compare it as over Wi-Fi.
 
-Everything between the tablet and the PC is encrypted, and the code itself never crosses the network. Wrong codes
-are limited (five in a row lock pairing for 30 s; twenty make a new code). With patient images on screen, a
-private network or the PC's own hotspot is safer still.
+**The tablet's picture.** On **Windows 11** it is made with Windows' own screen capture (Windows.Graphics.Capture),
+which also sees videos, DICOM viewers and other programs drawn by the graphics card, and leaves out the toolbar and the
+mouse pointer. On **Windows 10** that capture makes Windows draw a yellow border around the screen, which the audience
+sees and OBS records, so Contrast Ink uses an older copy of the screen there, and switches to Windows' capture by
+itself only when that copy comes back black (a video or 3D window it can't see). To use Windows' capture on Windows 10
+anyway, border and all: **⚙ Settings → Tablet Picture: Windows Capture**. With **HDR** on, the older copy is used
+everywhere (Windows' capture would look washed out). If Windows' capture fails, the older copy takes over and Windows'
+capture is tried again 15 seconds later, or when a tablet next connects.
+
+Everything between the tablet and the PC is encrypted, and the code itself never crosses the network. The PC check
+is 16 characters (`XXXX-XXXX-XXXX-XXXX`): compare all of them. Wrong codes are limited per device: five in a row
+from one device lock that device out for 30 s (fifteen in a row from all devices lock everyone out for 30 s), and
+twenty in all make a new code. With patient images on screen, a private network or the PC's own hotspot is safer still.
 
 ## OBS Settings
 
@@ -149,7 +178,14 @@ private network or the PC's own hotspot is safer still.
 
 - If F9 or the letter keys stop working, wait up to two minutes: Windows can silently drop the app's keyboard
   watcher, and Contrast Ink installs it again every two minutes, after sleep, and when a screen is plugged in or out.
-- A projector plugged in or out mid-lecture: the drawing layer moves to cover the right screen by itself.
+- A projector plugged in or out mid-lecture: the drawing layer moves to the laptop's screen while the projector is
+  gone, and back to the projector when it returns (the screen you chose with 🖥 is remembered by name).
+- An app started **as administrator** (some DICOM viewers, or any app you ran with "Run as administrator"): while it
+  is in front, Windows keeps Contrast Ink's keys and the tablet's ‹ › from reaching it, and keeps its keys from
+  Contrast Ink (F9, Ctrl, the letter keys do nothing). The toolbar says so. Open that app normally, or start
+  Contrast Ink as administrator too.
+- If the toolbar's line says Windows didn't allow Contrast Ink to watch the keyboard and pen, use the toolbar's
+  buttons; it tries again every two minutes and the line goes when it works.
 
 Errors are written to `%AppData%\ContrastInk\error.log`. Send that file along with what you were doing.
 Settings are in `%AppData%\ContrastInk\settings.json` (delete it to start fresh).

@@ -268,6 +268,47 @@ public class SettingsTests
 
     [Fact]
     public void ScreenFallsBackWhenAMonitorIsUnplugged() => Assert.Equal(0, new Settings { Screen = 1 }.Clean(screens: 1).Screen);
+
+    [Fact]
+    public void ACutOffFileLoadsTheDefaults()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "contrastink-" + Guid.NewGuid() + "/settings.json");
+        new Settings { Color = 3 }.Save(path);
+        var whole = File.ReadAllText(path);
+        File.WriteAllText(path, whole[..(whole.Length / 2)]);   // power lost mid-write (the old way of saving)
+        var s = Settings.Load(path, 1);
+        Assert.Equal(0, s.Color);
+        Assert.Equal(Tool.Pen, s.Tool);
+    }
+
+    [Fact]
+    public void SavingIsWholeOrNothing()
+    {
+        // written to a file beside it and moved over it: a write that fails leaves the old settings as they were.
+        // (Written in place, as before, a failure part way left a cut-off file and every setting went back to its default.)
+        var dir = Path.Combine(Path.GetTempPath(), "contrastink-" + Guid.NewGuid());
+        var path = Path.Combine(dir, "settings.json");
+        Assert.True(new Settings { Color = 3 }.Save(path));
+        Assert.False(File.Exists(path + ".tmp"));   // nothing left beside it
+        var before = File.ReadAllText(path);
+        Directory.CreateDirectory(path + ".tmp");    // the file beside it can't be written: this save must fail
+        Assert.False(new Settings { Color = 5 }.Save(path));
+        Assert.Equal(before, File.ReadAllText(path));
+        Assert.Equal(3, Settings.Load(path, 1).Color);
+        Directory.Delete(path + ".tmp");
+        Assert.True(new Settings { Color = 5 }.Save(path));
+        Assert.Equal(5, Settings.Load(path, 1).Color);
+    }
+
+    [Fact]
+    public void TheChosenScreenIsKeptByName()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "contrastink-" + Guid.NewGuid() + "/settings.json");
+        new Settings { Screen = 1, ScreenDevice = @"\\.\DISPLAY2", ScreenBounds = new[] { 1920, 0, 2944, 768 } }.Save(path);
+        var s = Settings.Load(path, screens: 1);   // started with the projector unplugged
+        Assert.Equal(@"\\.\DISPLAY2", s.ScreenDevice);
+        Assert.Equal(new[] { 1920, 0, 2944, 768 }, s.ScreenBounds);
+    }
 }
 
 public class ColorTests
@@ -440,6 +481,41 @@ public class PlacementTests
         => Assert.Equal((300, 40), Placement.KeepInside(new Box(300, 40, 1170, 90), Both));
 }
 
+public class ScreenChoiceTests
+{
+    static readonly Display Laptop = new(@"\\.\DISPLAY1", new Box(0, 0, 1920, 1080)), Projector = new(@"\\.\DISPLAY2", new Box(1920, 0, 2944, 768));
+
+    [Fact]
+    public void TheChosenScreenGoneFallsBackAndComesBack()
+    {
+        // the audit: a projector dropping out for a moment moved the layer to the laptop for good
+        var chosen = Projector;
+        Assert.Equal(1, ScreenChoice.Resolve(new[] { Laptop, Projector }, chosen.Device, chosen.Bounds, 1));
+        Assert.Equal(0, ScreenChoice.Resolve(new[] { Laptop }, chosen.Device, chosen.Bounds, 1));               // gone: the laptop
+        Assert.Equal(1, ScreenChoice.Resolve(new[] { Laptop, Projector }, chosen.Device, chosen.Bounds, 1));    // back: the projector again
+    }
+
+    [Fact]
+    public void FoundByNameWhenItMovedOrByPlaceWhenRenamed()
+    {
+        var moved = Projector with { Bounds = new Box(-1024, 0, 0, 768) };   // the projector now set to the laptop's left
+        Assert.Equal(1, ScreenChoice.Resolve(new[] { Laptop, moved }, Projector.Device, Projector.Bounds, 1));
+        var renamed = Projector with { Device = @"\\.\DISPLAY5" };            // plugged into another port
+        Assert.Equal(1, ScreenChoice.Resolve(new[] { Laptop, renamed }, Projector.Device, Projector.Bounds, 1));
+        // the name and the place both matching win over a name alone
+        var twin = new Display(@"\\.\DISPLAY2", new Box(0, 0, 1920, 1080));
+        Assert.Equal(2, ScreenChoice.Resolve(new[] { twin, Laptop, Projector }, Projector.Device, Projector.Bounds, 0));
+    }
+
+    [Fact]
+    public void ASettingsFileFromBeforeUsesTheNumber()
+    {
+        Assert.Equal(1, ScreenChoice.Resolve(new[] { Laptop, Projector }, null, null, 1));
+        Assert.Equal(0, ScreenChoice.Resolve(new[] { Laptop }, null, null, 1));
+        Assert.Equal(0, ScreenChoice.Resolve(Array.Empty<Display>(), Projector.Device, Projector.Bounds, 1));
+    }
+}
+
 public class ObsTests
 {
     [Fact]
@@ -506,6 +582,75 @@ public class ObsTests
         var text = Obs.Chapters(new[] { (TimeSpan.FromSeconds(0.2), "Slide 1"), (TimeSpan.FromSeconds(65), "Slide 2"),
                                         (TimeSpan.FromSeconds(65.4), "Slide 3"), (TimeSpan.FromSeconds(130), "Slide 4") });
         Assert.Equal("0:00 Slide 1\n1:05 Slide 3\n2:10 Slide 4\n", text);
+    }
+
+    [Fact]
+    public void ChaptersShorterThanTenSecondsAreMerged()
+    {
+        // YouTube ignores the whole list when one chapter is under 10 s; before, only chapters under 1 s were merged
+        var text = Obs.Chapters(new[] { (TimeSpan.FromSeconds(0), "Slide 1"), (TimeSpan.FromSeconds(40), "Slide 2"),
+                                        (TimeSpan.FromSeconds(44), "Slide 3"), (TimeSpan.FromSeconds(47), "Slide 4"),
+                                        (TimeSpan.FromSeconds(90), "Slide 5") });
+        Assert.Equal("0:00 Slide 1\n0:40 Slide 4\n1:30 Slide 5\n", text);
+        foreach (var gap in Gaps(text)) Assert.True(gap >= Obs.MinChapterSeconds, "a chapter of " + gap + " s");
+    }
+
+    [Fact]
+    public void TheFirstAndLastChaptersAreSensible()
+    {
+        // the first slide 5 s in: it starts at 0:00 (no 5-second "Start"); later than 10 s, a Start line comes first
+        Assert.Equal("0:00 Slide 1\n1:00 Slide 2\n", Obs.Chapters(new[] { (TimeSpan.FromSeconds(5), "Slide 1"), (TimeSpan.FromSeconds(60), "Slide 2") }));
+        Assert.Equal("0:00 Start\n0:12 Slide 1\n", Obs.Chapters(new[] { (TimeSpan.FromSeconds(12), "Slide 1") }));
+        // stopped 4 s after the last slide change: that last slide is left to the one before
+        Assert.Equal("0:00 Slide 1\n1:00 Slide 2\n",
+            Obs.Chapters(new[] { (TimeSpan.Zero, "Slide 1"), (TimeSpan.FromSeconds(60), "Slide 2"), (TimeSpan.FromSeconds(120), "Slide 3") }, end: TimeSpan.FromSeconds(124)));
+        Assert.Equal("0:00 Slide 1\n", Obs.Chapters(new[] { (TimeSpan.Zero, "Slide 1") }, end: TimeSpan.FromSeconds(3)));
+    }
+
+    static IEnumerable<double> Gaps(string chapters)
+    {
+        var times = chapters.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(l => l.Split(' ')[0].Split(':').Select(int.Parse).Aggregate(0, (a, b) => a * 60 + b)).ToList();
+        return times.Zip(times.Skip(1), (a, b) => (double)(b - a));
+    }
+
+    [Fact]
+    public void ARecordingTakenOverGetsItsFirstChapterWhereItIs()
+    {
+        // the audit: after an OBS reconnect or a restart, "Slide n" was stamped at 0:00 of a recording 5 minutes in
+        var log = new ChapterLog();
+        log.Begin(TimeSpan.FromMinutes(5), @"C:\x.pptx#3#3");
+        Assert.Equal("0:00 Start\n5:00 Slide 3\n", Obs.Chapters(log.Items));
+    }
+
+    [Fact]
+    public void TheSameRecordingTakenOverAgainKeepsItsChapters()
+    {
+        var log = new ChapterLog();
+        log.Begin(TimeSpan.Zero, @"C:\x.pptx#1#1");
+        log.Add(TimeSpan.FromSeconds(60), @"C:\x.pptx#2#2");
+        log.Seen(TimeSpan.FromSeconds(90));
+        // the line to OBS dropped and came back; OBS kept recording (now 2:00 in), the slide moved on meanwhile
+        Assert.True(log.Begin(TimeSpan.FromSeconds(120), @"C:\x.pptx#4#4"));
+        Assert.Equal("0:00 Slide 1\n1:00 Slide 2\n2:00 Slide 4\n", Obs.Chapters(log.Items));
+        // the same slide still showing: no second chapter for it
+        Assert.True(log.Begin(TimeSpan.FromSeconds(150), @"C:\x.pptx#4#4"));
+        Assert.Equal(3, log.Items.Count);
+    }
+
+    [Fact]
+    public void ANewRecordingStartsANewChapterList()
+    {
+        var log = new ChapterLog();
+        log.Begin(TimeSpan.Zero, @"C:\x.pptx#1#1");
+        log.Add(TimeSpan.FromSeconds(60), @"C:\x.pptx#2#2");
+        Assert.False(log.Begin(TimeSpan.FromSeconds(20), @"C:\x.pptx#2#2"));   // its time is behind the last one seen: another recording
+        Assert.Equal("0:00 Start\n0:20 Slide 2\n", Obs.Chapters(log.Items));
+        log.Ended();
+        Assert.False(log.Begin(TimeSpan.FromSeconds(300), @"C:\x.pptx#2#2"));  // after a stop, never the same
+        Assert.Single(log.Items);
+        Assert.False(log.Begin(TimeSpan.Zero, @"C:\x.pptx#5#5"));              // started now: always new
+        Assert.Equal("0:00 Slide 5\n", Obs.Chapters(log.Items));
     }
 
     [Fact]
@@ -602,6 +747,60 @@ public class PenTabletTests
 public class PadProtocolTests
 {
     static byte[] Hex(string h) => Convert.FromHexString(h.Replace(" ", ""));
+
+    static PadAdapter Adapter(string name, string ip, bool gateway = true, bool up = true, string description = "", bool loopback = false, bool tunnel = false) =>
+        new(name, description, up, loopback, tunnel, gateway, ip.Split(' '));
+
+    [Fact]
+    public void AddressesIncludeTheMobileHotspot()
+    {
+        var adapters = new[]
+        {
+            Adapter("Loopback Pseudo-Interface 1", "127.0.0.1", gateway: false, loopback: true),
+            Adapter("Local Area Connection* 10", "192.168.137.1", gateway: false, description: "Microsoft Wi-Fi Direct Virtual Adapter #2"),   // Mobile hotspot
+            Adapter("Wi-Fi", "10.0.0.23"),
+            Adapter("Ethernet", "192.168.1.20 169.254.12.7"),
+            Adapter("Ethernet 2", "172.16.0.5", up: false),                                        // unplugged
+            Adapter("Wi-Fi 2", "10.0.0.23 not-an-address fe80::1"),                                // the same address again
+        };
+        var list = Pad.UsableAddresses(adapters);
+        Assert.Equal(new[] { "10.0.0.23", "192.168.1.20", "192.168.137.1" }, list);
+        Assert.Equal("10.0.0.23, 192.168.1.20, 192.168.137.1 (hotspot)", Pad.AddressText(list, Pad.Port));
+        Assert.Equal("192.168.137.1:47821 (hotspot)", Pad.AddressText(new[] { "192.168.137.1" }, 47821));
+        // only the hotspot: still listed (a PC sharing its own hotspot has no other address)
+        Assert.Equal(new[] { "192.168.137.1" }, Pad.UsableAddresses(new[] { adapters[1], adapters[0] }));
+        Assert.True(Pad.IsHotspot("192.168.137.1"));
+        Assert.False(Pad.IsHotspot("192.168.13.7"));
+    }
+
+    [Fact]
+    public void AddressesLeaveOutVirtualAndVpnAdaptersAndAreAtMostThree()
+    {
+        var adapters = new[]
+        {
+            Adapter("vEthernet (Default Switch)", "172.29.144.1", gateway: false, description: "Hyper-V Virtual Ethernet Adapter"),
+            Adapter("vEthernet (WSL (Hyper-V firewall))", "172.20.0.1", gateway: false),
+            Adapter("Ethernet 3", "192.168.56.1", gateway: false, description: "VirtualBox Host-Only Ethernet Adapter"),
+            Adapter("vEthernet (DockerNAT)", "10.0.75.1"),
+            Adapter("Office VPN", "10.8.0.6", description: "TAP-Windows Adapter V9"),
+            Adapter("WireGuard", "10.66.0.2", description: "WireGuard Tunnel"),
+            Adapter("Cisco", "10.9.0.2", tunnel: true),
+            Adapter("Ethernet", "192.168.1.20"),
+            Adapter("Ethernet 4", "192.168.50.2", gateway: false),          // no router behind it: only when nothing better
+            Adapter("Wi-Fi", "10.0.0.23"),
+            Adapter("Wi-Fi 3", "10.1.0.23"),
+            Adapter("Wi-Fi 4", "10.2.0.23"),
+            Adapter("Local Area Connection* 2", "192.168.137.1", gateway: false),
+        };
+        var list = Pad.UsableAddresses(adapters);
+        // the gateway adapters first, cut so the hotspot always fits within three
+        Assert.Equal(new[] { "192.168.1.20", "10.0.0.23", "192.168.137.1" }, list);
+        Assert.Equal(new[] { "192.168.1.20", "10.0.0.23", "10.1.0.23" }, Pad.UsableAddresses(adapters.Where(a => !Pad.IsHotspot(a.IPv4[0]))));
+        // virtual and VPN adapters only: nothing to show
+        Assert.Empty(Pad.UsableAddresses(adapters.Take(7)));
+        // a network without a router (no gateway anywhere): its adapter is still listed, the virtual ones still not
+        Assert.Equal(new[] { "192.168.50.2" }, Pad.UsableAddresses(adapters.Take(7).Append(adapters[8])));
+    }
 
     [Fact]
     public void SpecTestVectorsDecode()
@@ -714,15 +913,38 @@ public class PadSafetyTests
     }
 
     [Fact]
-    public void FiveWrongCodesLockEveryoneOutForThirtySeconds()
+    public void FiveWrongCodesFromOneAddressLockThatAddressOutForThirtySeconds()
     {
         var g = new PadGuard();
         var t = new DateTime(2026, 11, 12, 10, 0, 0, DateTimeKind.Utc);
-        for (int i = 0; i < 4; i++) Assert.False(g.Wrong(t));
-        Assert.False(g.Locked(t));
-        g.Wrong(t);
-        Assert.True(g.Locked(t.AddSeconds(29)));
-        Assert.False(g.Locked(t.AddSeconds(31)));
+        for (int i = 0; i < 4; i++) Assert.False(g.Wrong("10.0.0.9", t));
+        Assert.False(g.Locked("10.0.0.9", t));
+        g.Wrong("10.0.0.9", t);
+        Assert.True(g.Locked("10.0.0.9", t.AddSeconds(29)));
+        Assert.False(g.Locked("10.0.0.9", t.AddSeconds(31)));
+    }
+
+    [Fact]
+    public void OneAddressGuessingDoesNotLockOutTheTablet()
+    {
+        // the audit: one device's wrong codes locked everyone out, the presenter's own tablet included
+        var g = new PadGuard();
+        var t = new DateTime(2026, 11, 12, 10, 0, 0, DateTimeKind.Utc);
+        for (int i = 0; i < 5; i++) g.Wrong("10.0.0.66", t);
+        Assert.True(g.Locked("10.0.0.66", t));
+        Assert.False(g.Locked("10.0.0.20", t));
+    }
+
+    [Fact]
+    public void FifteenWrongInARowFromManyAddressesLockEveryoneOut()
+    {
+        var g = new PadGuard();
+        var t = new DateTime(2026, 11, 12, 10, 0, 0, DateTimeKind.Utc);
+        for (int i = 0; i < 14; i++) g.Wrong("10.0.1." + i, t);   // a different address each time: none locked alone
+        Assert.False(g.Locked("10.0.0.20", t));
+        g.Wrong("10.0.1.99", t);
+        Assert.True(g.Locked("10.0.0.20", t.AddSeconds(29)));
+        Assert.False(g.Locked("10.0.0.20", t.AddSeconds(31)));
     }
 
     [Fact]
@@ -731,7 +953,7 @@ public class PadSafetyTests
         var g = new PadGuard();
         var t = DateTime.UtcNow;
         int newCodes = 0;
-        for (int i = 0; i < 40; i++) if (g.Wrong(t)) newCodes++;
+        for (int i = 0; i < 40; i++) if (g.Wrong("10.0.2." + (i % 7), t)) newCodes++;
         Assert.Equal(2, newCodes);
     }
 
@@ -740,12 +962,13 @@ public class PadSafetyTests
     {
         var g = new PadGuard();
         var t = DateTime.UtcNow;
-        for (int i = 0; i < 4; i++) g.Wrong(t);
-        g.Right();
-        for (int i = 0; i < 4; i++) g.Wrong(t);
-        Assert.False(g.Locked(t));   // never five in a row
-        for (int i = 0; i < 11; i++) g.Wrong(t);
-        Assert.True(g.Wrong(t));     // the 20th wrong for this code
+        for (int i = 0; i < 4; i++) g.Wrong("a", t);
+        g.Right("a");
+        for (int i = 0; i < 4; i++) g.Wrong("a", t);
+        Assert.False(g.Locked("a", t));   // never five in a row
+        g.Right("a");
+        for (int i = 0; i < 11; i++) g.Wrong("b" + i, t);
+        Assert.True(g.Wrong("c", t));     // the 20th wrong for this code
     }
 }
 
@@ -798,7 +1021,7 @@ public class PadCryptoTests
 
     [Fact]
     public void ThePcCheckIsTheSpecs() =>
-        Assert.Equal("6FC6-6A90", Pad.PcCheck(Convert.FromHexString("04D65A93977CAA3D1B081852FF57A79E465F1660577304BAEAD505DD3A48589CF350185E895372DF6221EA3A137557E473FDDB6755F05BD507C3C533FCE9C91285")));
+        Assert.Equal("6FC6-6A90-4861-71CA", Pad.PcCheck(Convert.FromHexString("04D65A93977CAA3D1B081852FF57A79E465F1660577304BAEAD505DD3A48589CF350185E895372DF6221EA3A137557E473FDDB6755F05BD507C3C533FCE9C91285")));
 
     [Fact]
     public void TheSpecsVectorsHold()
@@ -819,5 +1042,68 @@ public class PadCryptoTests
     {
         Assert.Null(PadCrypto.ReadPoint(new byte[65]));
         Assert.Null(PadCrypto.ReadPoint(new byte[] { 4, 1, 2 }));
+    }
+}
+
+public class PadCaptureChoiceTests
+{
+    static readonly DateTime T0 = new(2026, 11, 13, 12, 0, 0, DateTimeKind.Utc);
+
+    [Fact]
+    public void Windows11UsesWgcAndRetriesAfterAFailure()
+    {
+        var c = new PadCaptureChoice(wgcAvailable: true, windowsBuild: 26100);
+        Assert.True(c.UseWgc(T0));
+        c.WgcFailed(T0);
+        Assert.False(c.UseWgc(T0.AddSeconds(5)));                    // GDI for a while...
+        Assert.True(c.UseWgc(T0 + PadCaptureChoice.RetryAfter));     // ...never for good
+        c.WgcFailed(T0);
+        c.NewConnection();
+        Assert.True(c.UseWgc(T0.AddSeconds(1)));                     // a new tablet tries again at once
+        c.Hdr = true;
+        Assert.False(c.UseWgc(T0.AddSeconds(1)));                    // HDR: GDI
+    }
+
+    [Fact]
+    public void Windows10KeepsGdiUnlessItIsBlackOrChosen()
+    {
+        var c = new PadCaptureChoice(wgcAvailable: true, windowsBuild: 19045);
+        Assert.False(c.UseWgc(T0));                                  // no yellow border by default
+        Assert.True(c.GdiCameBackBlack(T0));                         // GDI black: WGC tried
+        Assert.True(c.UseWgc(T0));
+        c.WgcGood();                                                 // WGC wasn't black: kept for this connection
+        Assert.True(c.UseWgc(T0.AddMinutes(5)));
+        c.NewConnection();
+        Assert.False(c.UseWgc(T0.AddMinutes(5)));
+        // the screen really is black: WGC black too, back to GDI (and not tried again at once)
+        Assert.True(c.GdiCameBackBlack(T0));
+        Assert.True(c.BothBlack(T0));
+        Assert.False(c.UseWgc(T0.AddSeconds(1)));
+        Assert.False(c.GdiCameBackBlack(T0.AddSeconds(1)));
+        // the presenter's choice in ⚙
+        c.UserWantsWgc = true;
+        c.NewConnection();
+        Assert.True(c.UseWgc(T0));
+        Assert.False(c.BothBlack(T0));
+        // no WGC on this Windows: never
+        var old = new PadCaptureChoice(wgcAvailable: false, windowsBuild: 18363) { UserWantsWgc = true };
+        Assert.False(old.UseWgc(T0));
+        Assert.False(old.GdiCameBackBlack(T0));
+    }
+
+    [Fact]
+    public void MostlyBlackSeesOnlyANearlyBlackPicture()
+    {
+        int w = 200, h = 100;
+        var black = new byte[w * h * 4];
+        Assert.True(PadCaptureChoice.MostlyBlack(black, w, h));
+        var slide = new byte[w * h * 4];
+        Array.Fill(slide, (byte)255);
+        for (int y = 0; y < h; y++) for (int x = 120; x < 140; x++) { int i = (y * w + x) * 4; slide[i] = slide[i + 1] = slide[i + 2] = 0; }
+        Assert.False(PadCaptureChoice.MostlyBlack(slide, w, h));    // a white slide with a black stripe
+        var darkSlide = (byte[])black.Clone();
+        for (int y = 40; y < 60; y++) for (int x = 20; x < 180; x++) { int i = (y * w + x) * 4; darkSlide[i] = darkSlide[i + 1] = darkSlide[i + 2] = 230; }
+        Assert.False(PadCaptureChoice.MostlyBlack(darkSlide, w, h)); // white text on a black slide: not "black"
+        Assert.False(PadCaptureChoice.MostlyBlack(black, w, h + 1));  // too short a buffer: no
     }
 }

@@ -76,23 +76,32 @@ public static class Obs
         return d;
     }
 
+    /// <summary>YouTube's shortest chapter: one shorter makes it ignore the whole list.</summary>
+    public const double MinChapterSeconds = 10;
+
     /// <summary>
     /// A chapter list in the form YouTube reads from a video description: "0:00 Slide 1", one per line, the first at
-    /// 0:00 and in time order. A chapter less than a second after the previous one (slides clicked past quickly)
-    /// replaces it.
+    /// 0:00 and in time order, none shorter than 10 s (YouTube drops the whole list for one shorter chapter). A slide
+    /// shown less than 10 s (clicked past) gives its place to the slide after it; a first slide within 10 s of the
+    /// start starts at 0:00 (later than that, a "Start" chapter comes first); and when <paramref name="end"/> (the
+    /// video's length) is known, a last slide shown less than 10 s before the end is left to the one before it.
     /// </summary>
-    public static string Chapters(IReadOnlyList<(TimeSpan at, string name)> chapters)
+    public static string Chapters(IReadOnlyList<(TimeSpan at, string name)> chapters, TimeSpan? end = null)
     {
         var kept = new List<(TimeSpan at, string name)>();
         foreach (var c in chapters.OrderBy(c => c.at))
         {
             var at = c.at < TimeSpan.Zero ? TimeSpan.Zero : c.at;
-            if (kept.Count > 0 && (at - kept[^1].at).TotalSeconds < 1) kept[^1] = (kept[^1].at, c.name);
+            if (kept.Count == 0)
+            {
+                if (at.TotalSeconds >= MinChapterSeconds) kept.Add((TimeSpan.Zero, "Start"));
+                kept.Add((kept.Count == 0 ? TimeSpan.Zero : at, c.name));
+            }
+            else if ((at - kept[^1].at).TotalSeconds < MinChapterSeconds) kept[^1] = (kept[^1].at, c.name);
             else kept.Add((at, c.name));
         }
         if (kept.Count == 0) return "";
-        if (kept[0].at.TotalSeconds >= 1) kept.Insert(0, (TimeSpan.Zero, "Start"));
-        else kept[0] = (TimeSpan.Zero, kept[0].name);
+        if (end is { } e && kept.Count > 1 && (e - kept[^1].at).TotalSeconds < MinChapterSeconds) kept.RemoveAt(kept.Count - 1);
         bool hours = kept[^1].at.TotalHours >= 1;
         return string.Join("\n", kept.Select(c => Time(c.at, hours) + " " + c.name)) + "\n";
     }
@@ -110,4 +119,49 @@ public static class Obs
 
     /// <summary>Below this much free space on the recording disk, the toolbar warns (OBS reports it in MB).</summary>
     public const double LowDiskMB = 2048;
+}
+
+/// <summary>
+/// The chapters of the recording in progress, in the recording's own time (OBS's outputDuration). A recording taken
+/// over while it runs (OBS started first, or the line to OBS dropped, or Contrast Ink was restarted) gets its first
+/// chapter at the time it has reached, not at 0:00; taken over again after a dropped line, it is the same recording
+/// (its time has gone on from where it was) and its chapters so far are kept.
+/// </summary>
+public sealed class ChapterLog
+{
+    readonly List<(TimeSpan at, string name)> items = new();
+    TimeSpan? seen;   // the recording's time last seen; null: no recording followed since the last one ended
+
+    public IReadOnlyList<(TimeSpan at, string name)> Items => items;
+    /// <summary>The slide-watcher key of the last chapter ("" before the first).</summary>
+    public string LastKey { get; private set; } = "";
+
+    /// <summary>
+    /// A recording is followed from <paramref name="at"/> into it (zero for one that just started), on the slide
+    /// showing now. True when it is the recording followed before (its chapters were kept).
+    /// </summary>
+    public bool Begin(TimeSpan at, string slideKey)
+    {
+        bool same = at > TimeSpan.Zero && seen is { } s && at >= s;
+        if (!same) { items.Clear(); LastKey = ""; }
+        Seen(at);
+        Add(at, slideKey);
+        return same;
+    }
+
+    /// <summary>A slide change at <paramref name="at"/>: a chapter, unless it is no slide or the same slide. True when added.</summary>
+    public bool Add(TimeSpan at, string slideKey)
+    {
+        Seen(at);
+        if (Obs.SlideNumber(slideKey) is not int n || slideKey == LastKey) return false;
+        LastKey = slideKey;
+        items.Add((at, "Slide " + n));
+        return true;
+    }
+
+    /// <summary>The recording's time as OBS reported it (on every status check).</summary>
+    public void Seen(TimeSpan at) { if (seen is not { } s || at > s) seen = at; }
+
+    /// <summary>The recording ended: the next one is a new recording.</summary>
+    public void Ended() => seen = null;
 }

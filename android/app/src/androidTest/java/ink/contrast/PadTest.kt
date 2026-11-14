@@ -16,6 +16,7 @@ import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import ink.contrast.core.Json
 import ink.contrast.core.PadCrypto
+import ink.contrast.core.PadHints
 import ink.contrast.core.PadProtocol
 import ink.contrast.core.PadSeal
 import org.junit.After
@@ -211,7 +212,7 @@ class PadTest {
         fun close() { try { server.close(); session?.socket?.close() } catch (e: IOException) {} }
 
         companion object {
-            /** The spec's "PC public key" (private key 22..22): its PC check is 6FC6-6A90. */
+            /** The spec's "PC public key" (private key 22..22): its PC check is 6FC6-6A90-4861-71CA. */
             val VECTOR_PC_KEY = ByteArray(65) {
                 "04D65A93977CAA3D1B081852FF57A79E465F1660577304BAEAD505DD3A48589CF350185E895372DF6221EA3A137557E473FDDB6755F05BD507C3C533FCE9C91285"
                     .substring(it * 2, it * 2 + 2).toInt(16).toByte()
@@ -252,6 +253,52 @@ class PadTest {
 
     private fun shot(name: String) { device.takeScreenshot(File(shots, "$name.png")) }
 
+    /**
+     * The fake PC's picture really is on the tablet's screen, not only acknowledged (FRAME_ACK): a screenshot, sampled
+     * where the picture should be. The PC's slide is white with a black square in the middle (600..1000 x 250..650
+     * of 1600 x 900): the middle must be dark, four points of the white around it must be white. Kept as [name].png.
+     */
+    private fun assertPcPictureOnScreen(name: String) {
+        device.waitForIdle()
+        var r = RectF()
+        val activity = padActivity()
+        val until = System.currentTimeMillis() + 4000
+        while (System.currentTimeMillis() < until) {
+            inst.runOnMainSync { r = activity.pad.pictureOnScreen() }
+            if (r.width() > 0 && r.height() > 0) break
+            Thread.sleep(100)
+        }
+        // FRAME_ACK goes when the pad draws the picture; the screen shows it a refresh or two later: looked at again
+        // for up to 5 s (the picture must come, not merely be acknowledged)
+        fun hex(c: Int) = String.format("#%06X", c and 0xFFFFFF)
+        val points = listOf(0.15f to 0.5f, 0.85f to 0.5f, 0.5f to 0.12f, 0.5f to 0.88f)
+        var problems: List<String> = listOf("no screenshot")
+        val until2 = System.currentTimeMillis() + 5000
+        do {
+            val taken = inst.uiAutomation.takeScreenshot() ?: continue
+            val screen = taken.copy(Bitmap.Config.ARGB_8888, false)
+            File(shots, "$name.png").outputStream().use { screen.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            fun px(fx: Float, fy: Float): Int {
+                val x = (r.left + fx * r.width()).toInt().coerceIn(0, screen.width - 1)
+                val y = (r.top + fy * r.height()).toInt().coerceIn(0, screen.height - 1)
+                return screen.getPixel(x, y)
+            }
+            val p = ArrayList<String>()
+            val middle = px(0.5f, 0.5f)
+            if (!(Color.red(middle) < 60 && Color.green(middle) < 60 && Color.blue(middle) < 60))
+                p += "the PC's black square isn't in the middle of its picture ($r): ${hex(middle)}"
+            for ((fx, fy) in points) {
+                val c = px(fx, fy)
+                if (!(Color.red(c) > 200 && Color.green(c) > 200 && Color.blue(c) > 200))
+                    p += "the PC's white slide isn't at ($fx, $fy) of its picture ($r): ${hex(c)}"
+            }
+            problems = p
+            if (p.isEmpty()) break
+            Thread.sleep(250)
+        } while (System.currentTimeMillis() < until2)
+        assertTrue("the PC's picture is on the tablet's screen within 5 s of FRAME_ACK: $problems", problems.isEmpty())
+    }
+
     private fun openPad(code: String) {
         ctx.startActivity(Intent(ctx, PadActivity::class.java)
             .putExtra(PadActivity.EXTRA_ADDRESS, "127.0.0.1:${pc.server.localPort}")
@@ -261,7 +308,7 @@ class PadTest {
     }
 
     /** The first-time question about the PC check: shown, with nothing sent after HELLO while it is open. */
-    private fun firstTimeCheckShows(check: String = "6FC6-6A90") {
+    private fun firstTimeCheckShows(check: String = "6FC6-6A90-4861-71CA") {
         assertNotNull("the first time, the PC check is asked about before anything else is sent", device.wait(Until.findObject(
             By.text("First time with TEST-PC: does the PC show the PC check $check? (⚙ Settings, beside the code)")), 8000))
         assertNull("nothing is sent after HELLO while the check is open", pc.got.poll(2, TimeUnit.SECONDS))
@@ -281,6 +328,60 @@ class PadTest {
         b.click()
     }
 
+    /**
+     * No PC in the list (the emulator's network has none), Wi-Fi on: after about 8 s the connect screen says why that
+     * often happens (hospital Wi-Fi keeping devices apart) and what to do instead. Not before: looked at until 6.5 s.
+     */
+    @Test fun saysToTryAHotspotWhenNoPcIsFound() {
+        device.executeShellCommand("svc wifi enable")
+        openPadEmpty()
+        assertNotNull("the connect screen", device.wait(Until.findObject(By.text("PCs on this network")), 8000))
+        val shownAt = System.currentTimeMillis()
+        val quietUntil = shownAt + PadActivity.NO_PC_HINT_MS - 1500
+        while (System.currentTimeMillis() < quietUntil) {
+            val early = device.findObject(By.text(PadActivity.HOTSPOT_HINT))
+            if (early != null) shot("18a the hotspot hint too early")
+            assertNull("no hint ${(System.currentTimeMillis() - shownAt) / 100 / 10.0} s after the connect screen opened " +
+                "(it waits ${PadActivity.NO_PC_HINT_MS / 1000} s for a PC)", early)
+            Thread.sleep(250)
+        }
+        val hint = device.wait(Until.findObject(By.text(PadActivity.HOTSPOT_HINT)), 6000)
+        shot("18 no PC found, the hotspot hint")
+        assertNotNull("with no PC found for ${PadActivity.NO_PC_HINT_MS / 1000} s, the hotspot hint shows", hint)
+        assertNull("Wi-Fi is on: not told to turn it on", device.findObject(By.text(PadHints.Hint.TURN_ON_WIFI.text!!)))
+    }
+
+    /** Wi-Fi off and no PC found: told to turn Wi-Fi on, not sent to a hotspot. */
+    @Test fun saysToTurnOnWifiWhenItIsOff() {
+        device.executeShellCommand("svc wifi disable")
+        try {
+            Thread.sleep(2000)
+            openPadEmpty()
+            val hint = device.wait(Until.findObject(By.text(PadHints.Hint.TURN_ON_WIFI.text!!)), PadActivity.NO_PC_HINT_MS + 6000)
+            shot("18b Wi-Fi off")
+            assertNotNull("Wi-Fi off: \"turn on Wi-Fi\"", hint)
+            assertNull("not the hotspot hint", device.findObject(By.text(PadActivity.HOTSPOT_HINT)))
+        } finally {
+            device.executeShellCommand("svc wifi enable")
+            Thread.sleep(2000)
+        }
+    }
+
+    /** A typed address where nothing listens (the PC's tablet link off): told to switch it on, not sent to a hotspot. */
+    @Test fun saysThePcIsNotAcceptingTabletsWhenRefused() {
+        device.executeShellCommand("svc wifi enable")
+        val closedPort = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }
+        ctx.startActivity(Intent(ctx, PadActivity::class.java)
+            .putExtra(PadActivity.EXTRA_ADDRESS, "127.0.0.1:$closedPort")
+            .putExtra(PadActivity.EXTRA_CODE, "123456")
+            .putExtra(PadActivity.EXTRA_TEST_SCREENSHOTS, true)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+        val hint = device.wait(Until.findObject(By.text(PadHints.Hint.NOT_ACCEPTING.text!!)), 10000)
+        shot("18c refused, the PC isn't accepting tablets")
+        assertNotNull("refused: \"the PC isn't accepting tablets yet\"", hint)
+        assertNull("not the hotspot hint", device.findObject(By.text(PadActivity.HOTSPOT_HINT)))
+    }
+
     @Test fun drawsOnThePcsPictureAndSendsCommands() {
         openPad("123456")
         val hello = pc.next(PadProtocol.HELLO)
@@ -296,6 +397,7 @@ class PadTest {
         assertNotNull("the tablet acknowledges the picture once it is on screen (FRAME_ACK)", pc.next(PadProtocol.FRAME_ACK))
         assertNotNull("the toolbar shows", device.wait(Until.findObject(By.desc("Undo")), 4000))
         assertNotNull("the PC's name shows", device.wait(Until.findObject(By.text("TEST-PC")), 4000))
+        assertPcPictureOnScreen("20a the PC's picture, as pixels")
         assertArrayEquals("the PC's key is remembered under its name", FakePc.VECTOR_PC_KEY,
             Base64.getDecoder().decode(prefs.getString(PadActivity.PIN_PREFIX + "TEST-PC", "")))
         assertNull("the code is never saved", prefs.getString("pad.code", null))
@@ -435,10 +537,17 @@ class PadTest {
         val usb = FakePc("", port = PadProtocol.USB_PORT).also { cable = it }
         openPadEmpty()
         assertNotNull("the tablet tries the cable by itself (HELLO)", usb.next(PadProtocol.HELLO, 10000))
-        assertNotNull("no PC check question over the cable: the PROOF at once, made with the empty code", usb.next(PadProtocol.PROOF))
+        // the cable proves nothing (any app on the tablet can listen there): the first time, the PC check is asked
+        // about, as on Wi-Fi, before anything else goes
+        assertNotNull("the first time over the cable, the PC check is asked about", device.wait(Until.findObject(
+            By.text("First time with TEST-PC on the USB cable: does the PC show the PC check 6FC6-6A90-4861-71CA? (⚙ Settings, beside the code)")), 8000))
+        assertNull("nothing is sent after HELLO while the check is open", usb.got.poll(2, TimeUnit.SECONDS))
+        shot("27a first time over the cable, the PC check")
+        press("It matches")
+        assertNotNull("then the PROOF, made with the empty code", usb.next(PadProtocol.PROOF))
         assertNotNull("the pictures come", usb.next(PadProtocol.FRAME_ACK))
         assertNotNull("the title says the cable", device.wait(Until.findObject(By.text("TEST-PC · By the USB cable")), 4000))
-        assertNull("nothing was asked", device.findObject(By.desc("It matches")))
+        assertNull("the question is gone", device.findObject(By.desc("It matches")))
         assertArrayEquals("the PC's key is remembered under its own name", FakePc.VECTOR_PC_KEY,
             Base64.getDecoder().decode(prefs.getString(PadActivity.PIN_PREFIX + "TEST-PC", "")))
         device.waitForIdle()
@@ -448,6 +557,19 @@ class PadTest {
         usb.close()
         assertNotNull("back to the connect screen", device.wait(Until.findObject(By.desc("Connect")), 10000))
         assertNotNull("saying why", device.findObject(By.textStartsWith("The USB connection to the PC ended.")))
+    }
+
+    /** Something on the cable that isn't the PC (another app on the tablet): "It doesn't", nothing sent, not asked again. */
+    @Test fun aPcCheckThatDoesntMatchOverTheCableSendsNothing() {
+        val usb = FakePc("", port = PadProtocol.USB_PORT).also { cable = it }
+        openPadEmpty()
+        assertNotNull("the tablet tries the cable by itself (HELLO)", usb.next(PadProtocol.HELLO, 10000))
+        assertNotNull("the PC check is asked about", device.wait(Until.findObject(By.textStartsWith("First time with TEST-PC on the USB cable")), 8000))
+        press("It doesn't")
+        assertNotNull("the presenter is told plainly", device.wait(Until.findObject(By.text("Don't connect: this may not be your PC.")), 4000))
+        assertNull("nothing is sent after HELLO, and the cable isn't tried again by itself", usb.got.poll(6, TimeUnit.SECONDS))
+        assertNull("the PC isn't remembered", prefs.getString(PadActivity.PIN_PREFIX + "TEST-PC", null))
+        shot("27c the cable's PC check doesn't match")
     }
 
     @Test fun theCableTakesOverFromWifiAndHandsBack() {

@@ -56,8 +56,14 @@ front while recording: if you switch to another app, the video doesn't show it.
 - **Android 8 to 13** can only record the entire screen: **the toolbar is in the video** (Android can't leave one
   window out of it). Make it small with ‹ and drag it to a corner.
 - With **A single app**, the marks are placed assuming the app fills the screen (how slides are shown). In split
-  screen, marks line up for the top or left app only.
+  screen, marks line up for the top or left app only (the toolbar says so). While the recorded app is out of sight
+  the video holds its last picture, without new marks.
+- For the first seconds of a recording (Android 14+) the toolbar shows a strip of three colours: that is how the app
+  tells "Entire screen" from "A single app". It goes once that is known.
 - **⏸ / ▶** pauses and resumes; **⏹** stops.
+- A recording is never thrown away by a failure: if the tablet's graphics fail it goes on without them, if the video
+  encoder fails it stops and keeps what it has ("the video may be incomplete"), a file nearing 3.5 GB goes on in
+  **part 2** (every part is saved), and with less than 1 GB free you are warned, under 200 MB it stops and is kept.
 - Videos go to **Movies/Contrast Ink** (Gallery, Files). A long lecture takes a little while to save: the toolbar
   says when it's there. Quitting while recording (✕, or Quit on the notification) stops and saves it first.
   On Android 8–9 allow storage on the setup screen (the microphone button asks for both), or videos stay in the
@@ -75,10 +81,13 @@ turns slides. A second finger cancels a line; a stylus hovering shows the laser'
 disconnecting. If the Wi-Fi drops, the pad tries again by itself twice, then says **Lost the PC** with **Reconnect**.
 
 The link is encrypted (version 2 of `docs/pad-protocol.md`): the code never crosses the Wi-Fi, and the tablet
-remembers each PC's key by its name. The first time, it shows the PC's **PC check** (like `6FC6-6A90`): compare it
+remembers each PC's key by its name. The first time, it shows the PC's **PC check** (16 digits, like `6FC6-6A90-4861-71CA`): compare it
 with the one next to the code on the PC. If a PC by that name later shows another key, the tablet stops and warns
 (after reinstalling Contrast Ink on the PC, **Connect anyway**). The code is never saved; the pad screen is kept out of
 screenshots and the recent-apps view. For patient images a private network or the PC's own hotspot is still best.
+If no PC appears in the list for about 8 seconds, or a typed address can't be reached, the connect screen suggests
+a hotspot: hospital Wi-Fi often keeps devices from seeing each other, so join the PC's hotspot (Windows: Mobile
+hotspot, usually 192.168.137.1) or your phone's hotspot, or use the USB cable.
 
 **By USB cable** (steadier than Wi-Fi, and nothing goes over the air): once, turn on **Developer options** on the
 tablet (Settings → About tablet → tap **Build number** seven times) and switch on **USB debugging** in them; the PC
@@ -86,7 +95,8 @@ needs Google's **platform-tools** (`adb`: on the PATH, in `%LOCALAPPDATA%\Androi
 `C:\platform-tools`). Then plug the tablet into the PC (allow USB debugging for that PC when the tablet asks): in pad
 mode the pad switches to the cable by itself within a few seconds, with no code to type, and the title says
 **By the USB cable**. Unplug it and the pad goes back to Wi-Fi by itself if you connected over Wi-Fi earlier, or
-shows the connect screen. The PC check isn't asked over the cable, but a PC with another key is still stopped.
+shows the connect screen. The first time with a PC the PC check is asked over the cable too (any app on the tablet
+could pretend to be the PC there), and a PC with another key is still stopped.
 
 ## Not on Android (yet)
 
@@ -101,17 +111,20 @@ shows the connect screen. The PC check isn't asked over the cable, but a PC with
   VirtualDisplay → SurfaceTexture → the encoder's surface). When the presenter chose one app, the drawing layer is
   copied into a bitmap (at most ~30 times a second, whenever it redraws) and blended over each frame. Android doesn't
   say which choice was made: if the recorded content isn't the screen's size it is one app; otherwise the first
-  frames are looked at where the toolbar is (the entire screen has it there, one app never does). These rules and
+  frames are looked at where the toolbar shows a beacon meanwhile (three colours: the entire screen has it there, one
+  app never does; the first frame looked at decides, whenever it comes). If OpenGL fails the picture goes straight to
+  the encoder and the recording goes on. These rules and
   where the marks go in the frame are in `core/.../CleanRecording.kt`, with tests.
 - `core/.../PadProtocol.kt`, `PadCrypto.kt`, `PadClient.kt`: the pad link's messages, its encryption (the platform's
   own P-256, HKDF and AES-GCM) and the tablet's handshake, checked byte for byte against the spec's test vectors.
 - `app/src/androidTest`: runs the app on an emulator over a stand-in app (Android's Settings hides other apps' overlays): a tap goes through with drawing
-  off, every tool draws, undo / clear / eraser, with a screenshot of every step. Two recording tests: the entire
+  off, every tool draws, undo / clear / eraser, with a screenshot of every step. Recording tests: the entire
   screen (the red line and the toolbar are both in the saved video's last frame) and, on Android 14+, "A single app"
   with the stand-in picked in Android's app picker (the red line is in the frame, the toolbar's rectangle has none of
   the toolbar's colour). The frames are saved next to the screenshots. `PadTest` runs pad mode against a
   stand-in PC inside the test that speaks version 2 (picture, strokes, commands, a reconnect, a lost connection, a
-  wrong code, a PC whose key changed).
+  wrong code, a PC whose key changed, the first-time PC check over the cable). Recording tests also cover a dark slide
+  and a late first frame in a one-app video, OpenGL failing at the start and midway, a second part, and low space.
 - Every push that changes `android/` runs all of this on GitHub (`.github/workflows/android.yml`); on main the APK
   goes to the **android-latest** release.
 - Signing: Android installs an update over the old app only when both carry the same key. Builds are signed with

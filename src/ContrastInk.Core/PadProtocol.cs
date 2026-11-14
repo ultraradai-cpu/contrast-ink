@@ -40,7 +40,8 @@ public static class Pad
     /// <summary>The REJECT texts (docs/pad-protocol.md lists them; the tablets show them as they are).</summary>
     public const string UpdateTablet = "Please update Contrast Ink on the tablet.",
         TooManyWrong = "Too many wrong codes: wait 30 seconds, then try again.",
-        WrongCode = "Wrong code: type the code Contrast Ink shows on the PC (⚙ Settings).";
+        WrongCode = "Wrong code: type the code Contrast Ink shows on the PC (⚙ Settings).",
+        NotAllowed = "Not allowed on the PC: press Allow on Contrast Ink's toolbar when it asks, then try again.";
 
     public static byte[] StateMessage(Settings s, bool canUndo) =>
         Message(State, JsonSerializer.Serialize(new
@@ -75,11 +76,67 @@ public static class Pad
     public static byte[] ChallengeMessage(byte[] pcKey, byte[] salt, string name) =>
         Message(PadCrypto.Challenge, JsonSerializer.Serialize(new { key = Convert.ToBase64String(pcKey), salt = Convert.ToBase64String(salt), name }));
 
-    /// <summary>The PC check shown beside the code: the first 4 bytes of SHA-256 of the PC's public key, "6FC6-6A90".</summary>
+    /// <summary>The address Windows gives itself on its own Mobile hotspot (192.168.137.x).</summary>
+    public static bool IsHotspot(string address) => address.StartsWith("192.168.137.", StringComparison.Ordinal);
+
+    /// <summary>At most this many addresses in the ⚙ panel (more made the panel tall and the right one hard to find).</summary>
+    public const int MaxAddresses = 3;
+
+    // adapters no tablet can reach: virtual machines, containers, WSL, VPNs and tunnels (by name or description)
+    static readonly string[] Unreachable =
+    {
+        "hyper-v", "vethernet", "wsl", "virtualbox", "vmware", "docker", "vpn", "tap-", "tap adapter", "wintun",
+        "wireguard", "tunnel", "teredo", "isatap", "zerotier", "tailscale", "openvpn", "anyconnect", "fortinet", "npcap",
+    };
+
+    /// <summary>An adapter of a virtual machine, a container, WSL, a VPN or a tunnel: never shown.</summary>
+    public static bool IsUnreachable(PadAdapter a) =>
+        a.Tunnel || Unreachable.Any(w => a.Name.Contains(w, StringComparison.OrdinalIgnoreCase) || a.Description.Contains(w, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// The IPv4 addresses a tablet could type to reach this PC, for the ⚙ panel: the adapters that are up and have a
+    /// default gateway (the Wi-Fi or Ethernet the tablet shares), plus Windows' Mobile hotspot (192.168.137.x: a PC
+    /// sharing its own hotspot has no other address the tablet can reach), at most <see cref="MaxAddresses"/>, the
+    /// hotspot's last and always kept. Never loopback, self-assigned (169.254.x), virtual-machine, container, WSL, VPN
+    /// or tunnel adapters. With none of those, the other adapters that are up (a network without a router).
+    /// </summary>
+    public static List<string> UsableAddresses(IEnumerable<PadAdapter> adapters)
+    {
+        var withGateway = new List<string>();
+        var others = new List<string>();
+        var hotspot = new List<string>();
+        foreach (var a in adapters)
+        {
+            if (!a.Up || a.Loopback) continue;
+            foreach (var text in a.IPv4)
+            {
+                if (!System.Net.IPAddress.TryParse(text, out var ip) || ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) continue;
+                var b = ip.GetAddressBytes();
+                if (b[0] == 127 || b[0] == 0 || (b[0] == 169 && b[1] == 254)) continue;
+                var s = ip.ToString();
+                if (IsHotspot(s)) { if (!hotspot.Contains(s)) hotspot.Add(s); continue; }
+                if (IsUnreachable(a)) continue;
+                var into = a.HasGateway ? withGateway : others;
+                if (!withGateway.Contains(s) && !others.Contains(s)) into.Add(s);
+            }
+        }
+        var main = withGateway.Count > 0 || hotspot.Count > 0 ? withGateway : others;
+        int room = Math.Max(0, MaxAddresses - Math.Min(hotspot.Count, MaxAddresses));
+        return main.Take(room).Concat(hotspot.Take(MaxAddresses)).ToList();
+    }
+
+    /// <summary>The addresses for the ⚙ panel: "192.168.1.20, 192.168.137.1 (hotspot)", each with the port when it isn't the usual one.</summary>
+    public static string AddressText(IReadOnlyList<string> addresses, int port) =>
+        string.Join(", ", addresses.Select(a => a + (port != Port ? $":{port}" : "") + (IsHotspot(a) ? " (hotspot)" : "")));
+
+    /// <summary>
+    /// The PC check shown beside the code: the first 8 bytes of SHA-256 of the PC's public key, "6FC6-6A90-4861-71CA".
+    /// (4 bytes were too few: a fake key matching them could be searched for offline in about 2^32 tries.)
+    /// </summary>
     public static string PcCheck(byte[] pcKey)
     {
         var h = System.Security.Cryptography.SHA256.HashData(pcKey);
-        return $"{h[0]:X2}{h[1]:X2}-{h[2]:X2}{h[3]:X2}";
+        return string.Join("-", Enumerable.Range(0, 4).Select(i => $"{h[2 * i]:X2}{h[2 * i + 1]:X2}"));
     }
 
     /// <summary>The longest HELLO accepted (a stranger's first message: small, so it can't be used to fill memory).</summary>
@@ -183,30 +240,48 @@ public sealed class PadReader
 }
 
 /// <summary>
-/// Wrong codes: a 6-digit code must not be guessable by a script on the same Wi-Fi. Five wrong in a row lock
-/// everyone out for 30 s; twenty wrong in all make a new code (the presenter sees it change). At most about
-/// 10 guesses a minute, against a code that changes every 20: guessing it is a 1 in 50,000 chance.
+/// Wrong codes: a 6-digit code must not be guessable by a script on the same Wi-Fi. Counted per address, so one
+/// tablet's typos (or one stranger's guesses) don't lock out everyone: five wrong in a row from one address lock
+/// that address out for 30 s. A backstop against guessing from many addresses: fifteen wrong in a row from all of
+/// them lock everyone out for 30 s. Twenty wrong in all make a new code (the presenter sees it change).
+/// docs/pad-protocol.md, "Limits the PC enforces".
 /// </summary>
 public sealed class PadGuard
 {
-    public const int InARow = 5, BeforeNewCode = 20;
+    public const int InARow = 5, AllInARow = 15, BeforeNewCode = 20;
     public static readonly TimeSpan Lockout = TimeSpan.FromSeconds(30);
-    int wrongInARow, wrongForThisCode;
-    DateTime lockedUntil = DateTime.MinValue;
+    const int MaxAddresses = 1024;   // addresses remembered at most: a flood of new ones can't fill memory
+    readonly Dictionary<string, (int row, DateTime until)> byAddress = new();
+    int allInARow, wrongForThisCode;
+    DateTime allUntil = DateTime.MinValue;
 
-    /// <summary>Whether a HELLO may be tried at all right now.</summary>
-    public bool Locked(DateTime now) => now < lockedUntil;
+    /// <summary>Whether a HELLO from this address may be tried at all right now.</summary>
+    public bool Locked(string from, DateTime now) =>
+        now < allUntil || (byAddress.TryGetValue(from, out var a) && now < a.until);
 
-    /// <summary>A wrong code was given. True: time for a new code.</summary>
-    public bool Wrong(DateTime now)
+    /// <summary>A wrong code was given from this address. True: time for a new code.</summary>
+    public bool Wrong(string from, DateTime now)
     {
-        wrongForThisCode++;
-        if (++wrongInARow >= InARow) { wrongInARow = 0; lockedUntil = now + Lockout; }
-        if (wrongForThisCode < BeforeNewCode) return false;
+        if (!byAddress.ContainsKey(from) && byAddress.Count >= MaxAddresses)
+            foreach (var old in byAddress.Where(kv => now >= kv.Value.until).Select(kv => kv.Key).ToList()) byAddress.Remove(old);
+        var (row, until) = byAddress.GetValueOrDefault(from);
+        if (++row >= InARow) { row = 0; until = now + Lockout; }
+        if (byAddress.ContainsKey(from) || byAddress.Count < MaxAddresses) byAddress[from] = (row, until);
+        else allUntil = now + Lockout;   // a thousand addresses locked out at once: guessing from everywhere
+        if (++allInARow >= AllInARow) { allInARow = 0; allUntil = now + Lockout; }
+        if (++wrongForThisCode < BeforeNewCode) return false;
         wrongForThisCode = 0;
         return true;
     }
 
-    /// <summary>The right code: the count of guesses in a row starts again.</summary>
-    public void Right() => wrongInARow = 0;
+    /// <summary>The right code from this address: its run of guesses, and the run from all addresses, start again.</summary>
+    public void Right(string from)
+    {
+        byAddress.Remove(from);
+        allInARow = 0;
+    }
 }
+
+/// <summary>A network adapter as <see cref="Pad.UsableAddresses"/> needs it: its name and description, up or not,
+/// loopback or not, a tunnel or PPP link (a VPN) or not, whether it has a default gateway, its IPv4 addresses.</summary>
+public sealed record PadAdapter(string Name, string Description, bool Up, bool Loopback, bool Tunnel, bool HasGateway, IReadOnlyList<string> IPv4);

@@ -149,6 +149,25 @@ class RecordingTest {
         assertEquals("Lecture 2026-11-12 093015 (3).mp4", Recording.fileName("2026-11-12 093015") { it in taken })
         assertEquals("Lecture 2026-11-12 093016.mp4", Recording.fileName("2026-11-12 093016") { it in taken })
     }
+
+    @Test fun aLongLectureGoesOnInNumberedParts() {
+        assertEquals("Lecture 2026-11-12 093015 part 1.mp4", Recording.partName("Lecture 2026-11-12 093015.mp4", 1))
+        assertEquals("Lecture 2026-11-12 093015 (2) part 3.mp4", Recording.partName("Lecture 2026-11-12 093015 (2).mp4", 3))
+        assertTrue("well before MP4's 4 GB", Recording.MAX_FILE_BYTES < 4_000_000_000L)
+    }
+
+    @Test fun freeSpaceWarnsThenStops() {
+        assertEquals(Recording.Space.OK, Recording.space(5_000_000_000L))
+        assertEquals("under 1 GB: warned", Recording.Space.LOW, Recording.space(999_000_000L))
+        assertEquals("under 200 MB: stopped and kept", Recording.Space.STOP, Recording.space(199_000_000L))
+    }
+
+    /** Before, any recording whose stop failed was deleted: an hour's lecture with it. */
+    @Test fun aRecordingThatDidntStopCleanlyIsKept() {
+        assertFalse("a stop before anything was recorded leaves nothing worth keeping", Recording.keepAfterFailedStop(40_000))
+        assertTrue("a few MB or more is kept", Recording.keepAfterFailedStop(5_000_000))
+        assertTrue(Recording.keepAfterFailedStop(3_000_000_000L))
+    }
 }
 
 class ButtonNamesSettingTest {

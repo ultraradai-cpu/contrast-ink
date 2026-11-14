@@ -1,14 +1,23 @@
 name: Build
 
-# Every push to main: run the tests, build ContrastInk.exe, and put it on the "Latest" release
-# so there is always one download link: Releases → Latest → ContrastInk.exe
+# Every push and pull request: run the tests, build ContrastInk.exe and run the Windows check, so a branch is checked
+# before it is merged. Only a push to main also puts it on the "Latest" release, so there is always one download
+# link: Releases → Latest → ContrastInk.exe
 on:
   push:
-    branches: [main]
+    branches: ['**']
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: write
+
+# A newer push cancels an older build still running: an older build finishing last once replaced the download
+# with older code. (The release step also checks it is still the branch's newest commit, for a build already past
+# the point where cancelling can stop it.)
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -31,7 +40,10 @@ jobs:
           name: ContrastInk
           path: out/ContrastInk.exe
       # Runs the real ContrastInk.exe on this Windows machine and reads the screen back (tests/ContrastInk.WindowsCheck).
-      # The control run switches hiding off and must SEE the toolbar, so the "hidden" check is known to be able to fail.
+      # Control runs prove the checks can fail: "control" switches hiding off and must SEE the toolbar;
+      # "padcontrol" whitens the tablet's picture and "padfreeze" freezes it after the first: the picture checks must
+      # FAIL in them. "padgdi" (the GDI copy forced) and "padsmall" (pictures 400 px wide) must pass: every way the
+      # picture can be made is checked, not only the one this machine picks.
       # A failure here stops the release below: the download link keeps the last build that passed.
       - name: Windows check (real app, real screen)
         shell: pwsh
@@ -39,24 +51,32 @@ jobs:
           dotnet build tests/ContrastInk.WindowsCheck -c Release -o check
           $exe = (Resolve-Path out/ContrastInk.exe).Path
           $codes = @{}
-          foreach ($m in 'control','normal') {
+          $modes = 'control','padcontrol','padfreeze','padgdi','padsmall','normal'
+          foreach ($m in $modes) {
             $p = Start-Process -FilePath check/ContrastInk.WindowsCheck.exe -ArgumentList "`"$exe`"", 'shots', $m -Wait -PassThru
             $codes[$m] = $p.ExitCode
             Get-Content "shots/results-$m.txt" -ErrorAction SilentlyContinue
           }
-          "exit codes: control=$($codes['control']) normal=$($codes['normal'])"
-          if ($codes['control'] -ne 0 -or $codes['normal'] -ne 0) { exit 1 }
+          "exit codes: " + (($modes | ForEach-Object { "$_=$($codes[$_])" }) -join ' ')
+          if (($modes | Where-Object { $codes[$_] -ne 0 }).Count -gt 0) { exit 1 }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: windows-check-screenshots
           path: shots/
       - name: Update the Latest release
-        if: github.ref == 'refs/heads/main'   # a branch build is checked, never published
+        # only a push to main publishes; a branch push or a pull request (also run above) is checked, never published
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # an older build never replaces a newer one: only the branch's newest commit is published
+          tip=$(git ls-remote origin "$GITHUB_REF" | cut -f1)
+          if [ "$tip" != "$GITHUB_SHA" ]; then
+            echo "Not published: ${GITHUB_SHA::7} is no longer the newest commit on $GITHUB_REF (${tip::7} is)."
+            exit 0
+          fi
           # replace the file in place: never a moment (or a failed step) with no download at all
           notes="Built from ${GITHUB_SHA::7}, passed the Windows check. Download ContrastInk.exe and run it (no install needed)."
           if gh release view latest >/dev/null 2>&1; then

@@ -33,6 +33,13 @@ sealed class PadServer : IDisposable
     public event Action? CodeChanged;
     /// <summary>Messages from the tablet (strokes, hover, commands), in order. On the UI thread.</summary>
     public event Action<byte, byte[]>? Received;
+    /// <summary>adb was found or is gone (for the ⚙ text). On the UI thread.</summary>
+    public event Action? UsbToolsChanged;
+    /// <summary>
+    /// The question for the presenter: a tablet on the Android cable door wants to draw (the text), answered with
+    /// <see cref="Answer"/>; null: no question any more (answered, or 30 s passed). On the UI thread.
+    /// </summary>
+    public event Action<string?>? CableAsk;
 
     const int MaxPending = 4;             // strangers not yet past the code, at once
     const int MaxQueued = 4000;           // messages from the tablet waiting for the UI: more is a flood
@@ -42,9 +49,10 @@ sealed class PadServer : IDisposable
     readonly Dispatcher ui;
     readonly Func<Native.RECT> screen;   // the screen being drawn on, in real pixels
     readonly Func<System.Windows.Media.Imaging.BitmapSource?> marks;   // the drawing layer's picture, on the UI thread
+    readonly Func<bool> wantsWgc;
     readonly System.Security.Cryptography.ECDiffieHellman pcKey;       // this PC's own key (kept between runs)
     readonly byte[] pcPoint;
-    /// <summary>What the tablet shows the first time, to compare with this PC: "6FC6-6A90".</summary>
+    /// <summary>What the tablet shows the first time, to compare with this PC: "6FC6-6A90-4861-71CA".</summary>
     public string PcCheck { get; }
     readonly PadGuard guard = new();
     readonly object gate = new();       // guards current, Code, guard
@@ -56,6 +64,10 @@ sealed class PadServer : IDisposable
     readonly Dictionary<IPAddress, int> pendingByAddress = new();
     const int MaxPendingPerAddress = 2, MaxPendingUsb = 2;
     readonly bool usbDoorAlways;   // the Windows check: the cable door open with no Android tablet attached
+    // the Android cable door: any program on this PC, and any app on the tablet, can reach it, so the presenter allows
+    // the first session there in each run (docs/pad-protocol.md, "USB"); one question at a time
+    bool cableAllowed;
+    TaskCompletionSource<bool>? asking;
     volatile bool running;
     DnsSd? advert;
 
@@ -108,9 +120,11 @@ sealed class PadServer : IDisposable
         }
     }
 
+    /// <param name="wantsWgc">The presenter's ⚙ choice: Windows' capture on Windows 10 too (yellow border and all).</param>
     public PadServer(Dispatcher ui, Func<Native.RECT> screen, Func<System.Windows.Media.Imaging.BitmapSource?> marks,
-        System.Security.Cryptography.ECDiffieHellman pcKey, string? code = null, bool usbDoorAlways = false)
+        System.Security.Cryptography.ECDiffieHellman pcKey, Func<bool> wantsWgc, string? code = null, bool usbDoorAlways = false)
     {
+        this.wantsWgc = wantsWgc;
         this.usbDoorAlways = usbDoorAlways;
         this.ui = ui;
         this.screen = screen;
@@ -132,9 +146,11 @@ sealed class PadServer : IDisposable
         if (listener == null) throw new InvalidOperationException("no free network port (47820 to 47829 are all in use)");
         Run("pad accept", () => AcceptLoop(listener, usb: false));
         if (usbDoorAlways) UsbDoor(true);
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += DisplayChanged;
         Run("pad frames", FrameLoop);
         Run("pad ipad usb", () => UsbMux.Watch(() => running, OpenedOverUsb));
-        Run("pad android usb", () => Adb.Watch(() => running, any => { if (!usbDoorAlways) UsbDoor(any); }));
+        Run("pad android usb", () => Adb.Watch(() => running, any => { if (!usbDoorAlways) UsbDoor(any); },
+            () => ui.BeginInvoke(() => UsbToolsChanged?.Invoke())));
         try { advert = DnsSd.Register(Environment.MachineName, Port); } catch (Exception e) { App.Log(e); }
     }
 
@@ -144,17 +160,21 @@ sealed class PadServer : IDisposable
         try { body(); } catch (Exception e) { App.Log(e); }
     }) { IsBackground = true, Name = name }.Start();
 
-    /// <summary>This PC's addresses on its networks, for typing into a tablet when the network hides names.</summary>
+    /// <summary>Every address of this PC a tablet could type (Wi-Fi, Ethernet, and Windows' Mobile hotspot, where the
+    /// PC itself is the network): the listener is on all of them (IPAddress.Any).</summary>
     public static List<string> Addresses()
     {
         try
         {
-            return NetworkInterface.GetAllNetworkInterfaces()
-                .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType != NetworkInterfaceType.Loopback)
-                .SelectMany(n => n.GetIPProperties().UnicastAddresses)
-                .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(a.Address)
-                            && !a.Address.ToString().StartsWith("169.254.", StringComparison.Ordinal))
-                .Select(a => a.Address.ToString()).Distinct().ToList();
+            return Pad.UsableAddresses(NetworkInterface.GetAllNetworkInterfaces().Select(n =>
+            {
+                var ipp = n.GetIPProperties();
+                return new PadAdapter(n.Name, n.Description, n.OperationalStatus == OperationalStatus.Up,
+                    n.NetworkInterfaceType == NetworkInterfaceType.Loopback,
+                    n.NetworkInterfaceType is NetworkInterfaceType.Tunnel or NetworkInterfaceType.Ppp,
+                    ipp.GatewayAddresses.Any(g => g.Address.AddressFamily == AddressFamily.InterNetwork && !g.Address.Equals(IPAddress.Any)),
+                    ipp.UnicastAddresses.Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork).Select(a => a.Address.ToString()).ToList());
+            }));
         }
         catch (NetworkInformationException) { return new List<string>(); }
     }
@@ -203,7 +223,7 @@ sealed class PadServer : IDisposable
                 }
             }
             if (!room) { try { c.Close(); } catch (Exception) { } continue; }
-            Run("pad tablet", () => Serve(c, usb, () =>
+            Run("pad tablet", () => Serve(c, usb, askFirst: usb, () =>
             {
                 lock (gate)
                 {
@@ -216,16 +236,66 @@ sealed class PadServer : IDisposable
     }
 
     /// <summary>An iPad's USB connection, opened by this PC through Apple's USB service (one per iPad, so no count);
-    /// ends when the session ends.</summary>
-    void OpenedOverUsb(TcpClient c) => Serve(c, usb: true, () => { });
+    /// ends when the session ends. Apple's service vouches for the device: no question for the presenter.</summary>
+    void OpenedOverUsb(TcpClient c) => Serve(c, usb: true, askFirst: false, () => { });
+
+    /// <summary>
+    /// Asks the presenter (on the toolbar) whether the tablet on the Android cable door may draw: true at once when
+    /// one was allowed earlier in this run. A second session meanwhile waits for the same answer. No answer in 30 s is no.
+    /// </summary>
+    Task<bool> AskPresenter(string device)
+    {
+        TaskCompletionSource<bool> tcs;
+        lock (gate)
+        {
+            if (cableAllowed) return Task.FromResult(true);
+            if (asking != null) return asking.Task;
+            tcs = asking = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+        string text = $"An Android tablet on the USB cable wants to draw (\"{device}\"). Allow it?";
+        ui.BeginInvoke(() => CableAsk?.Invoke(text));
+        _ = Task.Delay(ProofWithin).ContinueWith(_ => Answer(false, tcs), TaskScheduler.Default);
+        return tcs.Task;
+    }
+
+    /// <summary>The presenter's answer to <see cref="CableAsk"/> (Allow: true).</summary>
+    public void Answer(bool allow)
+    {
+        TaskCompletionSource<bool>? tcs;
+        lock (gate) tcs = asking;
+        if (tcs != null) Answer(allow, tcs);
+    }
+
+    /// <summary>The connection that asked ended before an answer: no question left on the toolbar to allow later.</summary>
+    void Withdraw(Task<bool> question)
+    {
+        TaskCompletionSource<bool>? tcs;
+        lock (gate) tcs = asking != null && ReferenceEquals(asking.Task, question) ? asking : null;
+        if (tcs != null) Answer(false, tcs);
+    }
+
+    void Answer(bool allow, TaskCompletionSource<bool> tcs)
+    {
+        lock (gate)
+        {
+            if (!ReferenceEquals(asking, tcs)) return;   // answered already (or timed out)
+            asking = null;
+            if (allow) cableAllowed = true;
+        }
+        tcs.TrySetResult(allow);
+        ui.BeginInvoke(() => CableAsk?.Invoke(null));
+    }
 
     /// <summary>A tablet is connected by the cable (not over Wi-Fi).</summary>
     public bool OverUsb => current?.Usb == true;
 
+    /// <param name="askFirst">The Android cable door: the presenter allows the first session there in each run.</param>
     /// <param name="admitted">Called once when the connection stops being a stranger (let in, or ended).</param>
-    void Serve(TcpClient tcp, bool usb, Action admitted)
+    void Serve(TcpClient tcp, bool usb, bool askFirst, Action admitted)
     {
         var conn = new Connection(tcp) { Usb = usb };
+        string from = ((tcp.Client.RemoteEndPoint as IPEndPoint)?.Address ?? IPAddress.None).ToString();
+        Task<bool>? allowed = null;
         var reader = new PadReader { MaxLength = Pad.HelloMax };   // a stranger's first messages are small
         var buf = new byte[64 * 1024];
         int step = 0;   // 0: waiting for HELLO, 1: CHALLENGE sent, waiting for PROOF, 2: in
@@ -260,18 +330,20 @@ sealed class PadServer : IDisposable
                         var hello = type == Pad.Hello ? Pad.ReadHelloV2(payload) : null;
                         tabletKey = hello == null ? null : PadCrypto.ReadPoint(hello.Value.key);
                         string? why = tabletKey == null ? Pad.UpdateTablet : null;
-                        lock (gate) if (why == null && !usb && guard.Locked(DateTime.UtcNow)) why = Pad.TooManyWrong;
+                        lock (gate) if (why == null && !usb && guard.Locked(from, DateTime.UtcNow)) why = Pad.TooManyWrong;
                         if (why != null) { Refuse(conn, why); return; }
                         device = hello!.Value.device;
                         salt = System.Security.Cryptography.RandomNumberGenerator.GetBytes(16);
                         conn.Stream.Write(Pad.ChallengeMessage(pcPoint, salt, Environment.MachineName));
                         step = 1;
                         deadline = DateTime.UtcNow + ProofWithin;
+                        // asked now, so the presenter answers while the tablet's presenter compares the PC check
+                        if (askFirst) allowed = AskPresenter(device);
                         continue;
                     }
                     if (step == 1)
                     {
-                        if (!Prove(conn, type, payload, tabletKey!, salt!, device)) return;
+                        if (!Prove(conn, type, payload, tabletKey!, salt!, device, from, allowed, deadline)) return;
                         step = 2;
                         reader.MaxLength = Pad.MaxLength;
                         admitted(); counted = false;
@@ -296,11 +368,20 @@ sealed class PadServer : IDisposable
         finally
         {
             if (counted) admitted();
+            if (allowed is { IsCompleted: false }) Withdraw(allowed);   // gone before an answer: the question goes too
             conn.Close();
             bool wasCurrent;
             lock (gate) { wasCurrent = ReferenceEquals(current, conn); if (wasCurrent) current = null; }
             if (wasCurrent) ui.BeginInvoke(() => ConnectionChanged?.Invoke(null));
         }
+    }
+
+    /// <summary>The presenter's answer, waited for until <paramref name="deadline"/> (no answer by then is no).</summary>
+    bool Wait(Task<bool> answer, DateTime deadline)
+    {
+        var left = deadline - DateTime.UtcNow;
+        try { return left > TimeSpan.Zero && answer.Wait(left) && answer.Result && running; }
+        catch (AggregateException) { return false; }
     }
 
     static void Refuse(Connection conn, string why)
@@ -313,29 +394,33 @@ sealed class PadServer : IDisposable
     /// network) and the session starts, replacing a connected tablet (the same one, back after a Wi-Fi drop before
     /// this PC noticed). Not opened: a wrong code, counted against guessing.
     /// </summary>
-    bool Prove(Connection conn, byte type, byte[] payload, System.Security.Cryptography.ECDiffieHellmanPublicKey tabletKey, byte[] salt, string device)
+    bool Prove(Connection conn, byte type, byte[] payload, System.Security.Cryptography.ECDiffieHellmanPublicKey tabletKey, byte[] salt,
+        string device, string from, Task<bool>? allowed, DateTime deadline)
     {
         string code;
-        lock (gate) code = conn.Usb ? "" : Code;   // over the cable the code is empty: being plugged in is the proof
+        lock (gate) code = conn.Usb ? "" : Code;   // over the cable the code is empty (the Android door: the presenter allows it)
         var (toPc, toTablet) = PadCrypto.Keys(pcKey, tabletKey, salt, code);
         var open = new PadSeal(toPc);
         var proof = type == PadCrypto.Proof ? open.Open(payload) : null;
         var said = proof == null ? null : new PadReader().Add(proof);
         bool right = said is { Count: 1 } && said[0].type == Pad.Command && System.Text.Encoding.UTF8.GetString(said[0].payload) == PadCrypto.ProofText;
+        // the Android cable door: in only once the presenter has said Allow (waiting here, within the PROOF's 30 s)
+        bool let = allowed == null || (right && Wait(allowed, deadline));
         Connection? old = null;
         bool newCode = false;
         string? why = null;
         lock (gate)
         {
-            if (!conn.Usb && guard.Locked(DateTime.UtcNow)) why = Pad.TooManyWrong;
+            if (!conn.Usb && guard.Locked(from, DateTime.UtcNow)) why = Pad.TooManyWrong;
             else if (!right)
             {
                 why = Pad.WrongCode;
-                if (!conn.Usb && guard.Wrong(DateTime.UtcNow)) { Code = Pad.NewCode(); newCode = true; }
+                if (!conn.Usb && guard.Wrong(from, DateTime.UtcNow)) { Code = Pad.NewCode(); newCode = true; }
             }
+            else if (!let) why = Pad.NotAllowed;
             else
             {
-                guard.Right();
+                if (!conn.Usb) guard.Right(from);
                 conn.Name = device;
                 conn.In = open;
                 conn.Out = new PadSeal(toTablet);
@@ -387,21 +472,26 @@ sealed class PadServer : IDisposable
     void FrameLoop()
     {
         var last = DateTime.MinValue;
-        while (running)
+        try
         {
-            var c = Volatile.Read(ref current);
-            var now = DateTime.UtcNow;
-            if (c != null && c.AckPending && now - c.SentAt > TimeSpan.FromSeconds(3)) c.AckPending = false;   // a lost acknowledgement
-            if (c == null || c.Closed || c.AckPending || now - last < TimeSpan.FromMilliseconds(100)) { Thread.Sleep(15); continue; }
-            try
+            while (running)
             {
-                var jpeg = Capture(screen(), MarksNow());
-                last = c.SentAt = DateTime.UtcNow;
-                c.AckPending = true;
-                c.Send(Pad.Message(Pad.Frame, jpeg));
+                var c = Volatile.Read(ref current);
+                var now = DateTime.UtcNow;
+                if (c != null && c.AckPending && now - c.SentAt > TimeSpan.FromSeconds(3)) c.AckPending = false;   // a lost acknowledgement
+                if (c == null || c.Closed) StopCapture();   // no tablet: no capture (on Windows 10 it shows a border)
+                if (c == null || c.Closed || c.AckPending || now - last < TimeSpan.FromMilliseconds(100)) { Thread.Sleep(15); continue; }
+                try
+                {
+                    var jpeg = Capture(screen(), c);
+                    last = c.SentAt = DateTime.UtcNow;
+                    c.AckPending = true;
+                    c.Send(Pad.Message(Pad.Frame, jpeg));
+                }
+                catch (Exception e) { App.Log(e); Thread.Sleep(500); }   // a picture that can't be made: try again later
             }
-            catch (Exception e) { App.Log(e); Thread.Sleep(500); }   // a picture that can't be made: try again later
         }
+        finally { StopCapture(); }
     }
 
     /// <summary>The marks as the drawing layer shows them, asked of the UI thread (skipped when it's busy).</summary>
@@ -411,71 +501,245 @@ sealed class PadServer : IDisposable
         catch (Exception e) when (e is TimeoutException or TaskCanceledException or OperationCanceledException) { return null; }
     }
 
-    [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr hwnd);
-    [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr hwnd, IntPtr dc);
-    [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
-    [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleBitmap(IntPtr dc, int w, int h);
-    [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
-    [DllImport("gdi32.dll")] static extern bool StretchBlt(IntPtr dst, int x, int y, int w, int h, IntPtr src, int sx, int sy, int sw, int sh, uint rop);
-    [DllImport("gdi32.dll")] static extern int SetStretchBltMode(IntPtr dc, int mode);
-    [DllImport("gdi32.dll")] static extern bool SetBrushOrgEx(IntPtr dc, int x, int y, IntPtr old);
-    [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
-    [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
-    const uint SRCCOPY = 0x00CC0020;
-    const int HALFTONE = 4;
+    // How the tablet's picture is made (only ever touched on the frame thread): PadCaptureChoice decides between
+    // Windows.Graphics.Capture and the GDI copy for each picture.
+    PadCaptureChoice? choice;
+    WgcCapture? wgc;
+    Connection? capturedFor;            // the connection the choice was last made for (a new one forgets old failures)
+    int choiceGeneration;
+    readonly List<DateTime> lostRestarts = new();
+    bool wgcFailureLogged;
+    string capturePath = "";
+    /// <summary>Counts display changes (a screen plugged in or out, a dock, a projector, the resolution or scale): a
+    /// capture made in an older layout is started afresh.</summary>
+    static int displayGeneration;
+    static void DisplayChanged(object? sender, EventArgs e) => Interlocked.Increment(ref displayGeneration);
+
+    // test runs only (CONTRASTINK_TEST), the Windows check's switches:
+    static readonly bool testRun = Environment.GetEnvironmentVariable("CONTRASTINK_TEST") == "1";
+    static bool TestSwitch(string name) => testRun && Environment.GetEnvironmentVariable(name) == "1";
+    static readonly bool blankForTest = TestSwitch("CONTRASTINK_TEST_BLANKPAD");    // control: every picture white
+    static readonly bool freezeForTest = TestSwitch("CONTRASTINK_TEST_FREEZEPAD");  // control: the first picture, for ever
+    static readonly bool gdiForTest = TestSwitch("CONTRASTINK_TEST_FORCEGDI");      // the GDI copy's own run
+    // a smaller picture than usual, so the downscaling is exercised on the check's small screen
+    static readonly int maxWidth = testRun && int.TryParse(Environment.GetEnvironmentVariable("CONTRASTINK_TEST_PADWIDTH"), out var mw) && mw >= 64 ? mw : 1600;
+    byte[]? frozen;
+    Connection? frozenFor;
+    // test runs: which way the picture was made, for the Windows check to read (never written in normal use)
+    static readonly string? captureReport = Environment.GetEnvironmentVariable("CONTRASTINK_STATUS") is { Length: > 0 } st ? st + ".capture.txt" : null;
+
+    void StopCapture()
+    {
+        if (wgc == null || !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041)) return;   // (only ever made on 19041+)
+        try { wgc.Dispose(); } catch (Exception e) { App.Log(e); }
+        wgc = null;
+    }
+
+    void Used(string how)
+    {
+        if (how == capturePath) return;
+        capturePath = how;
+        if (captureReport != null) try { File.WriteAllText(captureReport, how); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+    }
 
     /// <summary>
-    /// The screen as the audience sees it, at most 1600 px wide, as a JPEG: what is under the drawing layer, copied
-    /// straight at the smaller size (no full-size copy of a 4K screen), with the marks laid over it. Without
-    /// CAPTUREBLT: that flag makes the mouse pointer flicker on every copy, and OBS would record the flicker. The
-    /// toolbar is never in it (hidden from capture).
+    /// The screen as the audience sees it, at most 1600 px wide, as a JPEG. The toolbar and the undo button are never in
+    /// it (hidden from capture).
     /// </summary>
-    static byte[] Capture(Native.RECT r, System.Windows.Media.Imaging.BitmapSource? marksPicture)
+    byte[] Capture(Native.RECT r, Connection c)
     {
+        if (freezeForTest && ReferenceEquals(frozenFor, c) && frozen != null) return frozen;
         int w = Math.Max(1, r.Right - r.Left), h = Math.Max(1, r.Bottom - r.Top);
-        double scale = Math.Min(1, 1600.0 / w);
+        double scale = Math.Min(1, (double)maxWidth / w);
         int ow = Math.Max(1, (int)(w * scale)), oh = Math.Max(1, (int)(h * scale));
-        IntPtr screenDc = GetDC(IntPtr.Zero), memDc = CreateCompatibleDC(screenDc), bmp = CreateCompatibleBitmap(screenDc, ow, oh);
-        System.Windows.Media.Imaging.BitmapSource picture;
-        try
+        var now = DateTime.UtcNow;
+        if (choice == null)
         {
-            var old = SelectObject(memDc, bmp);
-            SetStretchBltMode(memDc, HALFTONE);
-            SetBrushOrgEx(memDc, 0, 0, IntPtr.Zero);
-            StretchBlt(memDc, 0, 0, ow, oh, screenDc, r.Left, r.Top, w, h, SRCCOPY);
-            SelectObject(memDc, old);
-            picture = System.Windows.Interop.Imaging.CreateBitmapSourceFromHBitmap(
-                bmp, IntPtr.Zero, System.Windows.Int32Rect.Empty, System.Windows.Media.Imaging.BitmapSizeOptions.FromEmptyOptions());
+            bool available = !gdiForTest && OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041) && WgcCapture.Available();
+            choice = new PadCaptureChoice(available, Environment.OSVersion.Version.Build);
+            if (gdiForTest) Used("gdi (forced by the test)");
+            else if (!available) Used("gdi (Windows.Graphics.Capture not available here)");
         }
-        finally
+        choice.UserWantsWgc = wantsWgc();
+        int generation = Volatile.Read(ref displayGeneration);
+        if (!ReferenceEquals(c, capturedFor) || generation != choiceGeneration)
         {
-            DeleteObject(bmp);
-            DeleteDC(memDc);
-            ReleaseDC(IntPtr.Zero, screenDc);
+            // a new tablet, or a new display layout: earlier failures and the HDR finding are looked at afresh
+            if (!ReferenceEquals(c, capturedFor)) choice.NewConnection();
+            capturedFor = c; choiceGeneration = generation;
+            choice.Hdr = false;
         }
-        if (marksPicture != null)
+        System.Windows.Media.Imaging.BitmapSource? picture = null, gdi = null;
+        bool gdiBlack = false;
+        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041) && choice.UseWgc(now)) picture = TryWgc(r, w, h, ow, oh, generation, now, ref gdi, ref gdiBlack);
+        else StopCapture();
+        if (picture == null)
         {
-            var v = new System.Windows.Media.DrawingVisual();
-            using (var dc = v.RenderOpen())
-            {
-                var area = new System.Windows.Rect(0, 0, ow, oh);
-                dc.DrawImage(picture, area);
-                dc.DrawImage(marksPicture, area);
-            }
-            var both = new System.Windows.Media.Imaging.RenderTargetBitmap(ow, oh, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
-            both.Render(v);
-            picture = both;
+            gdi ??= GdiCopy(r, w, h, ow, oh, out gdiBlack);
+            picture = WithMarks(gdi, ow, oh);
+            if (gdiBlack && choice.GdiCameBackBlack(now)) Used("gdi (black: Windows.Graphics.Capture tried next)");
+            else if (!capturePath.StartsWith("gdi", StringComparison.Ordinal)) Used(OperatingSystem.IsWindowsVersionAtLeast(10, 0, PadCaptureChoice.BorderlessBuild) ? "gdi" : "gdi (Windows 10: no capture border)");
+        }
+        if (blankForTest)
+        {
+            var white = new byte[ow * oh * 4];
+            Array.Fill(white, (byte)255);
+            picture = System.Windows.Media.Imaging.BitmapSource.Create(ow, oh, 96, 96, System.Windows.Media.PixelFormats.Bgr32, null, white, ow * 4);
         }
         var jpeg = new System.Windows.Media.Imaging.JpegBitmapEncoder { QualityLevel = 70 };
         jpeg.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(picture));
         using var ms = new MemoryStream();
         jpeg.Save(ms);
-        return ms.ToArray();
+        var bytes = ms.ToArray();
+        if (freezeForTest) { frozen = bytes; frozenFor = c; }
+        return bytes;
+    }
+
+    /// <summary>
+    /// A picture by Windows.Graphics.Capture, or null for the GDI copy (filled in <paramref name="gdi"/> when it was
+    /// already made here). A capture that was lost (its monitor gone, the GPU reset, the size changed) is started
+    /// again at once (three times in 30 s at most); one that failed waits <see cref="PadCaptureChoice.RetryAfter"/>.
+    /// A black picture is checked against the GDI copy: if that isn't black, the GDI copy it is.
+    /// </summary>
+    [System.Runtime.Versioning.SupportedOSPlatform("windows10.0.19041.0")]
+    System.Windows.Media.Imaging.BitmapSource? TryWgc(Native.RECT r, int w, int h, int ow, int oh, int generation, DateTime now,
+        ref System.Windows.Media.Imaging.BitmapSource? gdi, ref bool gdiBlack)
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            try
+            {
+                if (wgc != null && !wgc.Covers(r, generation)) StopCapture();
+                wgc ??= WgcCapture.Start(r, generation);
+                var pic = wgc.Picture(r, ow, oh);
+                if (wgc.LastWasBlack)
+                {
+                    gdi = GdiCopy(r, w, h, ow, oh, out gdiBlack);
+                    if (!gdiBlack)
+                    {
+                        choice!.WgcFailed(now);
+                        StopCapture();
+                        Used("gdi (Windows.Graphics.Capture's picture black, the GDI copy's not)");
+                        return null;
+                    }
+                    if (choice!.BothBlack(now)) { StopCapture(); Used("gdi (the screen is black: no capture border needed)"); return null; }
+                }
+                else choice!.WgcGood();
+                Used("wgc");
+                return pic;
+            }
+            catch (WgcCapture.HdrException)
+            {
+                choice!.Hdr = true;
+                StopCapture();
+                Used("gdi (HDR screen)");
+                return null;
+            }
+            catch (WgcCapture.LostException) when (attempt == 0 && LostRestartAllowed(now))
+            {
+                StopCapture();   // and round again: started afresh
+            }
+            catch (Exception e)
+            {
+                if (!wgcFailureLogged)
+                {
+                    wgcFailureLogged = true;   // once per run: a capture failing every 15 s must not fill the log
+                    App.Log(new InvalidOperationException("Windows.Graphics.Capture failed; the tablet's picture is the GDI copy for a while", e));
+                }
+                choice!.WgcFailed(now);
+                StopCapture();
+                Used("gdi (Windows.Graphics.Capture failed: " + e.GetType().Name + ", tried again later)");
+                return null;
+            }
+        }
+    }
+
+    bool LostRestartAllowed(DateTime now)
+    {
+        lostRestarts.RemoveAll(t => now - t > TimeSpan.FromSeconds(30));
+        if (lostRestarts.Count >= 3) return false;
+        lostRestarts.Add(now);
+        return true;
+    }
+
+    /// <summary>The GDI copy doesn't see the drawing layer (a layered window, without CAPTUREBLT): its marks go over it.</summary>
+    System.Windows.Media.Imaging.BitmapSource WithMarks(System.Windows.Media.Imaging.BitmapSource picture, int ow, int oh)
+    {
+        var marksPicture = MarksNow();
+        if (marksPicture == null) return picture;
+        var v = new System.Windows.Media.DrawingVisual();
+        using (var dc = v.RenderOpen())
+        {
+            var area = new System.Windows.Rect(0, 0, ow, oh);
+            dc.DrawImage(picture, area);
+            dc.DrawImage(marksPicture, area);
+        }
+        var both = new System.Windows.Media.Imaging.RenderTargetBitmap(ow, oh, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+        both.Render(v);
+        return both;
+    }
+
+    [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr hwnd, IntPtr dc);
+    [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
+    [DllImport("gdi32.dll")] static extern IntPtr CreateDIBSection(IntPtr dc, ref BITMAPINFOHEADER info, uint usage, out IntPtr bits, IntPtr section, uint offset);
+    [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
+    [DllImport("gdi32.dll")] static extern bool StretchBlt(IntPtr dst, int x, int y, int w, int h, IntPtr src, int sx, int sy, int sw, int sh, uint rop);
+    [DllImport("gdi32.dll")] static extern int SetStretchBltMode(IntPtr dc, int mode);
+    [DllImport("gdi32.dll")] static extern bool SetBrushOrgEx(IntPtr dc, int x, int y, IntPtr old);
+    [DllImport("gdi32.dll")] static extern bool GdiFlush();
+    [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
+    [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
+    const uint SRCCOPY = 0x00CC0020;
+    const int HALFTONE = 4;
+    [StructLayout(LayoutKind.Sequential)]
+    struct BITMAPINFOHEADER
+    {
+        public int biSize, biWidth, biHeight;
+        public short biPlanes, biBitCount;
+        public int biCompression, biSizeImage, biXPelsPerMeter, biYPelsPerMeter, biClrUsed, biClrImportant;
+    }
+
+    /// <summary>
+    /// The GDI copy: what is under the drawing layer, copied straight at the smaller size (no full-size copy of a 4K
+    /// screen). Into a 32-bit top-down DIB whatever the screen's depth (a bitmap "compatible" with the screen is 16-bit
+    /// in a 16-bit remote desktop or VM session, and read as 32-bit it came out scrambled), then read as opaque Bgr32:
+    /// the copy's alpha byte is 0, and laid under the marks it vanished (the tablet's picture turned black). Without
+    /// CAPTUREBLT: that flag makes the mouse pointer flicker on every copy, and OBS would record the flicker.
+    /// </summary>
+    static System.Windows.Media.Imaging.BitmapSource GdiCopy(Native.RECT r, int w, int h, int ow, int oh, out bool black)
+    {
+        var info = new BITMAPINFOHEADER { biSize = Marshal.SizeOf<BITMAPINFOHEADER>(), biWidth = ow, biHeight = -oh, biPlanes = 1, biBitCount = 32 };
+        IntPtr screenDc = GetDC(IntPtr.Zero), memDc = CreateCompatibleDC(screenDc);
+        IntPtr bmp = CreateDIBSection(screenDc, ref info, 0 /* DIB_RGB_COLORS */, out var bits, IntPtr.Zero, 0);
+        try
+        {
+            if (bmp == IntPtr.Zero || bits == IntPtr.Zero) throw new InvalidOperationException("no 32-bit bitmap for the screen's copy");
+            var old = SelectObject(memDc, bmp);
+            SetStretchBltMode(memDc, HALFTONE);
+            SetBrushOrgEx(memDc, 0, 0, IntPtr.Zero);
+            StretchBlt(memDc, 0, 0, ow, oh, screenDc, r.Left, r.Top, w, h, SRCCOPY);
+            GdiFlush();
+            SelectObject(memDc, old);
+            int stride = ow * 4;
+            var pixels = new byte[stride * oh];
+            Marshal.Copy(bits, pixels, 0, pixels.Length);
+            black = PadCaptureChoice.MostlyBlack(pixels, ow, oh);
+            return System.Windows.Media.Imaging.BitmapSource.Create(ow, oh, 96, 96, System.Windows.Media.PixelFormats.Bgr32, null, pixels, stride);
+        }
+        finally
+        {
+            if (bmp != IntPtr.Zero) DeleteObject(bmp);
+            DeleteDC(memDc);
+            ReleaseDC(IntPtr.Zero, screenDc);
+        }
     }
 
     public void Dispose()
     {
         running = false;
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= DisplayChanged;
+        Answer(false);   // a question still on the toolbar: no
         advert?.Dispose();
         try { listener?.Stop(); } catch (Exception) { }
         UsbDoor(false);
@@ -524,9 +788,11 @@ sealed class DnsSd : IDisposable
         d.instance = DnsServiceConstructInstance($"{name}.{Pad.ServiceType}.local", $"{name}.local", IntPtr.Zero, IntPtr.Zero,
             (ushort)port, 0, 0, 1, new[] { "v" }, new[] { Pad.Version.ToString() });
         if (d.instance == IntPtr.Zero) return null;
+        // InterfaceIndex 0: answered on every interface, the Mobile hotspot's included; with no address given,
+        // Windows answers each query with this PC's address on the network it came from
         var req = new DNS_SERVICE_REGISTER_REQUEST
         {
-            Version = 1, pServiceInstance = d.instance,
+            Version = 1, InterfaceIndex = 0, pServiceInstance = d.instance,
             pRegisterCompletionCallback = Marshal.GetFunctionPointerForDelegate(Done),
         };
         d.request = Marshal.AllocHGlobal(Marshal.SizeOf<DNS_SERVICE_REGISTER_REQUEST>());

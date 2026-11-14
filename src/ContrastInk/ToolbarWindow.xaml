@@ -135,13 +135,24 @@
       <RadioButton x:Name="TabletOff" Content="No: Pens Are Pens (Pen Screens: Cintiq, Kamvas...)"/>
       <TextBlock x:Name="TabletText" Foreground="#8A95A6" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap" MaxWidth="400"/>
       <TextBlock Text="Android Tablet or iPad as a Pad" Foreground="#8A95A6" FontSize="12" Margin="0,8,0,2"/>
-      <CheckBox x:Name="OptPad" Content="Let a Tablet Draw Here (Over Wi-Fi)"/>
+      <!-- the hint (shown while the pointer rests on it) says where platform-tools go: the three lines below stay three -->
+      <CheckBox x:Name="OptPad" Content="Let a Tablet Draw Here (Over Wi-Fi)"
+                ToolTip="Let a Tablet Draw Here (Over Wi-Fi). Android by cable: USB debugging on the tablet, and Google's platform-tools on this PC, unzipped into %LOCALAPPDATA%\Android\Sdk\platform-tools (or that folder on the PATH); the first time in each run, press Allow on this toolbar."/>
+      <!-- Windows 10 only (hidden on 11, which always uses it, without a border) -->
+      <CheckBox x:Name="OptPadCapture" Content="Tablet Picture: Windows Capture (Yellow Border)"
+                ToolTip="Tablet Picture: Windows Capture. Shows video and 3D windows the older copy can show black, but on Windows 10 Windows draws a yellow border around the screen while a tablet is connected, which the audience and OBS see. Contrast Ink switches to it by itself when the older copy comes back black."/>
       <TextBlock x:Name="PadText" Foreground="{StaticResource Ink}" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap" MaxWidth="400" Visibility="Collapsed"/>
       </StackPanel>
       </StackPanel>
     </StackPanel>
     <!-- hover help is shown here, inside the toolbar, so OBS never records it (real tooltips are separate windows) -->
     <TextBlock x:Name="Hint" Cursor="Hand" Visibility="Collapsed" Foreground="{StaticResource Ink}" FontSize="12" Margin="8,2,8,4" TextWrapping="Wrap" MaxWidth="640"/>
+    <!-- a question for the presenter (an Android tablet on the cable wants to draw): only while it waits for an answer -->
+    <StackPanel x:Name="AskPanel" Orientation="Horizontal" Visibility="Collapsed" Margin="8,0,8,4">
+      <TextBlock x:Name="AskText" Foreground="Salmon" FontSize="12" VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="460" Margin="0,0,8,0"/>
+      <Button x:Name="AllowBtn" Style="{StaticResource Tb}" Width="64" Height="30" FontSize="13" Content="Allow" Background="{StaticResource Blue}" Foreground="White"/>
+      <Button x:Name="DenyBtn" Style="{StaticResource Tb}" Width="64" Height="30" FontSize="13" Content="Deny"/>
+    </StackPanel>
     </StackPanel>
   </Border>
 </Window>

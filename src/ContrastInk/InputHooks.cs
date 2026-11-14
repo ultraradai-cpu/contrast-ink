@@ -39,12 +39,15 @@ sealed class InputHooks : IDisposable
     /// Microsoft (LowLevelKeyboardProc, Remarks): a hook that times out is, "on Windows 7 and later, ... silently
     /// removed", and "There is no way for the application to know whether the hook is removed." So the hooks are
     /// installed again every two minutes, after a wake and after a screen change: a lost hook costs minutes, not a lecture.
+    /// False when Windows refused them this time (the app then says so on the toolbar: only logging it left the
+    /// presenter pressing keys that did nothing).
     /// </summary>
-    public void Reinstall()
+    public bool Reinstall()
     {
         Dispose();
         Install();
         if (!Working) App.Log(new InvalidOperationException("keyboard/mouse hooks could not be installed again"));
+        return Working;
     }
 
     public bool Working => keyHook != IntPtr.Zero && mouseHook != IntPtr.Zero;

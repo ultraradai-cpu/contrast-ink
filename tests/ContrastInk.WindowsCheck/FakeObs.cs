@@ -31,6 +31,8 @@ sealed class FakeObs : IDisposable
     public double DiskMB = 50_000;
     public bool SceneHasScreen = true;
     public string OutputPath = "";
+    /// <summary>StopRecord is answered after 6 s (OBS busy finishing the file): Contrast Ink gives up waiting at 5 s.</summary>
+    public volatile bool StopLate;
     DateTime started; TimeSpan pausedFor; DateTime pausedAt;
 
     public FakeObs() { listener.Start(); _ = Task.Run(Accept); }
@@ -95,6 +97,7 @@ sealed class FakeObs : IDisposable
                 var d = m["d"]!;
                 string type = d["requestType"]!.GetValue<string>(), id = d["requestId"]!.GetValue<string>();
                 Requests.Enqueue(type);
+                if (type == "StopRecord" && StopLate) await Task.Delay(6000);   // past Contrast Ink's 5 s: it hears the event first
                 var (ok, data) = Answer(type, d["requestData"] as JsonObject);
                 var reply = new JsonObject { ["requestType"] = type, ["requestId"] = id, ["requestStatus"] = new JsonObject { ["result"] = ok, ["code"] = ok ? 100 : 501 } };
                 if (data != null) reply["responseData"] = data;
@@ -188,6 +191,14 @@ sealed class FakeObs : IDisposable
             if (r.EndOfMessage) break;
         }
         return JsonNode.Parse(all.ToArray()) as JsonObject;
+    }
+
+    /// <summary>The line to Contrast Ink drops (a network hiccup, OBS's server restarted) while OBS goes on recording;
+    /// Contrast Ink may connect again.</summary>
+    public void DropLine()
+    {
+        try { client?.Abort(); } catch (Exception) { }
+        client = null;
     }
 
     public void Dispose()

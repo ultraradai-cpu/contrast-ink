@@ -114,11 +114,14 @@ object PadCrypto {
         return out
     }
 
-    /** The PC check: the first 4 bytes of SHA-256 of the PC's public key, as XXXX-XXXX (the PC shows the same). */
+    /**
+     * The PC check: the first 8 bytes of SHA-256 of the PC's public key, as XXXX-XXXX-XXXX-XXXX (the PC shows the
+     * same). 4 bytes were too few: a fake key matching them could be searched for in about 2^32 tries.
+     */
     fun pcCheck(point: ByteArray): String {
         val h = MessageDigest.getInstance("SHA-256").digest(point)
-        val s = (0 until 4).joinToString("") { "%02X".format(h[it].toInt() and 0xFF) }
-        return s.substring(0, 4) + "-" + s.substring(4)
+        val s = (0 until 8).joinToString("") { "%02X".format(h[it].toInt() and 0xFF) }
+        return s.chunked(4).joinToString("-")
     }
 
     private fun fixed32(v: BigInteger): ByteArray {

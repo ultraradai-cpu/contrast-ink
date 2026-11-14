@@ -116,7 +116,9 @@ addresses locks everyone for 30 s); 20 wrong codes in all make a new code; silen
 that can't take messages for 3 s is dropped.
 
 REJECT texts the PC sends: "Please update Contrast Ink on the tablet.", "Too many wrong codes: wait 30 seconds,
-then try again.", "Wrong code: type the code Contrast Ink shows on the PC (⚙ Settings)."
+then try again.", "Wrong code: type the code Contrast Ink shows on the PC (⚙ Settings).", "Not allowed on the
+PC: press Allow on Contrast Ink's toolbar when it asks, then try again." (the presenter denied, or didn't answer,
+the first Android cable-door session).
 
 What it protects against: anyone listening on the Wi-Fi sees neither the screen nor the code; a machine
 advertising itself under a paired PC's name is caught by its key. What it does not: a presenter who confirms the
@@ -162,8 +164,8 @@ address, and any program on the PC can reach the PC's loopback door. So:
   `ListDevices`, then `Connect` with `DeviceID` and `PortNumber` = the port with its two bytes swapped). On the
   opened connection the iPad speaks first, as a tablet always does (HELLO), and the PC answers as on Wi-Fi.
 - **Android**: with USB debugging on, the PC runs `adb reverse tcp:47830 tcp:47830` for each connected device
-  every few seconds (when `adb` is found: on the PATH, in `%LOCALAPPDATA%\Android\Sdk\platform-tools`, or in
-  `C:\platform-tools`), which makes the tablet's `127.0.0.1:47830` reach the PC's `127.0.0.1:47830`. The PC listens
+  every few seconds (when `adb` is found: on the PATH or in `%LOCALAPPDATA%\Android\Sdk\platform-tools` — never a
+  folder like `C:\platform-tools`, which any user of a shared PC could create), which makes the tablet's `127.0.0.1:47830` reach the PC's `127.0.0.1:47830`. The PC listens
   there (loopback only) as its USB door. In pad mode the tablet tries `127.0.0.1:47830` every 2 seconds.
 - **The switch**: when a USB session is open (WELCOME received), the tablet closes its Wi-Fi session and stops
   trying Wi-Fi (the PC's new session replaces the old one, as for any right-code session). When the USB
