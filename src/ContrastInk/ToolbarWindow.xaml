@@ -127,6 +127,11 @@
       <CheckBox x:Name="OptSlides" Content="Each PowerPoint Slide Keeps Its Own Marks"/>
       <TextBlock Text="Toolbar" Foreground="#8A95A6" FontSize="12" Margin="0,8,0,2"/>
       <CheckBox x:Name="OptNames" Content="Show Button Names When the Mouse or Pen Rests on One"/>
+      <TextBlock Text="If Something Goes Wrong" Foreground="#8A95A6" FontSize="12" Margin="0,8,0,2"/>
+      <!-- error.log, and the tablet picture's notes and pictures (pad-diagnostics.txt, pad-black.jpg, pad-during-stroke.jpg) -->
+      <Button x:Name="DiagBtn" Style="{StaticResource Tb}" Width="Auto" Height="26" FontSize="12" Padding="10,0" HorizontalAlignment="Left"
+              Background="#22E3E8F0" Content="Open Diagnostics Folder"
+              ToolTip="Opens %AppData%\ContrastInk: error.log, and for the tablet's picture pad-diagnostics.txt, pad-black.jpg and pad-during-stroke.jpg. The two pictures may show your slide: they are only kept on this PC, never sent anywhere."/>
       </StackPanel>
       <StackPanel>
       <TextBlock Text="Pen Tablet Beside the Keyboard (Wacom Intuos, XP-Pen, Huion, Gaomon...)" Foreground="#8A95A6" FontSize="12" Margin="0,0,0,2"/>

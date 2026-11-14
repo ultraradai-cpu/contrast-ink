@@ -188,6 +188,22 @@ twenty in all make a new code. With patient images on screen, a private network 
   buttons; it tries again every two minutes and the line goes when it works.
 
 Errors are written to `%AppData%\ContrastInk\error.log`. Send that file along with what you were doing.
+
+**The tablet's picture goes wrong (black, frozen):** the PC keeps notes on it in the same folder
+(**⚙ Settings → Open Diagnostics Folder** opens it). Send these along with what was on screen:
+- `pad-diagnostics.txt`: a line when a tablet connects, whenever the way the picture is made changes, for the first
+  3 mostly-black pictures of each connection and for the first picture made while the tablet's pen was down. Only
+  numbers and settings (Windows' version, the graphics card, the screen's size and scale, how the picture was made,
+  whether a tablet stroke was under way): no picture content, no tablet name. Kept under about 200 KB.
+- `pad-black.jpg`: the first mostly-black picture of each connection.
+- `pad-during-stroke.jpg`: the first picture made while the tablet's pen was down, each connection.
+
+The two pictures may show your slide or patient images. They are only kept on this PC (each new connection
+overwrites them) and are never sent anywhere: look at them before you send them, and delete them if they show
+something you can't share.
+
+If the screen's copy turns black only once something is drawn, the tablet keeps showing the last good copy with
+the marks over it until the copy is good again, the marks are gone, or the slide changes (and the notes say so).
 Settings are in `%AppData%\ContrastInk\settings.json` (delete it to start fresh).
 
 ## For Developers

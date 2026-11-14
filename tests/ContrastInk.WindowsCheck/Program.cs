@@ -12,6 +12,12 @@
 //                 change on the slide must FAIL (a frozen capture is caught);
 //   "padgdi"      the GDI copy forced (CONTRASTINK_TEST_FORCEGDI=1) and pictures 400 px wide: every check must pass;
 //   "padsmall"    Windows.Graphics.Capture with pictures 400 px wide (the downscaling exercised): every check must pass.
+//   "padblack"    the screen's copy made black whenever marks are on the drawing layer (CONTRASTINK_TEST_BLACKWITHMARKS=1),
+//                 the fault a presenter's PC showed (the tablet's picture black the moment its pen wrote): every check
+//                 must pass, the one made mid-stroke included (the last good copy is sent, with the marks over it);
+//   "padblackcontrol"  the same fault without that fix (CONTRASTINK_TEST_NOHOLD=1): the first picture must pass and
+//                 the picture made mid-stroke must FAIL (proof that the mid-stroke check sees a black picture).
+// Every run with a tablet also reads the app's pad-diagnostics.txt and copies pad-black.jpg / pad-during-stroke.jpg.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -45,7 +51,7 @@ static class Program
             Console.WriteLine();
             return 0;
         }
-        if (args.Length < 3) { Console.Error.WriteLine("usage: <ContrastInk.exe> <out dir> normal|control|padcontrol|padfreeze|padgdi|padsmall"); return 2; }
+        if (args.Length < 3) { Console.Error.WriteLine("usage: <ContrastInk.exe> <out dir> normal|control|padcontrol|padfreeze|padgdi|padsmall|padblack|padblackcontrol"); return 2; }
         (exe, outDir, runMode) = (Path.GetFullPath(args[0]), Path.GetFullPath(args[1]), args[2]);
         Directory.CreateDirectory(outDir);
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
@@ -87,6 +93,7 @@ static class Program
         // fresh settings, so every run starts from the defaults
         var settingsFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ContrastInk", "settings.json");
         if (File.Exists(settingsFile)) File.Delete(settingsFile);
+        foreach (var f in new[] { DiagLog, DiagBlack, DiagStroke }) if (File.Exists(f)) File.Delete(f);   // this run's notes only
         var psi = new ProcessStartInfo(exe) { UseShellExecute = false };
         psi.Environment["CONTRASTINK_TEST"] = "1";
         psi.Environment["CONTRASTINK_STATUS"] = status;
@@ -95,6 +102,8 @@ static class Program
         if (runMode == "padcontrol") psi.Environment["CONTRASTINK_TEST_BLANKPAD"] = "1";
         if (runMode == "padfreeze") psi.Environment["CONTRASTINK_TEST_FREEZEPAD"] = "1";
         if (runMode == "padgdi") psi.Environment["CONTRASTINK_TEST_FORCEGDI"] = "1";
+        if (runMode is "padblack" or "padblackcontrol") psi.Environment["CONTRASTINK_TEST_BLACKWITHMARKS"] = "1";
+        if (runMode == "padblackcontrol") psi.Environment["CONTRASTINK_TEST_NOHOLD"] = "1";
         if (runMode is "padgdi" or "padsmall") psi.Environment["CONTRASTINK_TEST_PADWIDTH"] = SmallPicture.ToString();
         // adb: none on the app's PATH; a stand-in in C:\platform-tools, a folder any user of a PC can create, which
         // the app must never run (the restart in ToolbarAndPromises puts one on the PATH, which it must run)
@@ -583,6 +592,16 @@ static class Program
                   $"picture {Hex(around)}, screen {Hex(onScreen)}");
             // and the whole picture, marks and all, is the screen (it once turned black as soon as anything was drawn)
             PictureIsTheScreen(withLine.payload, "the picture with a line drawn", "40c-tablet-with-line");
+            // a picture made while the pen is still down, as an iPad draws (the pictures after STROKE_END were fine on
+            // a presenter's PC whose tablet went black while writing)
+            MidStrokePicture(t, "40d-tablet-mid-stroke");
+            t.Send(Pad.Command, "clear");
+            t.Send(Pad.Command, "tool:pen");
+            t.Send(Pad.Command, "color:0");
+            t.Send(Pad.StrokeBegin, PadPoint(0.2f, fy).Concat(new byte[] { 0 }).ToArray());
+            t.Send(Pad.StrokePoints, pts.ToArray());
+            t.Send(Pad.StrokeEnd, Array.Empty<byte>());
+            Thread.Sleep(600);
 
             t.Send(Pad.Command, "undo");
             Thread.Sleep(500);
@@ -669,6 +688,7 @@ static class Program
                 bool otherIn = other.Pair(PadCode);
                 Check(otherIn, "tablet link: wrong codes from one address don't lock out a tablet at another address", otherIn ? "let in" : "refused: " + other.Refused);
             }
+            DiagnosticsCheck(expectBlack: false);
         }
         catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException or JsonException or ArgumentException or InvalidDataException or KeyNotFoundException or FormatException)
         {
@@ -686,7 +706,7 @@ static class Program
     static void PadPictureRun(JsonElement st)
     {
         string tag = runMode.ToUpperInvariant();
-        bool control = runMode is "padcontrol" or "padfreeze";
+        bool control = runMode is "padcontrol" or "padfreeze" or "padblackcontrol";
         int port = st.TryGetProperty("padPort", out var pp) ? pp.GetInt32() : 0;
         Check(port > 0, tag + ": the PC listens for a tablet", "port " + port);
         if (port == 0) return;
@@ -709,12 +729,18 @@ static class Program
             bool follows = FollowsSlideChange(t, "39b-tablet-slide-changed");
             byte[]? withLine = DrawLineAndGetPicture(t);
             bool after = PictureIsTheScreen(withLine, "the picture with a line drawn", "40c-tablet-with-line");
+            bool during = MidStrokePicture(t, "40d-tablet-mid-stroke");
             counting = true;
             t.Send(Pad.Command, "clear");
+            if (runMode == "padblackcontrol")
+                Check(first != null && before && !during,
+                      "BLACK CONTROL: with the copy black while marks are drawn and the fix off, the first picture matches but the mid-stroke picture check FAILS",
+                      $"first {Verdict(before)}, with a line {Verdict(after)}, mid-stroke {Verdict(during)}");
+            if (runMode != "padfreeze") DiagnosticsCheck(expectBlack: runMode is "padblack" or "padblackcontrol");   // frozen: no new pictures to note
             if (runMode == "padcontrol")
-                Check(first != null && withLine != null && !before && !follows && !after,
+                Check(first != null && withLine != null && !before && !follows && !after && !during,
                       "PAD CONTROL: with the tablet's picture whitened, the checks of the tablet's picture FAIL",
-                      $"pictures came: {first != null && withLine != null}; first {Verdict(before)}, after the slide changed {Verdict(follows)}, with a line {Verdict(after)}");
+                      $"pictures came: {first != null && withLine != null}; first {Verdict(before)}, after the slide changed {Verdict(follows)}, with a line {Verdict(after)}, mid-stroke {Verdict(during)}");
             else if (runMode == "padfreeze")
                 Check(first != null && before && !follows,
                       "FREEZE CONTROL: with the picture frozen after the first, the first still matches but the check that it follows the slide FAILS",
@@ -752,6 +778,87 @@ static class Program
         t.Send(Pad.StrokeEnd, Array.Empty<byte>());
         Thread.Sleep(600);
         return NextPicture(t);
+    }
+
+    /// <summary>
+    /// A red line drawn as an iPad draws it: STROKE_BEGIN, then two points every 20 ms or so for about 1.6 s, each
+    /// picture acknowledged as it arrives (as the iPad does while its pen is down), and then, the pen still down, the
+    /// next picture compared with the screen and looked at for the line so far. STROKE_END only after that. The other
+    /// checks look at pictures made after STROKE_END; a presenter's tablet went black only while writing.
+    /// </summary>
+    static bool MidStrokePicture(TestTablet t, string name)
+    {
+        t.Send(Pad.Command, "clear");
+        t.Send(Pad.Command, "tool:pen");
+        t.Send(Pad.Command, "color:0");
+        Thread.Sleep(300);
+        NextPicture(t);   // a picture of the cleared screen first (no marks), as before a presenter writes
+        float fy = (float)(Row(7) - screen.Top) / screen.Height;
+        const float x0 = 0.15f, x1 = 0.65f;
+        const int points = 160;
+        t.Send(Pad.StrokeBegin, PadPoint(x0, fy).Concat(new byte[] { 0 }).ToArray());
+        int framesWhileMoving = 0;
+        var sw = Stopwatch.StartNew();
+        for (int i = 1; i <= points; i += 2)
+        {
+            var batch = new List<byte> { 0, 2 };
+            batch.AddRange(PadPoint(x0 + (x1 - x0) * i / points, fy));
+            batch.AddRange(PadPoint(x0 + (x1 - x0) * (i + 1) / points, fy));
+            t.Send(Pad.StrokePoints, batch.ToArray());
+            foreach (var m in t.Read(g => g.Any(x => x.type == Pad.Frame), 20))
+                if (m.type == Pad.Frame) { framesWhileMoving++; t.Send(Pad.FrameAck, Array.Empty<byte>()); }
+        }
+        Check(framesWhileMoving >= 3, "tablet link: pictures keep coming while the tablet's pen moves",
+              $"{framesWhileMoving} pictures in {sw.ElapsedMilliseconds} ms of drawing");
+        Thread.Sleep(300);
+        var during = NextPicture(t);   // made with the pen still down: no STROKE_END yet
+        bool same = PictureIsTheScreen(during, "a picture made mid-stroke (the tablet's pen still down)", name);
+        var red = ColorTranslator.FromHtml(Settings.Colors[0]);
+        Color inPicture = Color.Black;
+        int width = 0;
+        if (during != null)
+            using (var img = new Bitmap(new MemoryStream(during)))
+            {
+                width = img.Width;
+                double k = (double)img.Width / screen.Width;
+                inPicture = Closest(img, (int)(screen.Width * 0.4 * k), (int)((Row(7) - screen.Top) * k), red, 4);
+            }
+        // in the 400 px runs the line is under a pixel wide, blended away: there only the whole picture is compared
+        bool line = width > 0 && width < 800 || Diff(inPicture, red) <= 60;
+        Check(line, "tablet link: the picture made mid-stroke shows the line drawn so far", width > 0 && width < 800 ? $"not looked for: the picture is {width} px wide" : Hex(inPicture));
+        t.Send(Pad.StrokeEnd, Array.Empty<byte>());
+        Thread.Sleep(300);
+        NextPicture(t);
+        return same && line;
+    }
+
+    static string DiagFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ContrastInk");
+    static string DiagLog => Path.Combine(DiagFolder, "pad-diagnostics.txt");
+    static string DiagBlack => Path.Combine(DiagFolder, "pad-black.jpg");
+    static string DiagStroke => Path.Combine(DiagFolder, "pad-during-stroke.jpg");
+
+    /// <summary>
+    /// The app's notes on the tablet's picture (always on): a line for the tablet connecting, the first picture made
+    /// during a tablet stroke noted and kept; with the copy made black, the mostly-black picture noted (made during the
+    /// stroke) and kept. The notes are printed and the pictures copied next to the screenshots.
+    /// </summary>
+    static void DiagnosticsCheck(bool expectBlack)
+    {
+        Thread.Sleep(300);
+        string log = SafeRead(DiagLog);
+        Log("      pad-diagnostics.txt:");
+        foreach (var l in log.Split('\n', StringSplitOptions.RemoveEmptyEntries).Take(40)) Log("        " + l);
+        foreach (var f in new[] { DiagBlack, DiagStroke })
+            if (File.Exists(f)) try { File.Copy(f, Path.Combine(outDir, $"{runMode}-{Path.GetFileName(f)}"), overwrite: true); } catch (IOException) { }
+        Check(log.Contains("tablet connected (") && log.Contains("| Windows ") && log.Contains("| layer exstyle 0x"),
+              "diagnostics: pad-diagnostics.txt notes the tablet connecting (Windows, screen, exstyle)", $"{log.Length} characters");
+        Check(log.Contains("first picture during a tablet stroke") && File.Exists(DiagStroke),
+              "diagnostics: the first picture made during a tablet stroke is noted, and kept as pad-during-stroke.jpg", $"kept: {File.Exists(DiagStroke)}");
+        if (expectBlack)
+        {
+            bool noted = log.Split('\n').Any(l => l.Contains("mostly-black picture") && l.Contains("tablet stroke in progress"));
+            Check(noted && File.Exists(DiagBlack), "diagnostics: the black picture during the stroke is noted, and kept as pad-black.jpg", $"noted {noted}, kept {File.Exists(DiagBlack)}");
+        }
     }
 
     /// <summary>

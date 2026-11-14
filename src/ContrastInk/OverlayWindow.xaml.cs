@@ -60,6 +60,7 @@ public partial class OverlayWindow : Window
         InitializeComponent();
         Ink.Strokes.StrokesChanged += (_, e) =>
         {
+            strokeCount = Ink.Strokes.Count;   // for the tablet link's picture thread
             if (quiet || shape != null) return;
             if (e.Added.Count > 0) Remember(true, e.Added);
             if (e.Removed.Count > 0) Remember(false, e.Removed);
@@ -86,6 +87,7 @@ public partial class OverlayWindow : Window
         SourceInitialized += (_, _) =>
         {
             hwnd = new WindowInteropHelper(this).Handle;
+            RenderTier = RenderCapability.Tier >> 16;   // 0: software, 2: the graphics card (for pad-diagnostics.txt)
             if (!Native.SetExStyle(hwnd, Native.WS_EX_LAYERED | Native.WS_EX_TOOLWINDOW | Native.WS_EX_NOACTIVATE | Native.WS_EX_TRANSPARENT, 0))
                 App.Log(new InvalidOperationException("overlay: click-through style was not applied at start"));
             HwndSource.FromHwnd(hwnd)!.AddHook((IntPtr h, int msg, IntPtr w, IntPtr l, ref bool handled) =>
@@ -166,6 +168,7 @@ public partial class OverlayWindow : Window
         finally { quiet = false; }
         history = next.History;
         pageKey = key;
+        page++;
     }
 
     /// <summary>Whether Undo would change anything on this slide.</summary>
@@ -201,12 +204,22 @@ public partial class OverlayWindow : Window
     Pt remoteStart;
     bool remoteErasing, remoteLaser;
 
+    // read by the tablet link's picture thread (PadLayer): written only here, on the UI thread
+    volatile bool remoteDown;   // the tablet's pen is down (a stroke, the eraser or the laser)
+    volatile int strokeCount, page;
+    /// <summary>How WPF draws here (RenderCapability.Tier: 0 software, 1 partly, 2 the graphics card).</summary>
+    public static volatile int RenderTier = -1;
+
+    /// <summary>What the tablet link's picture thread needs to know, from any thread.</summary>
+    internal PadLayerState PadLayer() => new(hwnd, remoteDown, strokeCount > 0 || remoteDown, page);
+
     Point FromPad(float fx, float fy) => new(fx * Ink.ActualWidth, fy * Ink.ActualHeight);
 
     /// <summary>The tablet's pen touched, at fractions of this screen; <paramref name="eraserEnd"/>: its eraser end.</summary>
     public void RemoteBegin(float fx, float fy, bool eraserEnd)
     {
         RemoteCancel();
+        remoteDown = true;
         var p = FromPad(fx, fy);
         remoteErasing = eraserEnd || tool == Tool.Eraser;
         remoteLaser = !remoteErasing && tool == Tool.Laser;
@@ -241,6 +254,7 @@ public partial class OverlayWindow : Window
     {
         if (remoteLaser) { LaserLayer.HideDot(); remoteLaser = false; }
         remoteErasing = false;
+        remoteDown = false;
         if (remote == null) return;
         var done = remote;
         remote = null;
@@ -256,6 +270,7 @@ public partial class OverlayWindow : Window
     {
         if (remoteLaser) { LaserLayer.HideDot(); remoteLaser = false; }
         remoteErasing = false;
+        remoteDown = false;
         if (remote == null) return;
         quiet = true;
         try { Ink.Strokes.Remove(remote); } finally { quiet = false; }

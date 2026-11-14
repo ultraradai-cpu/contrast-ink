@@ -43,7 +43,9 @@ jobs:
       # Control runs prove the checks can fail: "control" switches hiding off and must SEE the toolbar;
       # "padcontrol" whitens the tablet's picture and "padfreeze" freezes it after the first: the picture checks must
       # FAIL in them. "padgdi" (the GDI copy forced) and "padsmall" (pictures 400 px wide) must pass: every way the
-      # picture can be made is checked, not only the one this machine picks.
+      # picture can be made is checked, not only the one this machine picks. "padblack" makes the screen's copy black
+      # while marks are drawn (a presenter's PC did that) and must pass, a picture made mid-stroke included;
+      # "padblackcontrol" is the same without the fix, where that mid-stroke check must FAIL.
       # A failure here stops the release below: the download link keeps the last build that passed.
       - name: Windows check (real app, real screen)
         shell: pwsh
@@ -51,7 +53,7 @@ jobs:
           dotnet build tests/ContrastInk.WindowsCheck -c Release -o check
           $exe = (Resolve-Path out/ContrastInk.exe).Path
           $codes = @{}
-          $modes = 'control','padcontrol','padfreeze','padgdi','padsmall','normal'
+          $modes = 'control','padcontrol','padfreeze','padgdi','padsmall','padblack','padblackcontrol','normal'
           foreach ($m in $modes) {
             $p = Start-Process -FilePath check/ContrastInk.WindowsCheck.exe -ArgumentList "`"$exe`"", 'shots', $m -Wait -PassThru
             $codes[$m] = $p.ExitCode

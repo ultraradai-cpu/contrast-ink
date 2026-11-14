@@ -78,6 +78,7 @@ public partial class ToolbarWindow : Window
         ScreenBtn.Click += (_, _) => ScreenClicked?.Invoke();
         FoldBtn.Click += (_, _) => FoldClicked?.Invoke();
         CloseBtn.Click += (_, _) => CloseClicked?.Invoke();
+        DiagBtn.Click += (_, _) => OpenDiagnostics();
         AllowBtn.Click += (_, _) => AskAnswered?.Invoke(true);
         DenyBtn.Click += (_, _) => AskAnswered?.Invoke(false);
         RecBtn.Click += (_, _) => RecordClicked?.Invoke();
@@ -332,6 +333,17 @@ public partial class ToolbarWindow : Window
     public void ShowTablet(string? found, bool asMouse) =>
         TabletText.Text = (found != null ? $"Found: {found}. " : "No pen tablet found (with Windows Ink off in its own settings, it is a mouse already). ")
             + (asMouse ? "Its pen works like the mouse: switch drawing on with ✏, F9 or Ctrl." : "Pens work as pens.");
+
+    /// <summary>⚙ → Open Diagnostics Folder: %AppData%\ContrastInk in Explorer (made first if it isn't there yet).</summary>
+    static void OpenDiagnostics()
+    {
+        try
+        {
+            System.IO.Directory.CreateDirectory(PadDiagnostics.Folder);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", "\"" + PadDiagnostics.Folder + "\"") { UseShellExecute = true });
+        }
+        catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception) { App.Log(e); }
+    }
 
     bool showNames = true;   // ⚙ → Toolbar: names of buttons on hover (warnings and notices show either way)
 }

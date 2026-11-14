@@ -50,6 +50,8 @@ sealed class PadServer : IDisposable
     readonly Func<Native.RECT> screen;   // the screen being drawn on, in real pixels
     readonly Func<System.Windows.Media.Imaging.BitmapSource?> marks;   // the drawing layer's picture, on the UI thread
     readonly Func<bool> wantsWgc;
+    readonly Func<PadLayerState> layer;   // the drawing layer's state, read from the picture thread
+    readonly PadDiagnostics diag = new();
     readonly System.Security.Cryptography.ECDiffieHellman pcKey;       // this PC's own key (kept between runs)
     readonly byte[] pcPoint;
     /// <summary>What the tablet shows the first time, to compare with this PC: "6FC6-6A90-4861-71CA".</summary>
@@ -121,9 +123,10 @@ sealed class PadServer : IDisposable
     }
 
     /// <param name="wantsWgc">The presenter's ⚙ choice: Windows' capture on Windows 10 too (yellow border and all).</param>
-    public PadServer(Dispatcher ui, Func<Native.RECT> screen, Func<System.Windows.Media.Imaging.BitmapSource?> marks,
+    public PadServer(Dispatcher ui, Func<Native.RECT> screen, Func<System.Windows.Media.Imaging.BitmapSource?> marks, Func<PadLayerState> layer,
         System.Security.Cryptography.ECDiffieHellman pcKey, Func<bool> wantsWgc, string? code = null, bool usbDoorAlways = false)
     {
+        this.layer = layer;
         this.wantsWgc = wantsWgc;
         this.usbDoorAlways = usbDoorAlways;
         this.ui = ui;
@@ -433,6 +436,7 @@ sealed class PadServer : IDisposable
         old?.Close();
         conn.StartWriter();
         var r = screen();
+        try { diag.Connected(conn.Usb, r, layer(), capturePath); } catch (Exception e) { App.Log(e); }
         conn.Send(Pad.WelcomeMessage(Environment.MachineName, r.Right - r.Left, r.Bottom - r.Top));
         var name = conn.Name;
         ui.BeginInvoke(() => ConnectionChanged?.Invoke(name));
@@ -521,6 +525,10 @@ sealed class PadServer : IDisposable
     static readonly bool blankForTest = TestSwitch("CONTRASTINK_TEST_BLANKPAD");    // control: every picture white
     static readonly bool freezeForTest = TestSwitch("CONTRASTINK_TEST_FREEZEPAD");  // control: the first picture, for ever
     static readonly bool gdiForTest = TestSwitch("CONTRASTINK_TEST_FORCEGDI");      // the GDI copy's own run
+    // the fault seen on a presenter's PC, made to happen: the screen's copy comes back black whenever marks are on the
+    // drawing layer (both ways of copying it), so the Windows check can see the tablet's picture survive it
+    static readonly bool blackWithMarksForTest = TestSwitch("CONTRASTINK_TEST_BLACKWITHMARKS");
+    static readonly bool noHoldForTest = TestSwitch("CONTRASTINK_TEST_NOHOLD");     // its control: that fix off
     // a smaller picture than usual, so the downscaling is exercised on the check's small screen
     static readonly int maxWidth = testRun && int.TryParse(Environment.GetEnvironmentVariable("CONTRASTINK_TEST_PADWIDTH"), out var mw) && mw >= 64 ? mw : 1600;
     byte[]? frozen;
@@ -535,10 +543,13 @@ sealed class PadServer : IDisposable
         wgc = null;
     }
 
+    bool pathChanged;   // since the last picture: a line for pad-diagnostics.txt once the picture is known
+
     void Used(string how)
     {
         if (how == capturePath) return;
         capturePath = how;
+        pathChanged = true;
         if (captureReport != null) try { File.WriteAllText(captureReport, how); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }
 
@@ -569,16 +580,59 @@ sealed class PadServer : IDisposable
             capturedFor = c; choiceGeneration = generation;
             choice.Hdr = false;
         }
-        System.Windows.Media.Imaging.BitmapSource? picture = null, gdi = null;
+        var state = layer();
+        System.Windows.Media.Imaging.BitmapSource? picture = null, gdi = null, screenOnly;
         bool gdiBlack = false;
-        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041) && choice.UseWgc(now)) picture = TryWgc(r, w, h, ow, oh, generation, now, ref gdi, ref gdiBlack);
+        bool? wgcBlack = null;
+        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041) && choice.UseWgc(now))
+        {
+            wgcBlackSeen = null;
+            picture = TryWgc(r, w, h, ow, oh, generation, now, ref gdi, ref gdiBlack);
+            wgcBlack = wgcBlackSeen;
+        }
         else StopCapture();
-        if (picture == null)
+        if (picture != null)
+        {
+            if (blackWithMarksForTest && state.Marks) picture = Black(ow, oh);
+            screenOnly = picture;   // Windows' capture: the drawing layer is in it already
+        }
+        else
         {
             gdi ??= GdiCopy(r, w, h, ow, oh, out gdiBlack);
+            if (blackWithMarksForTest && state.Marks) gdi = Black(ow, oh);
+            screenOnly = gdi;
             picture = WithMarks(gdi, ow, oh);
             if (gdiBlack && choice.GdiCameBackBlack(now)) Used("gdi (black: Windows.Graphics.Capture tried next)");
             else if (!capturePath.StartsWith("gdi", StringComparison.Ordinal)) Used(OperatingSystem.IsWindowsVersionAtLeast(10, 0, PadCaptureChoice.BorderlessBuild) ? "gdi" : "gdi (Windows 10: no capture border)");
+        }
+        // (a mark begun while the copy was made: not kept as the good copy, it may have part of it)
+        // the screen's copy black only since marks appeared (a presenter's PC: black the moment the tablet's pen wrote,
+        // whatever was on screen): the last good copy, with the marks over it, until the copy is good again, the marks
+        // are gone or the slide changes. A screen that was black already (a dark slide) is sent as it is.
+        var rawPicture = picture;
+        bool black = PadDiagnostics.MostlyBlack(screenOnly);
+        bool held = false;
+        if (!ReferenceEquals(goodFor, c) || goodRect.Left != r.Left || goodRect.Top != r.Top || goodRect.Right != r.Right || goodRect.Bottom != r.Bottom
+            || good == null || good.PixelWidth != ow || good.PixelHeight != oh || goodPage != state.Page)
+        {
+            good = null; holding = false;
+        }
+        if (!black)
+        {
+            holding = false;
+            if (!state.Marks && !layer().Marks) { good = screenOnly; goodFor = c; goodRect = r; goodPage = state.Page; if (!good.IsFrozen) good.Freeze(); }
+        }
+        else if (!noHoldForTest && state.Marks && good != null && (holding || !lastBlack))
+        {
+            holding = true;
+            held = true;
+            picture = WithMarks(good, ow, oh);
+        }
+        lastBlack = black && !held;
+        if (pathChanged)
+        {
+            pathChanged = false;
+            try { diag.PathChanged(r, ow, oh, capturePath, state, wgcBlack, gdiBlack); } catch (Exception e) { App.Log(e); }
         }
         if (blankForTest)
         {
@@ -586,14 +640,32 @@ sealed class PadServer : IDisposable
             Array.Fill(white, (byte)255);
             picture = System.Windows.Media.Imaging.BitmapSource.Create(ow, oh, 96, 96, System.Windows.Media.PixelFormats.Bgr32, null, white, ow * 4);
         }
+        var bytes = Jpeg(picture);
+        try { diag.Picture(black, r, ow, oh, capturePath, state, wgcBlack, gdiBlack, held, () => held ? Jpeg(rawPicture) : bytes); }
+        catch (Exception e) { App.Log(e); }
+        if (freezeForTest) { frozen = bytes; frozenFor = c; }
+        return bytes;
+    }
+
+    // the last good copy of the screen (no marks on it, not black), for the tablet's picture while the copy is black
+    System.Windows.Media.Imaging.BitmapSource? good;
+    Connection? goodFor;
+    Native.RECT goodRect;
+    int goodPage;
+    bool holding, lastBlack;
+    bool? wgcBlackSeen;   // the last WGC picture's LastWasBlack, for pad-diagnostics.txt
+
+    static byte[] Jpeg(System.Windows.Media.Imaging.BitmapSource picture)
+    {
         var jpeg = new System.Windows.Media.Imaging.JpegBitmapEncoder { QualityLevel = 70 };
         jpeg.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(picture));
         using var ms = new MemoryStream();
         jpeg.Save(ms);
-        var bytes = ms.ToArray();
-        if (freezeForTest) { frozen = bytes; frozenFor = c; }
-        return bytes;
+        return ms.ToArray();
     }
+
+    static System.Windows.Media.Imaging.BitmapSource Black(int ow, int oh) =>
+        System.Windows.Media.Imaging.BitmapSource.Create(ow, oh, 96, 96, System.Windows.Media.PixelFormats.Bgr32, null, new byte[ow * oh * 4], ow * 4);
 
     /// <summary>
     /// A picture by Windows.Graphics.Capture, or null for the GDI copy (filled in <paramref name="gdi"/> when it was
@@ -612,6 +684,7 @@ sealed class PadServer : IDisposable
                 if (wgc != null && !wgc.Covers(r, generation)) StopCapture();
                 wgc ??= WgcCapture.Start(r, generation);
                 var pic = wgc.Picture(r, ow, oh);
+                wgcBlackSeen = wgc.LastWasBlack;
                 if (wgc.LastWasBlack)
                 {
                     gdi = GdiCopy(r, w, h, ow, oh, out gdiBlack);
