@@ -797,6 +797,7 @@ static class Program
         const float x0 = 0.15f, x1 = 0.65f;
         const int points = 160;
         t.Send(Pad.StrokeBegin, PadPoint(x0, fy).Concat(new byte[] { 0 }).ToArray());
+        t.Send(Pad.FrameAck, Array.Empty<byte>());   // the picture NextPicture returned was shown: the PC may send the next
         int framesWhileMoving = 0;
         var sw = Stopwatch.StartNew();
         for (int i = 1; i <= points; i += 2)
