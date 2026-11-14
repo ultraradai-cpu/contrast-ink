@@ -30,8 +30,38 @@ final class ContrastInkUITests: XCTestCase {
 
     private var marks: Int { Int(app.staticTexts["markCount"].label) ?? -1 }
 
-    private func expectMarks(_ n: Int, _ what: String) {
-        XCTAssertEqual(marks, n, what)
+    /// Waits for a label to read `value` (up to `timeout` seconds) rather than reading it at once.
+    @discardableResult
+    private func waitForLabel(_ e: XCUIElement, _ value: String, timeout: TimeInterval = 8) -> Bool {
+        let done = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", value), object: e)
+        return XCTWaiter().wait(for: [done], timeout: timeout) == .completed
+    }
+
+    /// The number of marks on the slide. PencilKit hands a finished stroke to the app (canvasViewDrawingDidChange)
+    /// a moment after the finger lifts, later still on a busy CI simulator: so the count is waited for, not read at
+    /// once. Then it must stay there a moment, so a check that nothing was added (the laser, a swipe) can't pass
+    /// before a late stroke arrives.
+    private func expectMarks(_ n: Int, _ what: String, file: StaticString = #filePath, line: UInt = #line) {
+        let count = app.staticTexts["markCount"]
+        if waitForLabel(count, "\(n)") { Thread.sleep(forTimeInterval: 0.5) }
+        XCTAssertEqual(marks, n, what, file: file, line: line)
+    }
+
+    /// The slide number, waited for (a slide change after a tap, a key or a swipe is not instant).
+    private func expectSlide(_ value: String, _ what: String = "", file: StaticString = #filePath, line: UInt = #line) {
+        let number = app.staticTexts["slideNumber"]
+        waitForLabel(number, value)
+        XCTAssertEqual(number.label, value, what, file: file, line: line)
+    }
+
+    /// Ends the running app before launching it again: `launch()` on a running app terminates it itself and fails
+    /// the test outright when that terminate times out ("Failed to terminate com.contrast.ink"), which happened in CI.
+    /// Here the end is asked for and waited for, and asked for once more if the app is still there.
+    private func endApp() {
+        guard app.state != .notRunning else { return }
+        app.terminate()
+        if !app.wait(for: .notRunning, timeout: 20) { app.terminate() }
+        _ = app.wait(for: .notRunning, timeout: 20)
     }
 
     /// The colour on screen at a point given as a fraction of the screen (red, green, blue, 0-255).
@@ -58,7 +88,7 @@ final class ContrastInkUITests: XCTestCase {
         app.launch()
         let number = app.staticTexts["slideNumber"]
         XCTAssertTrue(number.waitForExistence(timeout: 10), "the presenter opens on the sample deck")
-        XCTAssertEqual(number.label, "1 / 2")
+        expectSlide("1 / 2")
         expectMarks(0, "a new deck starts clean")
         shot("01 slide 1")
 
@@ -71,7 +101,7 @@ final class ContrastInkUITests: XCTestCase {
         XCTAssertTrue(off.r < 90, "beside the line the slide shows: \(off)")
 
         app.buttons["next"].tap()
-        XCTAssertEqual(number.label, "2 / 2")
+        expectSlide("2 / 2")
         expectMarks(0, "the next slide starts clean")
         shot("03 slide 2 starts clean")
 
@@ -81,7 +111,7 @@ final class ContrastInkUITests: XCTestCase {
         shot("04 black line on slide 2")
 
         app.buttons["previous"].tap()
-        XCTAssertEqual(number.label, "1 / 2")
+        expectSlide("1 / 2")
         expectMarks(1, "back on slide 1: its line is back, slide 2's isn't")
         shot("05 back on slide 1, its red line is back")
 
@@ -125,6 +155,7 @@ final class ContrastInkUITests: XCTestCase {
     // MARK: keys, saved marks, closing, recording, importing
 
     private func launchSample(reset: Bool = true) {
+        endApp()
         app.launchArguments = reset ? ["-uitest", "-resetMarks"] : ["-uitest"]
         app.launch()
         XCTAssertTrue(app.staticTexts["slideNumber"].waitForExistence(timeout: 10), "the presenter opens on the sample deck")
@@ -144,28 +175,27 @@ final class ContrastInkUITests: XCTestCase {
         let slide = app.descendants(matching: .any)["canvas"]
         slide.swipeLeft()
         Thread.sleep(forTimeInterval: 0.6)
-        XCTAssertEqual(number.label, "2 / 2", "a finger swiping left: the next slide")
+        expectSlide("2 / 2", "a finger swiping left: the next slide")
         expectMarks(0, "and no mark")
         slide.swipeRight()
         Thread.sleep(forTimeInterval: 0.6)
-        XCTAssertEqual(number.label, "1 / 2", "swiping right: the previous slide")
+        expectSlide("1 / 2", "swiping right: the previous slide")
         drag(CGVector(dx: 0.2, dy: 0.45), CGVector(dx: 0.3, dy: 0.62))   // slow, down: not a swipe
         expectMarks(0, "a finger doesn't draw")
-        XCTAssertEqual(number.label, "1 / 2")
+        expectSlide("1 / 2")
         shot("F1 a finger swipes, it doesn't draw")
     }
 
     /// A hardware keyboard or a presenter clicker: the slide keys, and the letters for every tool (L the laser).
     func testKeys() {
         launchSample()
-        let number = app.staticTexts["slideNumber"]
-        XCTAssertEqual(number.label, "1 / 2")
-        key(XCUIKeyboardKey.rightArrow.rawValue); XCTAssertEqual(number.label, "2 / 2", "→ next")
-        key(XCUIKeyboardKey.leftArrow.rawValue); XCTAssertEqual(number.label, "1 / 2", "← previous")
-        key(" "); XCTAssertEqual(number.label, "2 / 2", "Space next")
-        key(XCUIKeyboardKey.upArrow.rawValue); XCTAssertEqual(number.label, "1 / 2", "↑ previous")
-        key(XCUIKeyboardKey.downArrow.rawValue); XCTAssertEqual(number.label, "2 / 2", "↓ next")
-        key(XCUIKeyboardKey.leftArrow.rawValue); XCTAssertEqual(number.label, "1 / 2", "← previous")
+        expectSlide("1 / 2")
+        key(XCUIKeyboardKey.rightArrow.rawValue); expectSlide("2 / 2", "→ next")
+        key(XCUIKeyboardKey.leftArrow.rawValue); expectSlide("1 / 2", "← previous")
+        key(" "); expectSlide("2 / 2", "Space next")
+        key(XCUIKeyboardKey.upArrow.rawValue); expectSlide("1 / 2", "↑ previous")
+        key(XCUIKeyboardKey.downArrow.rawValue); expectSlide("2 / 2", "↓ next")
+        key(XCUIKeyboardKey.leftArrow.rawValue); expectSlide("1 / 2", "← previous")
         // Return, Page Down and Page Up: in CI the simulator never delivered these three typed keys to the app, whether
         // the app took them as SwiftUI shortcuts, menu key commands, the stage's key commands or raw presses; their
         // meaning is checked by the Core's key table test, and they need a check with a real clicker.
@@ -186,6 +216,7 @@ final class ContrastInkUITests: XCTestCase {
         expectMarks(1, "a line")
         key("z"); expectMarks(0, "Z undoes")
         drag(CGVector(dx: 0.2, dy: 0.45), CGVector(dx: 0.7, dy: 0.65))
+        expectMarks(1, "a line again")
         key("c"); expectMarks(0, "C clears")
         shot("K1 keys chose the tools")
     }
@@ -201,7 +232,7 @@ final class ContrastInkUITests: XCTestCase {
         expectMarks(1, "slide 2: a line")
         XCUIDevice.shared.press(.home)                             // saved when the app leaves the screen
         Thread.sleep(forTimeInterval: 2)
-        app.terminate()
+        endApp()
 
         launchSample(reset: false)
         expectMarks(1, "slide 1's line is back")
@@ -219,7 +250,7 @@ final class ContrastInkUITests: XCTestCase {
         app.buttons["previous"].tap()
         expectMarks(0, "every slide cleared")
         shot("M2 saved marks cleared")
-        app.terminate()
+        endApp()
 
         launchSample(reset: false)
         expectMarks(0, "nothing comes back after clearing")
@@ -229,7 +260,7 @@ final class ContrastInkUITests: XCTestCase {
         drag(CGVector(dx: 0.15, dy: 0.40), CGVector(dx: 0.8, dy: 0.70))
         expectMarks(1, "a line")
         Thread.sleep(forTimeInterval: 3.5)
-        app.terminate()
+        endApp()
         launchSample(reset: false)
         expectMarks(1, "the line, saved a moment after it was drawn, is back")
     }
@@ -260,13 +291,16 @@ final class ContrastInkUITests: XCTestCase {
         shot("R3 closed while recording: what happened")
     }
 
-    /// ✕ with marks asks first; with nothing to lose it closes at once.
-    func testCloseAsksWhenThereAreMarks() {
+    /// ✕ with nothing to lose closes at once.
+    func testCloseWithNoMarksClosesAtOnce() {
         launchSample()
         app.buttons["Close slides"].tap()
         XCTAssertTrue(app.buttons["Open slides (PDF)"].waitForExistence(timeout: 5), "no marks: closed at once")
+    }
 
-        launchSample()   // launching again ends the running one
+    /// ✕ with marks asks first. (A test of its own: relaunching the app inside one test is what failed in CI.)
+    func testCloseAsksWhenThereAreMarks() {
+        launchSample()
         drag(CGVector(dx: 0.15, dy: 0.40), CGVector(dx: 0.8, dy: 0.70))
         expectMarks(1, "a line")
         app.buttons["Close slides"].tap()
@@ -374,7 +408,7 @@ final class ContrastInkUITests: XCTestCase {
         shot("I2 a locked PDF asks for its password")
         app.alerts.buttons["Open"].tap()
         XCTAssertTrue(app.staticTexts["slideNumber"].waitForExistence(timeout: 10), "opens with the right password")
-        XCTAssertEqual(app.staticTexts["slideNumber"].label, "1 / 1")
+        expectSlide("1 / 1")
         app.buttons["Close slides"].tap()
 
         // a PDF, a mark on it, then the same PDF picked again: the same deck, with its mark
@@ -405,7 +439,7 @@ final class ContrastInkUITests: XCTestCase {
         app.buttons["testImportImages"].tap()
         let number = app.staticTexts["slideNumber"]
         XCTAssertTrue(number.waitForExistence(timeout: 10))
-        XCTAssertEqual(number.label, "1 / 2", "the two pictures that could be read")
+        expectSlide("1 / 2", "the two pictures that could be read")
         let notice = app.buttons["lectureNotice"]
         XCTAssertTrue(notice.waitForExistence(timeout: 5), "says how many couldn't be read")
         XCTAssertEqual(notice.label, "1 of 3 pictures couldn't be read and were left out.")
@@ -428,7 +462,7 @@ final class ContrastInkUITests: XCTestCase {
         XCTAssertTrue(warning.waitForExistence(timeout: 10), "warned on the home screen")
         XCTAssertTrue(warning.label.contains("in 2 hours"), warning.label)
         shot("E1 the copy expires soon")
-        app.terminate()
+        endApp()
         app.launchArguments = ["-expiresIn", "\(5 * 24 * 3600)"]
         app.launch()
         XCTAssertTrue(app.buttons["Open slides (PDF)"].waitForExistence(timeout: 10))
@@ -441,6 +475,7 @@ final class ContrastInkUITests: XCTestCase {
     private static func freshName(_ prefix: String) -> String { "\(prefix)-\(UUID().uuidString.prefix(8))" }
 
     private func launchPad(_ pc: FakePC, code: String = "123456") {
+        endApp()
         app.launchArguments = ["-padTest", "127.0.0.1:\(pc.port)", code]
         app.launch()
     }
@@ -603,7 +638,7 @@ final class ContrastInkUITests: XCTestCase {
         app.buttons["padCheckMatches"].tap()
         XCTAssertTrue(app.buttons["Pen"].waitForExistence(timeout: 20), "paired once: its key is remembered")
         Thread.sleep(forTimeInterval: 1)
-        app.terminate()
+        endApp()
 
         let other = P256.KeyAgreement.PrivateKey()
         pc.setKey(other)
@@ -646,7 +681,7 @@ final class ContrastInkUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Pen"].exists, "not on the pad")
 
         // its key wasn't remembered: the next time asks again
-        app.terminate()
+        endApp()
         launchPad(pc)
         try checkHello(pc, connection: 2)
         expectCheck(pc, connection: 2, pc.check)
